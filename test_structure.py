@@ -72,9 +72,15 @@ def test_file_structure():
         'src/ui/drawing_interface.py',
         'src/ui/dialogs/__init__.py',
         'src/ui/dialogs/project_dialog.py',
+        'src/ui/dialogs/scale_dialog.py',
         'src/data/__init__.py',
         'src/data/components.py',
         'src/data/materials.py',
+        'src/drawing/__init__.py',
+        'src/drawing/pdf_viewer.py',
+        'src/drawing/scale_manager.py',
+        'src/drawing/drawing_tools.py',
+        'src/drawing/drawing_overlay.py',
         'requirements.txt',
         'setup.py'
     ]

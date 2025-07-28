@@ -429,7 +429,36 @@ class ProjectDashboard(QMainWindow):
     # Slot implementations (placeholder methods)
     def import_drawing(self):
         """Import a new drawing (PDF)"""
-        QMessageBox.information(self, "Import Drawing", "Drawing import will be implemented next.")
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Import PDF Drawing", "", "PDF Files (*.pdf);;All Files (*)"
+        )
+        
+        if file_path:
+            try:
+                # Get drawing name from user
+                drawing_name = os.path.splitext(os.path.basename(file_path))[0]
+                
+                session = get_session()
+                
+                # Create new drawing record
+                drawing = Drawing(
+                    project_id=self.project_id,
+                    name=drawing_name,
+                    file_path=file_path,
+                    scale_string=self.project.default_scale
+                )
+                
+                session.add(drawing)
+                session.commit()
+                session.close()
+                
+                # Refresh drawings list
+                self.refresh_drawings()
+                
+                QMessageBox.information(self, "Success", f"Drawing '{drawing_name}' imported successfully.")
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to import drawing:\n{str(e)}")
         
     def open_drawing(self):
         """Open the selected drawing"""
