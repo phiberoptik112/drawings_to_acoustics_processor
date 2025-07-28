@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Acoustic Analysis Tool** - A desktop application for LEED acoustic certification analysis built with PyQt5. The system processes architectural drawings (PDFs) and performs acoustic calculations including RT60 reverberation time and HVAC mechanical background noise analysis.
 
-## Project Status - Phase 2 Complete ✅
+## Project Status - Phase 3 Complete ✅
 
 **Phase 1 MVP Foundation (Weeks 1-2): COMPLETE**
 - ✅ Complete PyQt5 application structure with SQLAlchemy database
@@ -25,14 +25,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ Scale management system with multiple calibration methods
 - ✅ Professional drawing interface with toolbar and element management
 
+**Phase 3 Room Properties & RT60 Calculations (Weeks 5-6): COMPLETE**
+- ✅ Room properties dialog with material selection and volume calculation
+- ✅ RT60 calculation engine using Sabine and Eyring formulas
+- ✅ Database persistence for all drawn elements with JSON properties
+- ✅ Room-to-space conversion system with acoustic material assignment
+- ✅ Real-time RT60 calculation with visual feedback and target comparison
+- ✅ Element management with context menus and drawing persistence
+- ✅ Material database with absorption coefficients and room type presets
+
 **Current Architecture:**
 - **Framework**: PyQt5 desktop application with drawing overlay system
-- **Database**: SQLite with SQLAlchemy ORM
+- **Database**: SQLite with SQLAlchemy ORM and JSON properties for element storage
 - **PDF Processing**: PyMuPDF for viewing and coordinate mapping
 - **Drawing Tools**: Modular tool system (Rectangle, Component, Segment, Measure)
 - **Scale System**: Coordinate transformation and real-world measurements
-- **Models**: Segment-based HVAC paths, rectangle-based room boundaries
-- **Libraries**: Standard HVAC components and acoustic materials
+- **Calculations**: RT60 engine with Sabine/Eyring formulas and materials database
+- **Persistence**: Element save/load system with overlay reconstruction
+- **Models**: Segment-based HVAC paths, rectangle-based room boundaries, space-material assignments
+- **Libraries**: Standard HVAC components, acoustic materials, and room type presets
 
 ## Development Setup
 
@@ -126,17 +137,22 @@ python -c "from src.models import Project; print('Models working')"
 - Rectangle, component, segment, and measurement tools
 - Scale management and coordinate calculation
 
-**🔄 Phase 3 Next (Weeks 5-6):**
+**✅ Phase 3 Complete:**
 - Room properties dialog with material selection
 - Height input and volume calculation
 - Database persistence for drawn elements
-- RT60 calculation preparation
+- RT60 calculation engine with materials database
+
+**🔄 Phase 4 Next (Weeks 7-8):**
+- HVAC noise calculation engine
+- Component noise database and segment attenuation
+- Path-based noise calculation with NC rating conversion
+- Integration with RT60 results for complete acoustic analysis
 
 **📋 Remaining Phases:**
-- Phase 3: HVAC component placement and segment drawing
-- Phase 4: RT60 calculation engine with materials
-- Phase 5: Mechanical noise calculation
-- Phase 6: Excel export and final integration
+- Phase 4: HVAC noise calculation engine and NC rating conversion
+- Phase 5: Excel export functionality and results display
+- Phase 6: Final integration, testing, and MVP completion
 
 ## Notes for Future Development
 
@@ -151,7 +167,9 @@ python -c "from src.models import Project; print('Models working')"
 - `src/models/`: Database schema and relationships
 - `src/ui/project_dashboard.py`: Main project interface
 - `src/ui/drawing_interface.py`: PDF viewer and drawing tools
+- `src/ui/dialogs/room_properties.py`: Room creation and material selection
 - `src/drawing/`: PDF viewer, drawing tools, and scale management
+- `src/calculations/`: RT60 and acoustic calculation engines
 - `src/data/`: Standard component and materials libraries
 - `prd.md`: Complete product requirements document
 
