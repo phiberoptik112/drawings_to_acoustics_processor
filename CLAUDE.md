@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Acoustic Analysis Tool** - A desktop application for LEED acoustic certification analysis built with PyQt5. The system processes architectural drawings (PDFs) and performs acoustic calculations including RT60 reverberation time and HVAC mechanical background noise analysis.
 
-## Project Status - Phase 1 Complete ✅
+## Project Status - Phase 2 Complete ✅
 
 **Phase 1 MVP Foundation (Weeks 1-2): COMPLETE**
 - ✅ Complete PyQt5 application structure with SQLAlchemy database
@@ -15,9 +15,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ Standard component and materials libraries
 - ✅ Professional UI with project creation and management
 
+**Phase 2 PDF Viewer & Drawing Tools (Weeks 3-4): COMPLETE**
+- ✅ PyMuPDF PDF viewer with zoom, navigation, and page controls
+- ✅ Drawing overlay system with transparent tool layer
+- ✅ Rectangle tool for room boundary drawing with real-world area calculation
+- ✅ Component placement tool with standard HVAC component library
+- ✅ Segment drawing tool for duct connections with length calculation
+- ✅ Measurement tool with scale-accurate distance conversion
+- ✅ Scale management system with multiple calibration methods
+- ✅ Professional drawing interface with toolbar and element management
+
 **Current Architecture:**
-- **Framework**: PyQt5 desktop application
+- **Framework**: PyQt5 desktop application with drawing overlay system
 - **Database**: SQLite with SQLAlchemy ORM
+- **PDF Processing**: PyMuPDF for viewing and coordinate mapping
+- **Drawing Tools**: Modular tool system (Rectangle, Component, Segment, Measure)
+- **Scale System**: Coordinate transformation and real-world measurements
 - **Models**: Segment-based HVAC paths, rectangle-based room boundaries
 - **Libraries**: Standard HVAC components and acoustic materials
 
@@ -107,11 +120,17 @@ python -c "from src.models import Project; print('Models working')"
 - Splash screen and project dashboard
 - Standard component/materials libraries
 
-**🔄 Phase 2 Next (Weeks 3-4):**
+**✅ Phase 2 Complete:**
 - PyMuPDF PDF viewer integration
 - Drawing interface with overlay system
-- Rectangle tool for room boundaries
+- Rectangle, component, segment, and measurement tools
 - Scale management and coordinate calculation
+
+**🔄 Phase 3 Next (Weeks 5-6):**
+- Room properties dialog with material selection
+- Height input and volume calculation
+- Database persistence for drawn elements
+- RT60 calculation preparation
 
 **📋 Remaining Phases:**
 - Phase 3: HVAC component placement and segment drawing
@@ -130,7 +149,9 @@ python -c "from src.models import Project; print('Models working')"
 **Key Files to Understand:**
 - `src/main.py`: Application entry point
 - `src/models/`: Database schema and relationships
-- `src/ui/project_dashboard.py`: Main interface
+- `src/ui/project_dashboard.py`: Main project interface
+- `src/ui/drawing_interface.py`: PDF viewer and drawing tools
+- `src/drawing/`: PDF viewer, drawing tools, and scale management
 - `src/data/`: Standard component and materials libraries
 - `prd.md`: Complete product requirements document
 
