@@ -54,6 +54,40 @@ def test_data_libraries():
         print(f"❌ Data libraries failed: {e}")
         return False
 
+def test_calculations():
+    """Test calculation engines"""
+    print("\nTesting calculation engines...")
+    
+    try:
+        from calculations import RT60Calculator, calculate_simple_rt60
+        
+        # Test RT60 calculator
+        calculator = RT60Calculator()
+        
+        # Test simple calculation
+        space_data = {
+            'volume': 3000,  # cubic feet
+            'floor_area': 300,  # square feet
+            'wall_area': 800,   # square feet
+            'ceiling_material': 'act_standard',
+            'wall_material': 'drywall_painted', 
+            'floor_material': 'carpet_medium'
+        }
+        
+        results = calculator.calculate_space_rt60(space_data)
+        
+        if results and 'rt60' in results:
+            print(f"✅ RT60 Calculator working: {results['rt60']:.2f} seconds")
+            print(f"   Total absorption: {results.get('total_absorption', 0):.1f} sabins")
+            return True
+        else:
+            print(f"❌ RT60 Calculator failed: {results}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Calculation engines failed: {e}")
+        return False
+
 def test_file_structure():
     """Test that all expected files exist"""
     print("\nTesting file structure...")
@@ -66,6 +100,7 @@ def test_file_structure():
         'src/models/drawing.py',
         'src/models/space.py',
         'src/models/hvac.py',
+        'src/models/drawing_elements.py',
         'src/ui/__init__.py',
         'src/ui/splash_screen.py',
         'src/ui/project_dashboard.py',
@@ -73,6 +108,7 @@ def test_file_structure():
         'src/ui/dialogs/__init__.py',
         'src/ui/dialogs/project_dialog.py',
         'src/ui/dialogs/scale_dialog.py',
+        'src/ui/dialogs/room_properties.py',
         'src/data/__init__.py',
         'src/data/components.py',
         'src/data/materials.py',
@@ -81,6 +117,8 @@ def test_file_structure():
         'src/drawing/scale_manager.py',
         'src/drawing/drawing_tools.py',
         'src/drawing/drawing_overlay.py',
+        'src/calculations/__init__.py',
+        'src/calculations/rt60_calculator.py',
         'requirements.txt',
         'setup.py'
     ]
@@ -104,7 +142,8 @@ def main():
     tests = [
         test_file_structure,
         test_database_models,
-        test_data_libraries
+        test_data_libraries,
+        test_calculations
     ]
     
     results = []

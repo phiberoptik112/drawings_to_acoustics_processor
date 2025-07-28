@@ -7,6 +7,7 @@ from .project import Project
 from .drawing import Drawing
 from .space import Space, RoomBoundary
 from .hvac import HVACComponent, HVACPath, HVACSegment, SegmentFitting
+from .drawing_elements import DrawingElement, DrawingElementManager
 
 __all__ = [
     'Base',
@@ -20,5 +21,7 @@ __all__ = [
     'HVACComponent', 
     'HVACPath', 
     'HVACSegment', 
-    'SegmentFitting'
+    'SegmentFitting',
+    'DrawingElement',
+    'DrawingElementManager'
 ]

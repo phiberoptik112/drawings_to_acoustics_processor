@@ -11,10 +11,12 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
 from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.QtGui import QIcon, QFont
 
-from models import get_session, Drawing, Project
+from models import get_session, Drawing, Project, Space, RoomBoundary, DrawingElementManager
 from drawing import PDFViewer, DrawingOverlay, ScaleManager, ToolType
 from ui.dialogs.scale_dialog import ScaleDialog
+from ui.dialogs.room_properties import RoomPropertiesDialog
 from data import STANDARD_COMPONENTS
+from calculations import RT60Calculator
 
 
 class DrawingInterface(QMainWindow):
@@ -34,6 +36,11 @@ class DrawingInterface(QMainWindow):
         self.pdf_viewer = None
         self.drawing_overlay = None
         self.scale_manager = ScaleManager()
+        self.rt60_calculator = RT60Calculator()
+        self.element_manager = DrawingElementManager(get_session)
+        
+        # Selected element for context operations
+        self.selected_rectangle = None
         
         self.load_drawing_data()
         self.init_ui()
@@ -238,8 +245,25 @@ class DrawingInterface(QMainWindow):
         elements_layout = QVBoxLayout()
         
         self.elements_list = QListWidget()
+        self.elements_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.elements_list.customContextMenuRequested.connect(self.show_element_context_menu)
         elements_layout.addWidget(self.elements_list)
         
+        # Element actions
+        element_actions_layout = QHBoxLayout()
+        
+        self.create_room_btn = QPushButton("Create Room")
+        self.create_room_btn.clicked.connect(self.create_room_from_selected)
+        self.create_room_btn.setEnabled(False)
+        
+        self.delete_element_btn = QPushButton("Delete")
+        self.delete_element_btn.clicked.connect(self.delete_selected_element)
+        self.delete_element_btn.setEnabled(False)
+        
+        element_actions_layout.addWidget(self.create_room_btn)
+        element_actions_layout.addWidget(self.delete_element_btn)
+        
+        elements_layout.addLayout(element_actions_layout)
         elements_group.setLayout(elements_layout)
         layout.addWidget(elements_group)
         
@@ -289,6 +313,9 @@ class DrawingInterface(QMainWindow):
             
         self.scale_manager.scale_changed.connect(self.scale_updated)
         
+        # Element list selection
+        self.elements_list.itemSelectionChanged.connect(self.element_selected)
+        
     def load_pdf(self):
         """Load the PDF file"""
         if self.drawing and self.drawing.file_path:
@@ -297,6 +324,7 @@ class DrawingInterface(QMainWindow):
                 if success:
                     self.update_overlay_size()
                     self.load_scale_from_drawing()
+                    self.load_saved_elements()
             else:
                 QMessageBox.warning(self, "Warning", f"PDF file not found:\n{self.drawing.file_path}")
                 
@@ -348,20 +376,29 @@ class DrawingInterface(QMainWindow):
         self.update_elements_display()
         self.update_status_bar()
         
-        # Add to elements list
+        # Add to elements list with data storage
         element_type = element_data.get('type', 'unknown')
+        item = None
+        
         if element_type == 'rectangle':
             area_text = element_data.get('area_formatted', '')
-            self.elements_list.addItem(f"🔲 Room - {area_text}")
+            item = QListWidgetItem(f"🔲 Rectangle - {area_text}")
+            item.setData(Qt.UserRole, element_data)  # Store element data
         elif element_type == 'component':
             comp_type = element_data.get('component_type', 'unknown')
-            self.elements_list.addItem(f"🔧 {comp_type.upper()}")
+            item = QListWidgetItem(f"🔧 {comp_type.upper()}")
+            item.setData(Qt.UserRole, element_data)
         elif element_type == 'segment':
             length_text = element_data.get('length_formatted', '')
-            self.elements_list.addItem(f"━ Segment - {length_text}")
+            item = QListWidgetItem(f"━ Segment - {length_text}")
+            item.setData(Qt.UserRole, element_data)
         elif element_type == 'measurement':
             length_text = element_data.get('length_formatted', '')
-            self.elements_list.addItem(f"📏 Measurement - {length_text}")
+            item = QListWidgetItem(f"📏 Measurement - {length_text}")
+            item.setData(Qt.UserRole, element_data)
+            
+        if item:
+            self.elements_list.addItem(item)
             
     def measurement_taken(self, length_real, length_formatted):
         """Handle measurement taken"""
@@ -421,7 +458,7 @@ class DrawingInterface(QMainWindow):
         QMessageBox.information(self, "Saved", "Drawing saved successfully.")
         
     def save_drawing_to_db(self):
-        """Save drawing data to database"""
+        """Save drawing data and elements to database"""
         if not self.drawing:
             return
             
@@ -441,8 +478,74 @@ class DrawingInterface(QMainWindow):
             session.commit()
             session.close()
             
+            # Save drawing elements
+            if self.drawing_overlay:
+                overlay_data = self.drawing_overlay.get_elements_data()
+                elements_saved = self.element_manager.save_elements(
+                    self.drawing.id, self.project_id, overlay_data
+                )
+                
+                if elements_saved > 0:
+                    self.status_bar.showMessage(f"Saved {elements_saved} drawing elements", 2000)
+            
         except Exception as e:
             QMessageBox.warning(self, "Warning", f"Could not save drawing:\n{str(e)}")
+            
+    def load_saved_elements(self):
+        """Load saved drawing elements from database"""
+        if not self.drawing or not self.drawing_overlay:
+            return
+            
+        try:
+            overlay_data = self.element_manager.load_elements(self.drawing.id)
+            
+            if any(overlay_data.values()):  # If there are any elements
+                self.drawing_overlay.load_elements_data(overlay_data)
+                
+                # Rebuild elements list
+                self.rebuild_elements_list(overlay_data)
+                
+                elements_count = sum(len(elements) for elements in overlay_data.values())
+                self.status_bar.showMessage(f"Loaded {elements_count} saved elements", 2000)
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Warning", f"Could not load saved elements:\n{str(e)}")
+            
+    def rebuild_elements_list(self, overlay_data):
+        """Rebuild elements list from loaded data"""
+        self.elements_list.clear()
+        
+        # Add rectangles
+        for rect_data in overlay_data.get('rectangles', []):
+            area_formatted = rect_data.get('area_formatted', f"{rect_data.get('area_real', 0):.0f} sf")
+            item = QListWidgetItem(f"🔲 Rectangle - {area_formatted}")
+            item.setData(Qt.UserRole, rect_data)
+            self.elements_list.addItem(item)
+            
+        # Add components
+        for comp_data in overlay_data.get('components', []):
+            comp_type = comp_data.get('component_type', 'unknown')
+            item = QListWidgetItem(f"🔧 {comp_type.upper()}")
+            item.setData(Qt.UserRole, comp_data)
+            self.elements_list.addItem(item)
+            
+        # Add segments
+        for seg_data in overlay_data.get('segments', []):
+            length_formatted = seg_data.get('length_formatted', f"{seg_data.get('length_real', 0):.1f} ft")
+            item = QListWidgetItem(f"━ Segment - {length_formatted}")
+            item.setData(Qt.UserRole, seg_data)
+            self.elements_list.addItem(item)
+            
+        # Add measurements (if persistent)
+        for meas_data in overlay_data.get('measurements', []):
+            if meas_data.get('persistent', True):
+                length_formatted = meas_data.get('length_formatted', f"{meas_data.get('length_real', 0):.1f} ft")
+                item = QListWidgetItem(f"📏 Measurement - {length_formatted}")
+                item.setData(Qt.UserRole, meas_data)
+                self.elements_list.addItem(item)
+                
+        # Update displays
+        self.update_elements_display()
             
     def export_elements(self):
         """Export drawing elements"""
@@ -494,6 +597,207 @@ class DrawingInterface(QMainWindow):
         QMessageBox.information(self, "Scale Calibration", 
                                "Use the measurement tool to measure a known distance,\nthen right-click to set the scale.")
         
+    def element_selected(self):
+        """Handle element list selection change"""
+        current_item = self.elements_list.currentItem()
+        
+        if current_item:
+            element_data = current_item.data(Qt.UserRole)
+            element_type = element_data.get('type') if element_data else None
+            
+            # Enable appropriate buttons
+            self.create_room_btn.setEnabled(element_type == 'rectangle')
+            self.delete_element_btn.setEnabled(True)
+            
+            if element_type == 'rectangle':
+                self.selected_rectangle = element_data
+        else:
+            self.create_room_btn.setEnabled(False)
+            self.delete_element_btn.setEnabled(False)
+            self.selected_rectangle = None
+            
+    def show_element_context_menu(self, position):
+        """Show context menu for element list"""
+        item = self.elements_list.itemAt(position)
+        if not item:
+            return
+            
+        element_data = item.data(Qt.UserRole)
+        element_type = element_data.get('type') if element_data else None
+        
+        from PyQt5.QtWidgets import QMenu
+        
+        menu = QMenu(self)
+        
+        if element_type == 'rectangle':
+            create_room_action = menu.addAction("🏠 Create Room/Space")
+            create_room_action.triggered.connect(lambda: self.create_room_from_rectangle(element_data))
+            
+        menu.addSeparator()
+        delete_action = menu.addAction("🗑️ Delete Element")
+        delete_action.triggered.connect(lambda: self.delete_element(item))
+        
+        menu.exec_(self.elements_list.mapToGlobal(position))
+        
+    def create_room_from_selected(self):
+        """Create room from selected rectangle"""
+        if self.selected_rectangle:
+            self.create_room_from_rectangle(self.selected_rectangle)
+            
+    def create_room_from_rectangle(self, rectangle_data):
+        """Create a room/space from rectangle data"""
+        if not rectangle_data:
+            QMessageBox.warning(self, "Error", "No rectangle data available.")
+            return
+            
+        try:
+            # Open room properties dialog
+            dialog = RoomPropertiesDialog(self, rectangle_data, self.scale_manager)
+            dialog.space_created.connect(self.handle_space_created)
+            dialog.exec_()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create room properties dialog:\n{str(e)}")
+            
+    def handle_space_created(self, space_data):
+        """Handle space creation from room properties dialog"""
+        try:
+            session = get_session()
+            
+            # Create space record
+            space = Space(
+                project_id=self.project_id,
+                name=space_data['name'],
+                description=space_data['description'],
+                floor_area=space_data['floor_area'],
+                ceiling_height=space_data['ceiling_height'],
+                volume=space_data.get('volume', 0),
+                wall_area=space_data.get('wall_area', 0),
+                target_rt60=space_data['target_rt60'],
+                ceiling_material=space_data['ceiling_material'],
+                wall_material=space_data['wall_material'],
+                floor_material=space_data['floor_material']
+            )
+            
+            session.add(space)
+            session.flush()
+            
+            # Calculate RT60
+            rt60_results = self.rt60_calculator.calculate_space_rt60(space_data)
+            if rt60_results and 'rt60' in rt60_results:
+                space.calculated_rt60 = rt60_results['rt60']
+                
+            # Create room boundary record
+            rectangle_data = space_data.get('rectangle_data', {})
+            if rectangle_data and self.drawing:
+                boundary = RoomBoundary(
+                    space_id=space.id,
+                    drawing_id=self.drawing.id,
+                    x_position=rectangle_data.get('x', 0),
+                    y_position=rectangle_data.get('y', 0),
+                    width=rectangle_data.get('width', 0),
+                    height=rectangle_data.get('height', 0),
+                    calculated_area=rectangle_data.get('area_real', 0)
+                )
+                
+                session.add(boundary)
+                
+            session.commit()
+            session.close()
+            
+            # Update UI
+            QMessageBox.information(self, "Success", 
+                                   f"Space '{space_data['name']}' created successfully!\n"
+                                   f"Calculated RT60: {space.calculated_rt60:.2f} seconds")
+            
+            # Remove rectangle from elements and add space indicator
+            self.update_elements_after_space_creation(space_data['name'])
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create space:\n{str(e)}")
+            
+    def update_elements_after_space_creation(self, space_name):
+        """Update elements list after space creation"""
+        # Find and update the rectangle item
+        for i in range(self.elements_list.count()):
+            item = self.elements_list.item(i)
+            element_data = item.data(Qt.UserRole)
+            
+            if element_data and element_data.get('type') == 'rectangle':
+                # Check if this is the rectangle we just converted
+                if element_data == self.selected_rectangle:
+                    # Update item text to indicate it's now a space
+                    area_text = element_data.get('area_formatted', '')
+                    item.setText(f"🏠 Space: {space_name} - {area_text}")
+                    
+                    # Update element data to mark as converted
+                    element_data['converted_to_space'] = True
+                    element_data['space_name'] = space_name
+                    item.setData(Qt.UserRole, element_data)
+                    break
+                    
+        # Clear selection
+        self.elements_list.clearSelection()
+        self.selected_rectangle = None
+        
+    def delete_selected_element(self):
+        """Delete the selected element"""
+        current_item = self.elements_list.currentItem()
+        if current_item:
+            self.delete_element(current_item)
+            
+    def delete_element(self, item):
+        """Delete an element from the list and overlay"""
+        element_data = item.data(Qt.UserRole)
+        element_type = element_data.get('type') if element_data else None
+        
+        # Confirm deletion
+        reply = QMessageBox.question(self, "Confirm Deletion", 
+                                   f"Delete this {element_type}?",
+                                   QMessageBox.Yes | QMessageBox.No,
+                                   QMessageBox.No)
+        
+        if reply == QMessageBox.Yes:
+            # Remove from overlay (simplified - would need element ID tracking)
+            if self.drawing_overlay and element_type:
+                if element_type == 'rectangle':
+                    # Find and remove from rectangles list
+                    rectangles = self.drawing_overlay.rectangles
+                    for i, rect in enumerate(rectangles):
+                        if rect == element_data:
+                            rectangles.pop(i)
+                            break
+                elif element_type == 'component':
+                    # Find and remove from components list
+                    components = self.drawing_overlay.components
+                    for i, comp in enumerate(components):
+                        if comp == element_data:
+                            components.pop(i)
+                            break
+                elif element_type == 'segment':
+                    # Find and remove from segments list
+                    segments = self.drawing_overlay.segments
+                    for i, seg in enumerate(segments):
+                        if seg == element_data:
+                            segments.pop(i)
+                            break
+                elif element_type == 'measurement':
+                    # Find and remove from measurements list
+                    measurements = self.drawing_overlay.measurements
+                    for i, meas in enumerate(measurements):
+                        if meas == element_data:
+                            measurements.pop(i)
+                            break
+                            
+                self.drawing_overlay.update()
+                
+            # Remove from list
+            row = self.elements_list.row(item)
+            self.elements_list.takeItem(row)
+            
+            # Update displays
+            self.update_elements_display()
+            
     def closeEvent(self, event):
         """Handle window close event"""
         self.save_drawing_to_db()
