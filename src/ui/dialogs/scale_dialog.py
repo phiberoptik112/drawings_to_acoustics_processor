@@ -2,11 +2,11 @@
 Scale Dialog - Set drawing scale and coordinate system
 """
 
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QPushButton, QComboBox, QFormLayout,
                              QGroupBox, QRadioButton, QButtonGroup, QMessageBox,
                              QDoubleSpinBox)
-from PyQt5.QtCore import Qt
+from PySide6.QtCore import Qt
 from drawing.scale_manager import ScaleCalibrationDialog
 
 

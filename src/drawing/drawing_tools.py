@@ -3,9 +3,9 @@ Drawing Tools - Rectangle and component drawing tools for the overlay system
 """
 
 from enum import Enum
-from PyQt5.QtCore import Qt, QRect, QPoint, pyqtSignal, QObject
-from PyQt5.QtGui import QPen, QBrush, QColor, QPainter
-from PyQt5.QtWidgets import QWidget
+from PySide6.QtCore import Qt, QRect, QPoint, Signal, QObject
+from PySide6.QtGui import QPen, QBrush, QColor, QPainter
+from PySide6.QtWidgets import QWidget
 import math
 
 
@@ -21,8 +21,8 @@ class ToolType(Enum):
 class DrawingTool(QObject):
     """Base class for drawing tools"""
     
-    finished = pyqtSignal(dict)  # Emitted when tool operation is complete
-    updated = pyqtSignal()  # Emitted when tool state changes
+    finished = Signal(dict)  # Emitted when tool operation is complete
+    updated = Signal()  # Emitted when tool state changes
     
     def __init__(self):
         super().__init__()
@@ -276,8 +276,8 @@ class MeasureTool(DrawingTool):
 class DrawingToolManager(QObject):
     """Manages drawing tools and their state"""
     
-    tool_changed = pyqtSignal(str)  # Current tool name
-    element_created = pyqtSignal(dict)  # New element created
+    tool_changed = Signal(str)  # Current tool name
+    element_created = Signal(dict)  # New element created
     
     def __init__(self):
         super().__init__()

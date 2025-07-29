@@ -2,13 +2,13 @@
 Room Properties Dialog - Convert drawn rectangles to spaces with acoustic properties
 """
 
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QLabel, QLineEdit, QTextEdit, QComboBox, 
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QListWidget, QListWidgetItem, QMessageBox,
                              QTabWidget, QWidget, QCheckBox)
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
 
 from data import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS
 
@@ -17,7 +17,7 @@ class RoomPropertiesDialog(QDialog):
     """Dialog for setting room/space properties from drawn rectangles"""
     
     # Signals
-    space_created = pyqtSignal(dict)  # Emitted when space is created
+    space_created = Signal(dict)  # Emitted when space is created
     
     def __init__(self, parent=None, rectangle_data=None, scale_manager=None):
         super().__init__(parent)

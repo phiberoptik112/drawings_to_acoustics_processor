@@ -3,11 +3,11 @@ Splash Screen - Initial application window for project selection/creation
 """
 
 import os
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QPushButton, QListWidget, QListWidgetItem, 
                              QMessageBox, QFileDialog)
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QPixmap
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont, QPixmap
 
 from models import initialize_database, get_session, Project
 from ui.dialogs.project_dialog import ProjectDialog
@@ -155,7 +155,7 @@ class SplashScreen(QWidget):
     def create_new_project(self):
         """Create a new project"""
         dialog = ProjectDialog(self)
-        if dialog.exec_() == dialog.Accepted:
+        if dialog.exec() == dialog.Accepted:
             project_data = dialog.get_project_data()
             
             try:

@@ -6,9 +6,9 @@ Desktop application for LEED acoustic certification analysis
 
 import sys
 import os
-from PyQt5.QtWidgets import QApplication, QStyleFactory
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIcon
+from PySide6.QtWidgets import QApplication, QStyleFactory
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 
 # Add src directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -37,7 +37,7 @@ class AcousticAnalysisApp(QApplication):
         self.splash_screen = SplashScreen()
         self.splash_screen.show()
         
-        return self.exec_()
+        return self.exec()
 
 
 def main():

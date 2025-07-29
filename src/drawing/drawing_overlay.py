@@ -2,9 +2,9 @@
 Drawing Overlay - Transparent overlay for drawing tools on top of PDF viewer
 """
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
-from PyQt5.QtCore import Qt, QPoint, pyqtSignal
-from PyQt5.QtGui import QPainter, QPen, QBrush, QColor, QFont
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
+from PySide6.QtCore import Qt, QPoint, Signal
+from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont
 from drawing.drawing_tools import DrawingToolManager, ToolType
 from drawing.scale_manager import ScaleManager
 
@@ -13,9 +13,9 @@ class DrawingOverlay(QWidget):
     """Transparent overlay widget for drawing on top of PDF"""
     
     # Signals
-    element_created = pyqtSignal(dict)  # New drawing element created
-    coordinates_clicked = pyqtSignal(float, float)  # Raw coordinates clicked
-    measurement_taken = pyqtSignal(float, str)  # Measurement in real units
+    element_created = Signal(dict)  # New drawing element created
+    coordinates_clicked = Signal(float, float)  # Raw coordinates clicked
+    measurement_taken = Signal(float, str)  # Measurement in real units
     
     def __init__(self, parent=None):
         super().__init__(parent)

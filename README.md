@@ -1,6 +1,6 @@
 # Acoustic Analysis Tool
 
-Desktop application for LEED acoustic certification analysis built with PyQt5.
+Desktop application for LEED acoustic certification analysis built with PySide6.
 
 ## Features (MVP Phase 1 Complete)
 
@@ -87,7 +87,7 @@ src/
 
 ## Technical Details
 
-- **Framework**: PyQt5 for desktop GUI
+- **Framework**: PySide6 for desktop GUI
 - **Database**: SQLite with SQLAlchemy ORM
 - **PDF Processing**: PyMuPDF (planned for Phase 2)
 - **Export**: openpyxl for Excel output (planned for Phase 4)

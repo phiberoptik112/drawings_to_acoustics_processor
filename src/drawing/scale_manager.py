@@ -3,13 +3,13 @@ Scale Manager - Handle drawing scale and coordinate transformations
 """
 
 import math
-from PyQt5.QtCore import QObject, pyqtSignal
+from PySide6.QtCore import QObject, Signal
 
 
 class ScaleManager(QObject):
     """Manages drawing scale and coordinate transformations"""
     
-    scale_changed = pyqtSignal(float, str)  # scale_ratio, scale_string
+    scale_changed = Signal(float, str)  # scale_ratio, scale_string
     
     def __init__(self):
         super().__init__()

@@ -3,27 +3,27 @@ Drawing Interface - PDF viewer with drawing overlay tools
 """
 
 import os
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QToolBar, QAction, QButtonGroup, QPushButton, 
+from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+                             QToolBar, QButtonGroup, QPushButton, 
                              QLabel, QComboBox, QLineEdit, QGroupBox, 
                              QListWidget, QMessageBox, QFileDialog, QSplitter,
                              QFrame, QSpinBox)
-from PyQt5.QtCore import Qt, QSize, pyqtSignal
-from PyQt5.QtGui import QIcon, QFont
+from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtGui import QIcon, QFont, QAction
 
 from models import get_session, Drawing, Project, Space, RoomBoundary, DrawingElementManager
 from drawing import PDFViewer, DrawingOverlay, ScaleManager, ToolType
 from ui.dialogs.scale_dialog import ScaleDialog
 from ui.dialogs.room_properties import RoomPropertiesDialog
-from data import STANDARD_COMPONENTS
-from calculations import RT60Calculator
+from data import STANDARD_COMPONENTS, ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
+from calculations import RT60Calculator, NoiseCalculator, HVACPathCalculator
 
 
 class DrawingInterface(QMainWindow):
     """Drawing interface for PDF viewing and drawing tools"""
     
     # Signals
-    finished = pyqtSignal()
+    finished = Signal()
     
     def __init__(self, drawing_id, project_id):
         super().__init__()
@@ -37,6 +37,8 @@ class DrawingInterface(QMainWindow):
         self.drawing_overlay = None
         self.scale_manager = ScaleManager()
         self.rt60_calculator = RT60Calculator()
+        self.noise_calculator = NoiseCalculator()
+        self.hvac_path_calculator = HVACPathCalculator()
         self.element_manager = DrawingElementManager(get_session)
         
         # Selected element for context operations
@@ -113,6 +115,8 @@ class DrawingInterface(QMainWindow):
         file_menu.addAction('Save Drawing', self.save_drawing)
         file_menu.addSeparator()
         file_menu.addAction('Export Elements', self.export_elements)
+        if EXCEL_EXPORT_AVAILABLE:
+            file_menu.addAction('Export to Excel', self.export_to_excel)
         file_menu.addSeparator()
         file_menu.addAction('Close', self.close)
         
@@ -134,6 +138,12 @@ class DrawingInterface(QMainWindow):
         tools_menu = menubar.addMenu('Tools')
         tools_menu.addAction('Set Scale', self.set_scale)
         tools_menu.addAction('Calibrate Scale', self.calibrate_scale)
+        tools_menu.addSeparator()
+        tools_menu.addAction('Create HVAC Path', self.create_hvac_path_from_drawing)
+        tools_menu.addAction('Analyze HVAC Path', self.analyze_hvac_path)
+        tools_menu.addAction('Calculate All Paths', self.calculate_all_hvac_paths)
+        tools_menu.addSeparator()
+        tools_menu.addAction('NC Compliance Analysis', self.analyze_nc_compliance)
         
     def create_toolbar(self):
         """Create the main toolbar"""
@@ -589,7 +599,7 @@ class DrawingInterface(QMainWindow):
     def set_scale(self):
         """Open scale setting dialog"""
         dialog = ScaleDialog(self, self.scale_manager)
-        dialog.exec_()
+        dialog.exec()
         
     def calibrate_scale(self):
         """Start scale calibration with measurement tool"""
@@ -625,7 +635,7 @@ class DrawingInterface(QMainWindow):
         element_data = item.data(Qt.UserRole)
         element_type = element_data.get('type') if element_data else None
         
-        from PyQt5.QtWidgets import QMenu
+        from PySide6.QtWidgets import QMenu
         
         menu = QMenu(self)
         
@@ -654,7 +664,7 @@ class DrawingInterface(QMainWindow):
             # Open room properties dialog
             dialog = RoomPropertiesDialog(self, rectangle_data, self.scale_manager)
             dialog.space_created.connect(self.handle_space_created)
-            dialog.exec_()
+            dialog.exec()
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create room properties dialog:\n{str(e)}")
@@ -798,6 +808,620 @@ class DrawingInterface(QMainWindow):
             # Update displays
             self.update_elements_display()
             
+    def create_hvac_path_from_drawing(self):
+        """Create HVAC path from drawing elements and save to database"""
+        try:
+            # Get HVAC components and segments from drawing elements
+            overlay_data = self.drawing_overlay.get_elements_data() if self.drawing_overlay else {}
+            components = overlay_data.get('components', [])
+            segments = overlay_data.get('segments', [])
+            
+            if len(components) < 2:
+                QMessageBox.information(self, "Create HVAC Path", 
+                                       "Need at least 2 HVAC components to create a path.\n"
+                                       "Use the Component tool to place HVAC equipment.")
+                return
+            
+            if len(segments) == 0:
+                QMessageBox.information(self, "Create HVAC Path",
+                                       "Need at least 1 segment connection between components.\n"
+                                       "Use the Segment tool to connect HVAC components.")
+                return
+            
+            # Add drawing ID to components
+            for comp in components:
+                comp['drawing_id'] = self.drawing.id
+            
+            drawing_data = {
+                'components': components,
+                'segments': segments
+            }
+            
+            # Create HVAC path in database
+            hvac_path = self.hvac_path_calculator.create_hvac_path_from_drawing(
+                self.project_id, drawing_data
+            )
+            
+            if hvac_path:
+                QMessageBox.information(self, "HVAC Path Created", 
+                                       f"Successfully created HVAC path: {hvac_path.name}\n"
+                                       f"Terminal Noise: {hvac_path.calculated_noise:.1f} dB(A)\n"
+                                       f"NC Rating: NC-{hvac_path.calculated_nc}")
+            else:
+                QMessageBox.warning(self, "Creation Failed", "Failed to create HVAC path from drawing elements.")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")
+    
+    def analyze_hvac_path(self):
+        """Analyze HVAC noise path from selected components"""
+        try:
+            # Get HVAC components and segments from drawing elements
+            overlay_data = self.drawing_overlay.get_elements_data() if self.drawing_overlay else {}
+            components = overlay_data.get('components', [])
+            segments = overlay_data.get('segments', [])
+            
+            if len(components) < 2:
+                QMessageBox.information(self, "HVAC Analysis", 
+                                       "Need at least 2 HVAC components to create a path.\n"
+                                       "Use the Component tool to place HVAC equipment.")
+                return
+            
+            if len(segments) == 0:
+                QMessageBox.information(self, "HVAC Analysis",
+                                       "Need at least 1 segment connection between components.\n"
+                                       "Use the Segment tool to connect HVAC components.")
+                return
+            
+            # Create a simple path from first to last component
+            source_component = components[0]
+            terminal_component = components[-1]
+            
+            # Build path data structure
+            path_data = {
+                'source_component': source_component,
+                'terminal_component': terminal_component,
+                'segments': []
+            }
+            
+            # Convert segments to calculation format
+            for i, segment in enumerate(segments):
+                segment_calc_data = {
+                    'length': segment.get('length_real', 0),
+                    'duct_width': 12,  # Default 12 inches
+                    'duct_height': 8,  # Default 8 inches
+                    'duct_shape': 'rectangular',
+                    'duct_type': 'sheet_metal',
+                    'insulation': None,
+                    'fittings': []  # No fittings data from segments yet
+                }
+                path_data['segments'].append(segment_calc_data)
+            
+            # Perform noise calculation
+            results = self.noise_calculator.calculate_hvac_path_noise(path_data)
+            
+            # Display results
+            self.display_hvac_analysis_results(results, source_component, terminal_component)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to analyze HVAC path:\n{str(e)}")
+    
+    def calculate_all_hvac_paths(self):
+        """Calculate noise for all HVAC paths in the project"""
+        try:
+            session = get_session()
+            
+            # Get all HVAC paths for this project
+            from models.hvac import HVACPath
+            hvac_paths = session.query(HVACPath).filter(
+                HVACPath.project_id == self.project_id
+            ).all()
+            
+            if not hvac_paths:
+                QMessageBox.information(self, "HVAC Calculation",
+                                       "No HVAC paths found in this project.\n"
+                                       "Create HVAC paths using the drawing tools first.")
+                session.close()
+                return
+            
+            calculated_paths = 0
+            results_summary = []
+            
+            for hvac_path in hvac_paths:
+                # Build path data from database
+                path_data = self.build_path_data_from_db(hvac_path)
+                
+                if path_data:
+                    # Calculate noise
+                    results = self.noise_calculator.calculate_hvac_path_noise(path_data)
+                    
+                    if results['calculation_valid']:
+                        # Update database with results
+                        hvac_path.calculated_noise = results['terminal_noise']
+                        hvac_path.calculated_nc = results['nc_rating']
+                        
+                        calculated_paths += 1
+                        results_summary.append({
+                            'name': hvac_path.name,
+                            'noise': results['terminal_noise'],
+                            'nc': results['nc_rating']
+                        })
+            
+            session.commit()
+            session.close()
+            
+            # Display summary
+            if calculated_paths > 0:
+                summary_text = f"Calculated {calculated_paths} HVAC paths:\n\n"
+                for result in results_summary:
+                    summary_text += f"• {result['name']}: {result['noise']:.1f} dB(A), NC-{result['nc']}\n"
+                
+                QMessageBox.information(self, "HVAC Calculation Complete", summary_text)
+            else:
+                QMessageBox.warning(self, "Calculation Warning", "No valid HVAC paths could be calculated.")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to calculate HVAC paths:\n{str(e)}")
+    
+    def display_hvac_analysis_results(self, results: dict, source_comp: dict, terminal_comp: dict):
+        """Display HVAC noise analysis results"""
+        if not results['calculation_valid']:
+            error_msg = results.get('error', 'Unknown calculation error')
+            QMessageBox.warning(self, "Calculation Error", f"HVAC calculation failed:\n{error_msg}")
+            return
+        
+        # Build results message
+        source_type = source_comp.get('component_type', 'unknown').upper()
+        terminal_type = terminal_comp.get('component_type', 'unknown').upper()
+        
+        message = f"HVAC Path Analysis Results\n"
+        message += f"{'=' * 40}\n\n"
+        message += f"Path: {source_type} → {terminal_type}\n\n"
+        message += f"Source Noise Level: {results['source_noise']:.1f} dB(A)\n"
+        message += f"Terminal Noise Level: {results['terminal_noise']:.1f} dB(A)\n"
+        message += f"Total Attenuation: {results['total_attenuation']:.1f} dB\n"
+        message += f"NC Rating: NC-{results['nc_rating']}\n\n"
+        
+        # Add NC criteria description
+        nc_description = self.noise_calculator.get_nc_criteria_description(results['nc_rating'])
+        message += f"NC Criteria: {nc_description}\n\n"
+        
+        # Add detailed NC analysis if available
+        detailed_nc = results.get('detailed_nc_analysis')
+        if detailed_nc:
+            message += f"Enhanced Analysis:\n"
+            message += f"  Overall dB(A): {detailed_nc['overall_dba']:.1f}\n"
+            message += f"  Description: {detailed_nc['nc_description']}\n"
+            
+            if detailed_nc.get('warnings'):
+                message += f"  Warnings: {', '.join(detailed_nc['warnings'])}\n"
+            message += "\n"
+        
+        # Add segment details
+        if results['path_segments']:
+            message += "Segment Analysis:\n"
+            for segment in results['path_segments']:
+                seg_num = segment['segment_number']
+                message += f"  Segment {seg_num}: {segment['noise_before']:.1f} → {segment['noise_after']:.1f} dB(A)\n"
+                message += f"    Distance Loss: {segment['distance_loss']:.1f} dB\n"
+                message += f"    Duct Loss: {segment['duct_loss']:.1f} dB\n"
+                if segment['fitting_additions'] > 0:
+                    message += f"    Fitting Additions: +{segment['fitting_additions']:.1f} dB\n"
+        
+        # Add warnings
+        if results.get('warnings'):
+            message += f"\nWarnings:\n"
+            for warning in results['warnings']:
+                message += f"• {warning}\n"
+        
+        # Show results dialog
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("HVAC Path Analysis")
+        msg_box.setText(message)
+        msg_box.setIcon(QMessageBox.Information)
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        
+        # Make the dialog wider to show all text
+        msg_box.setStyleSheet("QLabel { min-width: 500px; }")
+        msg_box.exec()
+    
+    def build_path_data_from_db(self, hvac_path) -> dict:
+        """Build path data structure from database HVAC path"""
+        try:
+            path_data = {
+                'source_component': {},
+                'terminal_component': {},
+                'segments': []
+            }
+            
+            segments = hvac_path.segments
+            if not segments:
+                return None
+            
+            # Get source and terminal components
+            first_segment = segments[0]
+            last_segment = segments[-1]
+            
+            if first_segment.from_component:
+                comp = first_segment.from_component
+                path_data['source_component'] = {
+                    'component_type': comp.component_type,
+                    'noise_level': comp.noise_level or STANDARD_COMPONENTS.get(comp.component_type, {}).get('noise_level', 50.0)
+                }
+            
+            if last_segment.to_component:
+                comp = last_segment.to_component
+                path_data['terminal_component'] = {
+                    'component_type': comp.component_type,
+                    'noise_level': comp.noise_level or STANDARD_COMPONENTS.get(comp.component_type, {}).get('noise_level', 25.0)
+                }
+            
+            # Convert segments
+            for segment in segments:
+                segment_data = {
+                    'length': segment.length or 0,
+                    'duct_width': segment.duct_width or 12,
+                    'duct_height': segment.duct_height or 8,  
+                    'duct_shape': segment.duct_shape or 'rectangular',
+                    'duct_type': segment.duct_type or 'sheet_metal',
+                    'insulation': segment.insulation,
+                    'fittings': []
+                }
+                
+                # Add fittings if any
+                for fitting in segment.fittings:
+                    fitting_data = {
+                        'fitting_type': fitting.fitting_type,
+                        'noise_adjustment': fitting.noise_adjustment or 0
+                    }
+                    segment_data['fittings'].append(fitting_data)
+                
+                path_data['segments'].append(segment_data)
+            
+            return path_data
+            
+        except Exception as e:
+            print(f"Error building path data: {e}")
+            return None
+    
+    def analyze_nc_compliance(self):
+        """Analyze NC compliance for spaces in the project"""
+        try:
+            from PySide6.QtWidgets import QInputDialog
+            
+            # Get available spaces for analysis
+            session = get_session()
+            spaces = session.query(Space).filter(Space.project_id == self.project_id).all()
+            
+            if not spaces:
+                QMessageBox.information(self, "NC Analysis", 
+                                       "No spaces found in this project.\n"
+                                       "Create spaces from rectangles first.")
+                session.close()
+                return
+            
+            # Let user select a space
+            space_names = [f"{space.name} (RT60: {space.calculated_rt60:.2f}s)" for space in spaces]
+            space_name, ok = QInputDialog.getItem(
+                self, "Select Space", "Choose space for NC analysis:", space_names, 0, False
+            )
+            
+            if not ok:
+                session.close()
+                return
+            
+            # Find selected space
+            selected_space = None
+            for space in spaces:
+                if space_name.startswith(space.name):
+                    selected_space = space
+                    break
+            
+            if not selected_space:
+                session.close()
+                return
+            
+            # Get space type for analysis
+            space_types = [
+                "Private Office", "Open Office", "Conference Room", "Classroom", 
+                "Library", "Hospital Room", "Restaurant", "Retail", 
+                "Gymnasium", "Lobby", "Corridor"
+            ]
+            
+            space_type, ok = QInputDialog.getItem(
+                self, "Space Type", "Select space type for standards comparison:", 
+                space_types, 0, False
+            )
+            
+            if not ok:
+                session.close()
+                return
+            
+            # Get target NC if desired
+            target_nc, ok = QInputDialog.getInt(
+                self, "Target NC", "Enter target NC rating (or 0 for standards-based):", 
+                0, 0, 65, 1
+            )
+            
+            target_nc = target_nc if target_nc > 0 else None
+            
+            # Find HVAC paths targeting this space
+            from models.hvac import HVACPath
+            hvac_paths = session.query(HVACPath).filter(
+                HVACPath.project_id == self.project_id,
+                HVACPath.target_space_id == selected_space.id
+            ).all()
+            
+            if not hvac_paths:
+                # Use a default noise level for analysis
+                noise_level = 35.0  # Default typical office noise
+                QMessageBox.information(self, "No HVAC Data", 
+                                       f"No HVAC paths found for this space.\n"
+                                       f"Using default noise level of {noise_level} dB(A) for analysis.")
+            else:
+                # Use average noise from HVAC paths
+                valid_paths = [p for p in hvac_paths if p.calculated_noise]
+                if valid_paths:
+                    noise_level = sum(p.calculated_noise for p in valid_paths) / len(valid_paths)
+                else:
+                    noise_level = 35.0
+            
+            session.close()
+            
+            # Perform NC compliance analysis
+            compliance_result = self.noise_calculator.analyze_space_nc_compliance(
+                noise_level, space_type.lower().replace(" ", "_"), target_nc
+            )
+            
+            # Display results
+            self.display_nc_compliance_results(compliance_result, selected_space.name)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to analyze NC compliance:\n{str(e)}")
+    
+    def display_nc_compliance_results(self, compliance_result: dict, space_name: str):
+        """Display NC compliance analysis results"""
+        if compliance_result.get('analysis_failed'):
+            error_msg = compliance_result.get('error', 'Unknown analysis error')
+            QMessageBox.warning(self, "Analysis Error", f"NC compliance analysis failed:\n{error_msg}")
+            return
+        
+        # Build results message
+        message = f"NC Compliance Analysis: {space_name}\n"
+        message += f"{'=' * 50}\n\n"
+        
+        # Basic results
+        message += f"Measured Noise Level: {compliance_result['measured_noise_dba']:.1f} dB(A)\n"
+        message += f"NC Rating: NC-{compliance_result['nc_rating']}\n"
+        message += f"Space Type: {compliance_result['space_type'].replace('_', ' ').title()}\n\n"
+        
+        # Standards comparison
+        standards = compliance_result['standards_comparison']
+        message += f"Standards Comparison:\n"
+        message += f"  Recommended NC: NC-{standards['recommended_nc']}\n"
+        message += f"  Maximum NC: NC-{standards['maximum_nc']}\n"
+        message += f"  Compliance: {standards['compliance']}\n"
+        message += f"  Status: {standards['status']}\n\n"
+        
+        # NC description
+        message += f"NC Criteria: {compliance_result['nc_description']}\n\n"
+        
+        # Exceedances
+        if compliance_result['exceedances']:
+            message += f"Frequency Exceedances:\n"
+            for freq, exceedance in compliance_result['exceedances']:
+                message += f"  {freq} Hz: +{exceedance:.1f} dB over limit\n"
+            message += "\n"
+        
+        # Recommendations
+        if compliance_result['recommendations']:
+            message += f"Recommendations:\n"
+            for i, rec in enumerate(compliance_result['recommendations'], 1):
+                message += f"  {i}. {rec}\n"
+            message += "\n"
+        
+        # Warnings
+        if compliance_result['warnings']:
+            message += f"Warnings:\n"
+            for warning in compliance_result['warnings']:
+                message += f"• {warning}\n"
+        
+        # Show results dialog
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("NC Compliance Analysis")
+        msg_box.setText(message)
+        msg_box.setIcon(QMessageBox.Information)
+        msg_box.setStandardButtons(QMessageBox.Ok)
+        
+        # Make the dialog wider to show all text
+        msg_box.setStyleSheet("QLabel { min-width: 600px; font-family: 'Courier New', monospace; }")
+        msg_box.exec()
+    
+    def export_to_excel(self):
+        """Export project analysis to Excel"""
+        try:
+            if not EXCEL_EXPORT_AVAILABLE:
+                QMessageBox.warning(self, "Export Not Available", 
+                                   "Excel export requires the openpyxl library.\n"
+                                   "Please install it using: pip install openpyxl")
+                return
+            
+            # Get export file path
+            from PySide6.QtWidgets import QFileDialog
+            
+            default_name = f"{self.project.name.replace(' ', '_')}_acoustic_analysis.xlsx"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Export to Excel", default_name, 
+                "Excel Files (*.xlsx);;All Files (*)"
+            )
+            
+            if not file_path:
+                return
+            
+            # Create export options dialog
+            export_options = self.get_export_options()
+            if not export_options:
+                return
+            
+            # Create exporter and get summary
+            exporter = ExcelExporter()
+            summary = exporter.get_export_summary(self.project_id)
+            
+            if "error" in summary:
+                QMessageBox.critical(self, "Export Error", f"Failed to prepare export:\n{summary['error']}")
+                return
+            
+            # Confirm export
+            confirm_msg = f"Export Summary for '{summary['project_name']}':\n\n"
+            confirm_msg += f"• {summary['total_spaces']} spaces ({summary['spaces_with_rt60']} with RT60)\n"
+            confirm_msg += f"• {summary['total_hvac_paths']} HVAC paths ({summary['paths_with_noise']} with noise calc)\n"
+            confirm_msg += f"• {summary['total_components']} HVAC components\n\n"
+            confirm_msg += f"Sheets to export: {', '.join(summary['sheets_to_export'])}\n\n"
+            confirm_msg += f"Export to: {file_path}"
+            
+            reply = QMessageBox.question(self, "Confirm Export", confirm_msg,
+                                       QMessageBox.Yes | QMessageBox.No,
+                                       QMessageBox.Yes)
+            
+            if reply != QMessageBox.Yes:
+                return
+            
+            # Perform export
+            success = exporter.export_project_analysis(self.project_id, file_path, export_options)
+            
+            if success:
+                reply = QMessageBox.information(self, "Export Complete", 
+                                              f"Successfully exported project analysis to:\n{file_path}\n\n"
+                                              f"Would you like to open the file?",
+                                              QMessageBox.Yes | QMessageBox.No,
+                                              QMessageBox.No)
+                
+                if reply == QMessageBox.Yes:
+                    import os
+                    import subprocess
+                    import platform
+                    
+                    try:
+                        if platform.system() == 'Darwin':  # macOS
+                            subprocess.call(['open', file_path])
+                        elif platform.system() == 'Windows':  # Windows
+                            os.startfile(file_path)
+                        else:  # Linux
+                            subprocess.call(['xdg-open', file_path])
+                    except Exception as e:
+                        QMessageBox.information(self, "File Exported", 
+                                              f"Export completed but couldn't open file automatically:\n{file_path}")
+            else:
+                QMessageBox.critical(self, "Export Failed", "Failed to export project analysis to Excel.")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export to Excel:\n{str(e)}")
+    
+    def get_export_options(self) -> Optional[ExportOptions]:
+        """Get export options from user"""
+        try:
+            from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QCheckBox, QPushButton, QLabel
+            
+            class ExportOptionsDialog(QDialog):
+                def __init__(self, parent=None):
+                    super().__init__(parent)
+                    self.setWindowTitle("Excel Export Options")
+                    self.setModal(True)
+                    self.setFixedSize(400, 350)
+                    
+                    layout = QVBoxLayout()
+                    
+                    # Instructions
+                    instructions = QLabel("Select what to include in the Excel export:")
+                    instructions.setWordWrap(True)
+                    layout.addWidget(instructions)
+                    
+                    # Checkboxes
+                    self.spaces_cb = QCheckBox("Spaces Analysis (RT60, materials)")
+                    self.spaces_cb.setChecked(True)
+                    layout.addWidget(self.spaces_cb)
+                    
+                    self.hvac_paths_cb = QCheckBox("HVAC Paths (noise calculations)")
+                    self.hvac_paths_cb.setChecked(True)
+                    layout.addWidget(self.hvac_paths_cb)
+                    
+                    self.components_cb = QCheckBox("HVAC Components (equipment list)")
+                    self.components_cb.setChecked(True)
+                    layout.addWidget(self.components_cb)
+                    
+                    self.rt60_details_cb = QCheckBox("RT60 Compliance Details")
+                    self.rt60_details_cb.setChecked(True)
+                    layout.addWidget(self.rt60_details_cb)
+                    
+                    self.nc_analysis_cb = QCheckBox("NC Analysis and Standards")
+                    self.nc_analysis_cb.setChecked(True)
+                    layout.addWidget(self.nc_analysis_cb)
+                    
+                    self.recommendations_cb = QCheckBox("Recommendations and Issues")
+                    self.recommendations_cb.setChecked(True)
+                    layout.addWidget(self.recommendations_cb)
+                    
+                    self.charts_cb = QCheckBox("Charts and Graphs (future)")
+                    self.charts_cb.setChecked(False)
+                    self.charts_cb.setEnabled(False)  # Not implemented yet
+                    layout.addWidget(self.charts_cb)
+                    
+                    # Buttons
+                    button_layout = QHBoxLayout()
+                    
+                    select_all_btn = QPushButton("Select All")
+                    select_all_btn.clicked.connect(self.select_all)
+                    
+                    select_none_btn = QPushButton("Select None")
+                    select_none_btn.clicked.connect(self.select_none)
+                    
+                    ok_btn = QPushButton("Export")
+                    ok_btn.clicked.connect(self.accept)
+                    ok_btn.setDefault(True)
+                    
+                    cancel_btn = QPushButton("Cancel")
+                    cancel_btn.clicked.connect(self.reject)
+                    
+                    button_layout.addWidget(select_all_btn)
+                    button_layout.addWidget(select_none_btn)
+                    button_layout.addStretch()
+                    button_layout.addWidget(ok_btn)
+                    button_layout.addWidget(cancel_btn)
+                    
+                    layout.addLayout(button_layout)
+                    self.setLayout(layout)
+                
+                def select_all(self):
+                    for cb in [self.spaces_cb, self.hvac_paths_cb, self.components_cb, 
+                              self.rt60_details_cb, self.nc_analysis_cb, self.recommendations_cb]:
+                        cb.setChecked(True)
+                
+                def select_none(self):
+                    for cb in [self.spaces_cb, self.hvac_paths_cb, self.components_cb, 
+                              self.rt60_details_cb, self.nc_analysis_cb, self.recommendations_cb]:
+                        cb.setChecked(False)
+                
+                def get_options(self):
+                    return ExportOptions(
+                        include_spaces=self.spaces_cb.isChecked(),
+                        include_hvac_paths=self.hvac_paths_cb.isChecked(),
+                        include_components=self.components_cb.isChecked(),
+                        include_rt60_details=self.rt60_details_cb.isChecked(),
+                        include_nc_analysis=self.nc_analysis_cb.isChecked(),
+                        include_recommendations=self.recommendations_cb.isChecked(),
+                        include_charts=self.charts_cb.isChecked()
+                    )
+            
+            dialog = ExportOptionsDialog(self)
+            if dialog.exec() == QDialog.Accepted:
+                return dialog.get_options()
+            else:
+                return None
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Options Error", f"Error getting export options:\n{str(e)}")
+            return ExportOptions()  # Default options
+
     def closeEvent(self, event):
         """Handle window close event"""
         self.save_drawing_to_db()

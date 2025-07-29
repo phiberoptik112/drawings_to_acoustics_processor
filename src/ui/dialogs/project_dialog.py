@@ -3,10 +3,10 @@ Project Dialog - Create new project dialog
 """
 
 import os
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
+from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QTextEdit, QPushButton, QComboBox,
                              QFileDialog, QFormLayout, QMessageBox)
-from PyQt5.QtCore import Qt
+from PySide6.QtCore import Qt
 
 
 class ProjectDialog(QDialog):

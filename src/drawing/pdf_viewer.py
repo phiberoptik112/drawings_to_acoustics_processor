@@ -3,11 +3,11 @@ PDF Viewer component using PyMuPDF for displaying architectural drawings
 """
 
 import fitz  # PyMuPDF
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QScrollArea, QPushButton, QSlider, QComboBox,
                              QMessageBox, QSizePolicy)
-from PyQt5.QtCore import Qt, pyqtSignal, QRect
-from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor
+from PySide6.QtCore import Qt, Signal, QRect
+from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor
 import os
 
 
@@ -15,8 +15,8 @@ class PDFViewer(QWidget):
     """PDF viewer widget with zoom and page navigation"""
     
     # Signals
-    coordinates_clicked = pyqtSignal(float, float)  # PDF coordinates clicked
-    scale_changed = pyqtSignal(float)  # Zoom scale changed
+    coordinates_clicked = Signal(float, float)  # PDF coordinates clicked
+    scale_changed = Signal(float)  # Zoom scale changed
     
     def __init__(self, parent=None):
         super().__init__(parent)

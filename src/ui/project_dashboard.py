@@ -3,21 +3,23 @@ Project Dashboard - Main project management interface
 """
 
 import os
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QPushButton, QListWidget, QListWidgetItem,
                              QTabWidget, QMenuBar, QStatusBar, QMessageBox,
                              QFileDialog, QSplitter, QTextEdit, QGroupBox)
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QIcon
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont, QIcon
 
 from models import get_session, Project, Drawing, Space, HVACPath
 from ui.drawing_interface import DrawingInterface
+from ui.results_widget import ResultsWidget
+from data import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 
 
 class ProjectDashboard(QMainWindow):
     """Main project dashboard window"""
     
-    finished = pyqtSignal()
+    finished = Signal()
     
     def __init__(self, project_id):
         super().__init__()
@@ -159,6 +161,11 @@ class ProjectDashboard(QMainWindow):
         # HVAC Paths tab
         hvac_tab = self.create_hvac_tab()
         tabs.addTab(hvac_tab, "HVAC Paths")
+        
+        # Results tab
+        self.results_widget = ResultsWidget(self.project_id)
+        self.results_widget.export_requested.connect(self.export_to_excel)
+        tabs.addTab(self.results_widget, "📊 Results & Analysis")
         
         left_layout.addWidget(tabs)
         left_widget.setLayout(left_layout)
@@ -306,6 +313,10 @@ class ProjectDashboard(QMainWindow):
         self.refresh_component_library()
         self.update_analysis_status()
         self.update_status_bar()
+        
+        # Refresh results widget
+        if hasattr(self, 'results_widget'):
+            self.results_widget.refresh_data()
         
     def refresh_drawings(self):
         """Refresh the drawings list"""
@@ -523,8 +534,181 @@ class ProjectDashboard(QMainWindow):
         QMessageBox.information(self, "Project Summary", "Project summary will be implemented.")
         
     def export_to_excel(self):
-        """Export project data to Excel"""
-        QMessageBox.information(self, "Export to Excel", "Excel export will be implemented.")
+        """Export project analysis to Excel"""
+        try:
+            if not EXCEL_EXPORT_AVAILABLE:
+                QMessageBox.warning(self, "Export Not Available", 
+                                   "Excel export requires the openpyxl library.\n"
+                                   "Please install it using: pip install openpyxl")
+                return
+            
+            # Get export file path
+            default_name = f"{self.project.name.replace(' ', '_')}_acoustic_analysis.xlsx"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Export to Excel", default_name, 
+                "Excel Files (*.xlsx);;All Files (*)"
+            )
+            
+            if not file_path:
+                return
+            
+            # Create export options dialog
+            export_options = self.get_export_options()
+            if not export_options:
+                return
+            
+            # Create exporter and get summary
+            exporter = ExcelExporter()
+            summary = exporter.get_export_summary(self.project_id)
+            
+            if "error" in summary:
+                QMessageBox.critical(self, "Export Error", f"Failed to prepare export:\n{summary['error']}")
+                return
+            
+            # Show export summary and confirm
+            confirm_msg = f"Export Summary for '{summary['project_name']}':\n\n"
+            confirm_msg += f"• {summary['total_spaces']} spaces ({summary['spaces_with_rt60']} with RT60)\n"
+            confirm_msg += f"• {summary['total_hvac_paths']} HVAC paths ({summary['paths_with_noise']} with noise calc)\n"
+            confirm_msg += f"• {summary['total_components']} HVAC components\n\n"
+            confirm_msg += f"Sheets to export: {', '.join(summary['sheets_to_export'])}\n\n"
+            confirm_msg += f"Export to: {file_path}"
+            
+            reply = QMessageBox.question(self, "Confirm Export", confirm_msg,
+                                       QMessageBox.Yes | QMessageBox.No,
+                                       QMessageBox.Yes)
+            
+            if reply != QMessageBox.Yes:
+                return
+            
+            # Perform export
+            success = exporter.export_project_analysis(self.project_id, file_path, export_options)
+            
+            if success:
+                reply = QMessageBox.information(self, "Export Complete", 
+                                              f"Successfully exported project analysis to:\n{file_path}\n\n"
+                                              f"Would you like to open the file?",
+                                              QMessageBox.Yes | QMessageBox.No,
+                                              QMessageBox.No)
+                
+                if reply == QMessageBox.Yes:
+                    import subprocess
+                    import platform
+                    
+                    try:
+                        if platform.system() == 'Darwin':  # macOS
+                            subprocess.call(['open', file_path])
+                        elif platform.system() == 'Windows':  # Windows
+                            os.startfile(file_path)
+                        else:  # Linux
+                            subprocess.call(['xdg-open', file_path])
+                    except Exception as e:
+                        QMessageBox.information(self, "File Exported", 
+                                              f"Export completed but couldn't open file automatically:\n{file_path}")
+            else:
+                QMessageBox.critical(self, "Export Failed", "Failed to export project analysis to Excel.")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export to Excel:\n{str(e)}")
+    
+    def get_export_options(self):
+        """Get export options from user"""
+        try:
+            from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QCheckBox, QPushButton, QLabel
+            
+            class ExportOptionsDialog(QDialog):
+                def __init__(self, parent=None):
+                    super().__init__(parent)
+                    self.setWindowTitle("Excel Export Options")
+                    self.setModal(True)
+                    self.setFixedSize(400, 350)
+                    
+                    layout = QVBoxLayout()
+                    
+                    # Instructions
+                    instructions = QLabel("Select what to include in the Excel export:")
+                    instructions.setWordWrap(True)
+                    layout.addWidget(instructions)
+                    
+                    # Checkboxes for export options
+                    self.spaces_cb = QCheckBox("Spaces Analysis (RT60, materials)")
+                    self.spaces_cb.setChecked(True)
+                    layout.addWidget(self.spaces_cb)
+                    
+                    self.hvac_paths_cb = QCheckBox("HVAC Paths (noise calculations)")
+                    self.hvac_paths_cb.setChecked(True)
+                    layout.addWidget(self.hvac_paths_cb)
+                    
+                    self.components_cb = QCheckBox("HVAC Components (equipment list)")
+                    self.components_cb.setChecked(True)
+                    layout.addWidget(self.components_cb)
+                    
+                    self.rt60_details_cb = QCheckBox("RT60 Compliance Details")
+                    self.rt60_details_cb.setChecked(True)
+                    layout.addWidget(self.rt60_details_cb)
+                    
+                    self.nc_analysis_cb = QCheckBox("NC Analysis and Standards")
+                    self.nc_analysis_cb.setChecked(True)
+                    layout.addWidget(self.nc_analysis_cb)
+                    
+                    self.recommendations_cb = QCheckBox("Recommendations and Issues")
+                    self.recommendations_cb.setChecked(True)
+                    layout.addWidget(self.recommendations_cb)
+                    
+                    # Buttons
+                    button_layout = QHBoxLayout()
+                    
+                    select_all_btn = QPushButton("Select All")
+                    select_all_btn.clicked.connect(self.select_all)
+                    
+                    select_none_btn = QPushButton("Select None")
+                    select_none_btn.clicked.connect(self.select_none)
+                    
+                    ok_btn = QPushButton("Export")
+                    ok_btn.clicked.connect(self.accept)
+                    ok_btn.setDefault(True)
+                    
+                    cancel_btn = QPushButton("Cancel")
+                    cancel_btn.clicked.connect(self.reject)
+                    
+                    button_layout.addWidget(select_all_btn)
+                    button_layout.addWidget(select_none_btn)
+                    button_layout.addStretch()
+                    button_layout.addWidget(ok_btn)
+                    button_layout.addWidget(cancel_btn)
+                    
+                    layout.addLayout(button_layout)
+                    self.setLayout(layout)
+                
+                def select_all(self):
+                    for cb in [self.spaces_cb, self.hvac_paths_cb, self.components_cb, 
+                              self.rt60_details_cb, self.nc_analysis_cb, self.recommendations_cb]:
+                        cb.setChecked(True)
+                
+                def select_none(self):
+                    for cb in [self.spaces_cb, self.hvac_paths_cb, self.components_cb, 
+                              self.rt60_details_cb, self.nc_analysis_cb, self.recommendations_cb]:
+                        cb.setChecked(False)
+                
+                def get_options(self):
+                    return ExportOptions(
+                        include_spaces=self.spaces_cb.isChecked(),
+                        include_hvac_paths=self.hvac_paths_cb.isChecked(),
+                        include_components=self.components_cb.isChecked(),
+                        include_rt60_details=self.rt60_details_cb.isChecked(),
+                        include_nc_analysis=self.nc_analysis_cb.isChecked(),
+                        include_recommendations=self.recommendations_cb.isChecked(),
+                        include_charts=False  # Not implemented yet
+                    )
+            
+            dialog = ExportOptionsDialog(self)
+            if dialog.exec() == QDialog.Accepted:
+                return dialog.get_options()
+            else:
+                return None
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Options Error", f"Error getting export options:\n{str(e)}")
+            return ExportOptions()  # Default options
         
     def show_about(self):
         """Show about dialog"""
