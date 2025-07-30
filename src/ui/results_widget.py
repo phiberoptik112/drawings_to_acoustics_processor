@@ -370,12 +370,14 @@ class ResultsWidget(QWidget):
         stats_text += f"• Total HVAC Components: {len(hvac_components)}\n\n"
         
         # Performance summary
-        if spaces and rt60_values := [s.calculated_rt60 for s in spaces if s.calculated_rt60]:
+        rt60_values = [s.calculated_rt60 for s in spaces if s.calculated_rt60]
+        if spaces and rt60_values:
             stats_text += f"RT60 Performance:\n"
             stats_text += f"• Average: {sum(rt60_values)/len(rt60_values):.2f} seconds\n"
             stats_text += f"• Range: {min(rt60_values):.2f} - {max(rt60_values):.2f} seconds\n\n"
         
-        if hvac_paths and nc_values := [p.calculated_nc for p in hvac_paths if p.calculated_nc]:
+        nc_values = [p.calculated_nc for p in hvac_paths if p.calculated_nc]
+        if hvac_paths and nc_values:
             stats_text += f"HVAC Noise Performance:\n"
             stats_text += f"• Average NC: {sum(nc_values)/len(nc_values):.0f}\n"
             stats_text += f"• NC Range: {min(nc_values)} - {max(nc_values)}\n"

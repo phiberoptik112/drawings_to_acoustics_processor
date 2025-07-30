@@ -39,7 +39,7 @@ def initialize_database(db_path=None):
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     
     # Import all models to ensure they're registered
-    from . import project, drawing, space, hvac
+    from . import project, drawing, space, hvac, rt60_models
     
     # Create all tables
     Base.metadata.create_all(bind=engine)

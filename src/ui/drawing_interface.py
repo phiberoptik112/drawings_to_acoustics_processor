@@ -3,6 +3,7 @@ Drawing Interface - PDF viewer with drawing overlay tools
 """
 
 import os
+from typing import Optional
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QToolBar, QButtonGroup, QPushButton, 
                              QLabel, QComboBox, QLineEdit, QGroupBox, 

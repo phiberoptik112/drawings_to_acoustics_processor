@@ -43,6 +43,10 @@ class Space(Base):
     room_boundaries = relationship("RoomBoundary", back_populates="space", cascade="all, delete-orphan")
     hvac_paths = relationship("HVACPath", back_populates="target_space")
     
+    # Enhanced RT60 relationships
+    surface_instances = relationship("RoomSurfaceInstance", back_populates="space", cascade="all, delete-orphan")
+    rt60_results = relationship("RT60CalculationResult", back_populates="space", cascade="all, delete-orphan")
+    
     def __repr__(self):
         return f"<Space(id={self.id}, name='{self.name}', project_id={self.project_id})>"
     
@@ -56,6 +60,39 @@ class Space(Base):
         if perimeter and self.ceiling_height:
             self.wall_area = perimeter * self.ceiling_height
     
+    def get_latest_rt60_result(self):
+        """Get the most recent RT60 calculation result"""
+        if self.rt60_results:
+            return max(self.rt60_results, key=lambda r: r.calculation_date)
+        return None
+    
+    def get_total_surface_area(self):
+        """Calculate total surface area from all surface instances"""
+        return sum(instance.effective_area for instance in self.surface_instances)
+    
+    def get_surfaces_by_category(self, category_name):
+        """Get surface instances filtered by category"""
+        return [instance for instance in self.surface_instances 
+                if instance.surface_type and instance.surface_type.category 
+                and instance.surface_type.category.name == category_name]
+    
+    def calculate_perimeter(self):
+        """Calculate perimeter from room boundaries (assumes rectangular room)"""
+        if not self.room_boundaries:
+            return 0.0
+        
+        # Use the first boundary to estimate perimeter
+        boundary = self.room_boundaries[0]
+        # Convert pixel dimensions to real dimensions using boundary's calculated area
+        if boundary.calculated_area and boundary.width and boundary.height:
+            # Assuming rectangular: area = width * height, perimeter = 2 * (width + height)
+            aspect_ratio = boundary.width / boundary.height
+            width_real = (boundary.calculated_area * aspect_ratio) ** 0.5
+            height_real = boundary.calculated_area / width_real
+            return 2 * (width_real + height_real)
+        
+        return 0.0
+
     def to_dict(self):
         """Convert space to dictionary"""
         return {
@@ -72,7 +109,10 @@ class Space(Base):
             'ceiling_material': self.ceiling_material,
             'wall_material': self.wall_material,
             'floor_material': self.floor_material,
-            'calculated_nc': self.calculated_nc
+            'calculated_nc': self.calculated_nc,
+            'total_surface_area': self.get_total_surface_area(),
+            'perimeter': self.calculate_perimeter(),
+            'latest_rt60_result': self.get_latest_rt60_result().to_dict() if self.get_latest_rt60_result() else None
         }
 
 
