@@ -67,6 +67,8 @@ projects/
 temp/
 *.pdf
 drawings/
+sample_data/
+materials/
 
 # Test outputs
 test_output/
