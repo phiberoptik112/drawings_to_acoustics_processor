@@ -205,48 +205,48 @@ def get_all_materials() -> Dict[str, Dict]:
 # Initialize materials on module import
 STANDARD_MATERIALS = get_all_materials()
 
-# Room type defaults for quick setup
+# Room type defaults for quick setup - materials should be None to remain unassigned
 ROOM_TYPE_DEFAULTS = {
     'office': {
         'name': 'Office',
         'target_rt60': 0.6,
-        'ceiling_material': 'act_standard',
-        'wall_material': 'drywall_painted',
-        'floor_material': 'carpet_medium'
+        'ceiling_material': None,
+        'wall_material': None,
+        'floor_material': None
     },
     'conference': {
         'name': 'Conference Room',
         'target_rt60': 0.8,
-        'ceiling_material': 'act_high_performance',
-        'wall_material': 'drywall_fabric',
-        'floor_material': 'carpet_heavy'
+        'ceiling_material': None,
+        'wall_material': None,
+        'floor_material': None
     },
     'classroom': {
         'name': 'Classroom',
         'target_rt60': 0.6,
-        'ceiling_material': 'act_standard',
-        'wall_material': 'drywall_painted',
-        'floor_material': 'carpet_tile'
+        'ceiling_material': None,
+        'wall_material': None,
+        'floor_material': None
     },
     'auditorium': {
         'name': 'Auditorium',
         'target_rt60': 1.5,
-        'ceiling_material': 'gypsum_ceiling',
-        'wall_material': 'acoustic_panels',
-        'floor_material': 'carpet_heavy'
+        'ceiling_material': None,
+        'wall_material': None,
+        'floor_material': None
     },
     'lobby': {
         'name': 'Lobby',
         'target_rt60': 1.2,
-        'ceiling_material': 'act_standard',
-        'wall_material': 'drywall_painted',
-        'floor_material': 'ceramic_tile'
+        'ceiling_material': None,
+        'wall_material': None,
+        'floor_material': None
     },
     'corridor': {
         'name': 'Corridor',
         'target_rt60': 1.0,
-        'ceiling_material': 'act_standard',
-        'wall_material': 'drywall_painted',
-        'floor_material': 'vinyl_tile'
+        'ceiling_material': None,
+        'wall_material': None,
+        'floor_material': None
     }
 }

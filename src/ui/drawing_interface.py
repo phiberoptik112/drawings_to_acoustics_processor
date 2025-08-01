@@ -322,6 +322,7 @@ class DrawingInterface(QMainWindow):
             self.pdf_viewer.coordinates_clicked.connect(self.pdf_coordinates_clicked)
             self.pdf_viewer.screen_coordinates_clicked.connect(self.screen_coordinates_clicked)
             self.pdf_viewer.scale_changed.connect(self.pdf_zoom_changed)
+            self.pdf_viewer.page_changed.connect(self.page_changed)
             
         if self.drawing_overlay:
             self.drawing_overlay.element_created.connect(self.element_created)
@@ -412,6 +413,20 @@ class DrawingInterface(QMainWindow):
             self.scale_manager.scale_ratio = self._base_scale_ratio * zoom_factor
             # Emit the scale change to update the UI
             self.scale_manager.scale_changed.emit(self.scale_manager.scale_ratio, self.scale_manager.scale_string)
+        
+    def page_changed(self, page_number):
+        """Handle PDF page change"""
+        # Clear all drawing elements when changing pages
+        if self.drawing_overlay:
+            self.drawing_overlay.clear_all_elements()
+            self.elements_list.clear()
+            self.update_elements_display()
+            
+        # Update overlay size for new page
+        self.update_overlay_size()
+        
+        # Update status bar
+        self.status_bar.showMessage(f"Page {page_number + 1} - Drawing elements cleared", 3000)
         
     def element_created(self, element_data):
         """Handle new drawing element creation"""

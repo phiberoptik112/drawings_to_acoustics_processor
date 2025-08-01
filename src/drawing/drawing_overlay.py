@@ -283,6 +283,9 @@ class DrawingOverlay(QWidget):
             
     def clear_all_elements(self):
         """Clear all drawn elements"""
+        # Cancel any active tool first
+        self.tool_manager.cancel_tool()
+        
         self.rectangles.clear()
         self.components.clear()
         self.segments.clear()

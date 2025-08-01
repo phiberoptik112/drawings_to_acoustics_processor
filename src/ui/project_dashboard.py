@@ -6,7 +6,7 @@ import os
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QPushButton, QListWidget, QListWidgetItem,
                              QTabWidget, QMenuBar, QStatusBar, QMessageBox,
-                             QFileDialog, QSplitter, QTextEdit, QGroupBox)
+                             QFileDialog, QSplitter, QTextEdit, QGroupBox, QDialog)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QIcon
 
@@ -500,7 +500,37 @@ class ProjectDashboard(QMainWindow):
         
     def edit_space(self):
         """Edit space properties"""
-        QMessageBox.information(self, "Edit Space", "Space editing will be implemented.")
+        current_item = self.spaces_list.currentItem()
+        if not current_item:
+            QMessageBox.warning(self, "No Selection", "Please select a space to edit.")
+            return
+            
+        space_id = current_item.data(Qt.UserRole)
+        
+        try:
+            session = get_session()
+            space = session.query(Space).filter(Space.id == space_id).first()
+            
+            if not space:
+                QMessageBox.critical(self, "Error", "Selected space not found.")
+                session.close()
+                return
+            
+            # Import the dialog here to avoid circular imports
+            from ui.dialogs.space_edit_dialog import SpaceEditDialog
+            
+            dialog = SpaceEditDialog(self, space)
+            if dialog.exec() == QDialog.Accepted:
+                # Dialog already commits changes - no need to reload from database
+                # Just refresh the UI to show updated data
+                self.refresh_spaces()
+                self.refresh_all_data()
+            
+            # Close session after dialog is done
+            session.close()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to edit space:\n{str(e)}")
         
     def duplicate_space(self):
         """Duplicate the selected space"""

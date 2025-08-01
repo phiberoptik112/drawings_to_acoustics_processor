@@ -18,6 +18,7 @@ class PDFViewer(QWidget):
     coordinates_clicked = Signal(float, float)  # PDF coordinates clicked
     screen_coordinates_clicked = Signal(float, float)  # Screen pixel coordinates clicked
     scale_changed = Signal(float)  # Zoom scale changed
+    page_changed = Signal(int)  # Page number changed
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -130,6 +131,9 @@ class PDFViewer(QWidget):
             self.update_page_navigation()
             self.render_page()
             
+            # Emit page changed signal for initial page
+            self.page_changed.emit(self.current_page)
+            
             self.status_label.setText(f"Loaded: {os.path.basename(pdf_path)} ({len(self.pdf_document)} pages)")
             
             return True
@@ -192,6 +196,7 @@ class PDFViewer(QWidget):
             self.current_page -= 1
             self.update_page_navigation()
             self.render_page()
+            self.page_changed.emit(self.current_page)
             
     def next_page(self):
         """Go to next page"""
@@ -199,6 +204,7 @@ class PDFViewer(QWidget):
             self.current_page += 1
             self.update_page_navigation()
             self.render_page()
+            self.page_changed.emit(self.current_page)
             
     def zoom_in(self):
         """Zoom in by 25%"""
