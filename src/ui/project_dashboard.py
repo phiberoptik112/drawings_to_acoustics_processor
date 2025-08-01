@@ -188,10 +188,14 @@ class ProjectDashboard(QMainWindow):
         import_btn = QPushButton("Import Drawing")
         import_btn.clicked.connect(self.import_drawing)
         
+        open_btn = QPushButton("Open Drawing")
+        open_btn.clicked.connect(self.open_drawing)
+        
         remove_btn = QPushButton("Remove")
         remove_btn.clicked.connect(self.remove_drawing)
         
         button_layout.addWidget(import_btn)
+        button_layout.addWidget(open_btn)
         button_layout.addWidget(remove_btn)
         button_layout.addStretch()
         

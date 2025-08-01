@@ -208,8 +208,14 @@ class ScaleDialog(QDialog):
                 success = self.scale_manager.set_scale_from_reference(
                     pixel_distance, real_distance, units
                 )
+            elif self.standard_radio.isChecked():
+                # Use ScaleManager's set_scale_from_string for standard scales
+                scale_string = self.scale_combo.currentText()
+                success = self.scale_manager.set_scale_from_string(scale_string)
+                if success:
+                    self.scale_manager.units = self.get_units()
             else:
-                # Use calculated scale
+                # Use calculated scale for custom scales
                 self.scale_manager.scale_ratio = scale_ratio
                 self.scale_manager.scale_string = scale_string
                 self.scale_manager.units = self.get_units()
@@ -230,16 +236,50 @@ class ScaleDialog(QDialog):
             # Standard scale
             scale_string = self.scale_combo.currentText()
             try:
-                if ':' in scale_string:
+                # Handle architectural scales like "1/8"=1'0""
+                if '=' in scale_string and ('"' in scale_string or "'" in scale_string):
+                    # Parse architectural scale
+                    left_side, right_side = scale_string.split('=')
+                    
+                    # Parse drawing units (left side, typically inches)
+                    drawing_inches = self._parse_inches(left_side.strip())
+                    if drawing_inches is None:
+                        return None, None
+                    
+                    # Parse real world units (right side, typically feet and inches)
+                    real_inches = self._parse_inches(right_side.strip())
+                    if real_inches is None:
+                        return None, None
+                    
+                    # Convert to feet for consistency
+                    drawing_feet = drawing_inches / 12.0
+                    real_feet = real_inches / 12.0
+                    
+                    if drawing_feet > 0 and real_feet > 0:
+                        # Calculate scale factor (real units per drawing unit)
+                        scale_factor = real_feet / drawing_feet
+                        # For now, use a reasonable default pixels per unit
+                        # This will be calibrated with actual measurements later
+                        # For architectural scales, assume 1 inch on drawing = ~139 pixels on screen (calibrated)
+                        # Then scale_ratio = (139 pixels/inch) * (12 inches/foot) / scale_factor
+                        scale_ratio = (139.0 * 12.0) / scale_factor  # Calibrated for 25ft measurement
+                        return scale_ratio, scale_string
+                
+                # Handle ratio scales like "1:100"
+                elif ':' in scale_string:
                     drawing_unit, real_unit = scale_string.split(':')
                     drawing_unit = float(drawing_unit)
                     real_unit = float(real_unit)
                     
-                    # This is a simplified calculation
-                    # Real implementation would need actual pixel calibration
-                    scale_ratio = drawing_unit / real_unit
-                    
-                    return scale_ratio, scale_string
+                    if drawing_unit > 0 and real_unit > 0:
+                        # Calculate scale ratio (pixels per real-world unit)
+                        # For ratio scales, we need to determine pixels per unit
+                        # Using a reasonable default that can be calibrated later
+                        # For ratio scales like 1:100, assume 1 unit = ~100 pixels on screen
+                        # Then scale_ratio = 100 pixels per drawing unit
+                        scale_ratio = 100.0 / real_unit  # 100 pixels per unit as default
+                        return scale_ratio, scale_string
+                        
             except (ValueError, ZeroDivisionError):
                 pass
                 
@@ -292,3 +332,44 @@ class ScaleDialog(QDialog):
         elif self.reference_radio.isChecked():
             return "feet" if self.reference_actual_edit.suffix().strip() == "feet" else "meters"
         return "feet"
+        
+    def _parse_inches(self, dimension_str):
+        """Parse dimension string like '1/8"' or '1'6"' and return total inches"""
+        try:
+            dimension_str = dimension_str.strip()
+            total_inches = 0
+            
+            # Handle feet and inches like "1'6"" or "1'0""
+            if "'" in dimension_str:
+                parts = dimension_str.split("'")
+                feet = float(parts[0]) if parts[0] else 0
+                total_inches += feet * 12
+                
+                # Handle inches part after feet
+                if len(parts) > 1:
+                    inches_part = parts[1].replace('"', '').strip()
+                    if inches_part:
+                        total_inches += float(inches_part)
+            
+            # Handle just inches like "1/8"" or "6""
+            elif '"' in dimension_str:
+                inches_str = dimension_str.replace('"', '').strip()
+                if '/' in inches_str:
+                    # Handle fractions like "1/8"
+                    numerator, denominator = inches_str.split('/')
+                    total_inches = float(numerator) / float(denominator)
+                else:
+                    total_inches = float(inches_str)
+            
+            # Handle just numbers (assume inches)
+            else:
+                if '/' in dimension_str:
+                    numerator, denominator = dimension_str.split('/')
+                    total_inches = float(numerator) / float(denominator)
+                else:
+                    total_inches = float(dimension_str)
+                    
+            return total_inches
+            
+        except (ValueError, ZeroDivisionError):
+            return None

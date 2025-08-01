@@ -90,7 +90,7 @@ class RoomPropertiesDialog(QDialog):
         for key, room_type in ROOM_TYPE_DEFAULTS.items():
             self.room_type_combo.addItem(room_type['name'], key)
             
-        self.room_type_combo.currentDataChanged.connect(self.room_type_changed)
+        self.room_type_combo.currentIndexChanged.connect(self.room_type_index_changed)
         preset_layout.addWidget(self.room_type_combo)
         
         preset_group.setLayout(preset_layout)
@@ -324,6 +324,12 @@ class RoomPropertiesDialog(QDialog):
         self.update_material_info('wall')
         self.update_material_info('floor')
         
+    def room_type_index_changed(self, index):
+        """Handle room type combo box index change"""
+        if index >= 0:
+            room_type_key = self.room_type_combo.itemData(index)
+            self.room_type_changed(room_type_key)
+    
     def room_type_changed(self, room_type_key):
         """Handle room type preset change"""
         if not room_type_key or room_type_key not in ROOM_TYPE_DEFAULTS:

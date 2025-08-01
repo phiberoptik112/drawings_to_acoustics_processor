@@ -16,6 +16,7 @@ class PDFViewer(QWidget):
     
     # Signals
     coordinates_clicked = Signal(float, float)  # PDF coordinates clicked
+    screen_coordinates_clicked = Signal(float, float)  # Screen pixel coordinates clicked
     scale_changed = Signal(float)  # Zoom scale changed
     
     def __init__(self, parent=None):
@@ -284,16 +285,17 @@ class PDFViewer(QWidget):
     def mouse_press_event(self, event):
         """Handle mouse press on PDF"""
         if event.button() == Qt.LeftButton and self.pixmap:
-            # Get click position relative to PDF image
-            click_x = event.x()
-            click_y = event.y()
+            # Get click position relative to PDF image (screen pixel coordinates)
+            screen_x = event.x()
+            screen_y = event.y()
             
-            # Convert to PDF coordinates
-            pdf_x = click_x / self.zoom_factor
-            pdf_y = click_y / self.zoom_factor
+            # Convert to PDF coordinates (normalized to 100% zoom)
+            pdf_x = screen_x / self.zoom_factor
+            pdf_y = screen_y / self.zoom_factor
             
-            # Emit signal with PDF coordinates
-            self.coordinates_clicked.emit(pdf_x, pdf_y)
+            # Emit both coordinate systems
+            self.coordinates_clicked.emit(pdf_x, pdf_y)  # For PDF-based operations
+            self.screen_coordinates_clicked.emit(screen_x, screen_y)  # For scale calculations
             
     def get_page_dimensions(self):
         """Get current page dimensions in PDF units"""

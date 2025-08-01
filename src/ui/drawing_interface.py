@@ -7,7 +7,7 @@ from typing import Optional
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QToolBar, QButtonGroup, QPushButton, 
                              QLabel, QComboBox, QLineEdit, QGroupBox, 
-                             QListWidget, QMessageBox, QFileDialog, QSplitter,
+                             QListWidget, QListWidgetItem, QMessageBox, QFileDialog, QSplitter,
                              QFrame, QSpinBox)
 from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QIcon, QFont, QAction
@@ -44,6 +44,9 @@ class DrawingInterface(QMainWindow):
         
         # Selected element for context operations
         self.selected_rectangle = None
+        
+        # Initialize base scale ratio for zoom adjustments
+        self._base_scale_ratio = 1.0
         
         self.load_drawing_data()
         self.init_ui()
@@ -214,7 +217,7 @@ class DrawingInterface(QMainWindow):
         self.component_combo = QComboBox()
         for key, comp in STANDARD_COMPONENTS.items():
             self.component_combo.addItem(f"{comp['name']} ({key})", key)
-        self.component_combo.currentDataChanged.connect(self.component_type_changed)
+        self.component_combo.currentIndexChanged.connect(self.component_index_changed)
         comp_layout.addWidget(self.component_combo)
         
         self.component_group.setLayout(comp_layout)
@@ -316,6 +319,7 @@ class DrawingInterface(QMainWindow):
         """Setup signal connections"""
         if self.pdf_viewer:
             self.pdf_viewer.coordinates_clicked.connect(self.pdf_coordinates_clicked)
+            self.pdf_viewer.screen_coordinates_clicked.connect(self.screen_coordinates_clicked)
             self.pdf_viewer.scale_changed.connect(self.pdf_zoom_changed)
             
         if self.drawing_overlay:
@@ -354,6 +358,11 @@ class DrawingInterface(QMainWindow):
         """Load scale information from drawing record"""
         if self.drawing and self.drawing.scale_string:
             self.scale_manager.set_scale_from_string(self.drawing.scale_string)
+            # Store the base scale ratio (at 100% zoom)
+            self._base_scale_ratio = self.scale_manager.scale_ratio
+            # Apply current zoom factor
+            current_zoom = self.pdf_viewer.zoom_factor if self.pdf_viewer else 1.0
+            self.scale_manager.scale_ratio = self._base_scale_ratio * current_zoom
             
     def set_drawing_tool(self, tool_type):
         """Set the active drawing tool"""
@@ -364,6 +373,12 @@ class DrawingInterface(QMainWindow):
             # Show/hide component selection
             self.component_group.setVisible(tool_type == ToolType.COMPONENT)
             
+    def component_index_changed(self, index):
+        """Handle component combo box index change"""
+        if index >= 0:
+            component_key = self.component_combo.itemData(index)
+            self.component_type_changed(component_key)
+    
     def component_type_changed(self, component_key):
         """Handle component type change"""
         if self.drawing_overlay and component_key:
@@ -371,7 +386,13 @@ class DrawingInterface(QMainWindow):
             
     def pdf_coordinates_clicked(self, x, y):
         """Handle PDF coordinates clicked"""
-        # Update status bar with coordinates
+        # This receives PDF coordinates (normalized to 100% zoom)
+        # Use for display purposes only
+        pass
+        
+    def screen_coordinates_clicked(self, x, y):
+        """Handle screen pixel coordinates clicked"""
+        # Update status bar with coordinates using screen pixels for scale calculation
         real_x = self.scale_manager.pixels_to_real(x)
         real_y = self.scale_manager.pixels_to_real(y)
         
@@ -381,6 +402,15 @@ class DrawingInterface(QMainWindow):
     def pdf_zoom_changed(self, zoom_factor):
         """Handle PDF zoom change"""
         self.update_overlay_size()
+        
+        # Update scale manager to account for zoom factor
+        # The scale ratio needs to be adjusted because pixel distances on screen change with zoom
+        # but the real-world scale relationship remains constant
+        if hasattr(self, '_base_scale_ratio'):
+            # Adjust the scale ratio: more zoom = more pixels per real unit
+            self.scale_manager.scale_ratio = self._base_scale_ratio * zoom_factor
+            # Emit the scale change to update the UI
+            self.scale_manager.scale_changed.emit(self.scale_manager.scale_ratio, self.scale_manager.scale_string)
         
     def element_created(self, element_data):
         """Handle new drawing element creation"""
@@ -418,6 +448,11 @@ class DrawingInterface(QMainWindow):
     def scale_updated(self, scale_ratio, scale_string):
         """Handle scale update"""
         self.scale_label.setText(f"Scale: {scale_string}")
+        
+        # Store the base scale ratio (normalize to 100% zoom)
+        current_zoom = self.pdf_viewer.zoom_factor if self.pdf_viewer else 1.0
+        self._base_scale_ratio = scale_ratio / current_zoom
+        
         self.update_elements_display()
         
     def update_elements_display(self):
