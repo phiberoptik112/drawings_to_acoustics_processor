@@ -639,9 +639,42 @@ class DrawingInterface(QMainWindow):
         
     def calibrate_scale(self):
         """Start scale calibration with measurement tool"""
-        self.set_drawing_tool(ToolType.MEASURE)
-        QMessageBox.information(self, "Scale Calibration", 
-                               "Use the measurement tool to measure a known distance,\nthen right-click to set the scale.")
+        # Check if we have any measurements to calibrate from
+        if self.drawing_overlay and self.drawing_overlay.measurements:
+            # Get the most recent measurement
+            last_measurement = self.drawing_overlay.measurements[-1]
+            pixel_distance = last_measurement.get('length_pixels', 0)
+            
+            # Ask user for the real-world distance
+            from PySide6.QtWidgets import QInputDialog
+            real_distance, ok = QInputDialog.getDouble(
+                self, "Scale Calibration", 
+                f"The measured distance is {pixel_distance:.0f} pixels.\n"
+                f"Enter the real-world distance in feet:",
+                25.0, 0.1, 1000.0, 1)
+            
+            if ok and real_distance > 0:
+                # Calibrate the scale
+                success = self.scale_manager.calibrate_from_known_measurement(
+                    pixel_distance, real_distance, self.scale_manager.scale_string)
+                
+                if success:
+                    QMessageBox.information(self, "Calibration Complete", 
+                        f"Scale calibrated successfully!\n"
+                        f"{pixel_distance:.0f} pixels = {real_distance:.1f} feet\n"
+                        f"Scale ratio: {self.scale_manager.scale_ratio:.2f} pixels/foot")
+                    
+                    # Update the display
+                    self.update_elements_display()
+                    self.save_drawing_to_db()
+                else:
+                    QMessageBox.warning(self, "Error", "Failed to calibrate scale.")
+        else:
+            # No measurements yet - start measurement tool
+            self.set_drawing_tool(ToolType.MEASURE)
+            QMessageBox.information(self, "Scale Calibration", 
+                                   "First, use the measurement tool to measure a known distance.\n"
+                                   "Then click 'Calibrate' again to set the real-world scale.")
         
     def element_selected(self):
         """Handle element list selection change"""

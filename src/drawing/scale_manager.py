@@ -31,7 +31,11 @@ class ScaleManager(QObject):
         try:
             # Handle architectural scales like 1/8"=1'0"
             if '=' in scale_string and ('"' in scale_string or "'" in scale_string):
-                return self._parse_architectural_scale(scale_string)
+                success = self._parse_architectural_scale(scale_string)
+                if success and hasattr(self, '_calibrated_pixels_per_inch'):
+                    # Use calibrated pixel ratio if available
+                    self._apply_calibrated_scale()
+                return success
             
             # Handle ratio scales like 1:100
             elif ':' in scale_string:
@@ -41,13 +45,14 @@ class ScaleManager(QObject):
                 
                 if drawing_unit > 0 and real_unit > 0:
                     # This represents how many real-world units per drawing unit
-                    # We'll need to calibrate this with actual pixel measurements
                     self.scale_string = scale_string
-                    # Initial assumption - will be calibrated later
-                    # For ratio scales, use a reasonable default pixels per unit
-                    # For ratio scales like 1:100, assume 1 unit = ~100 pixels on screen
-                    # Then scale_ratio = 100 pixels per drawing unit
-                    self.scale_ratio = 100.0 / real_unit  # 100 pixels per unit as default
+                    # Use calibrated pixel ratio if available, otherwise default
+                    if hasattr(self, '_calibrated_pixels_per_inch'):
+                        # For ratio scales, assume typical document scales
+                        self.scale_ratio = self._calibrated_pixels_per_inch / real_unit
+                    else:
+                        # Default assumption - will be calibrated later
+                        self.scale_ratio = 100.0 / real_unit
                     self.scale_changed.emit(self.scale_ratio, self.scale_string)
                     return True
                     
@@ -87,11 +92,11 @@ class ScaleManager(QObject):
                 self.units = "feet"
                 # Store the scale factor for later pixel calibration
                 self._architectural_scale_factor = scale_factor
-                # Set a reasonable default scale ratio (pixels per real unit)
-                # This will be calibrated with actual pixel measurements later
-                # For architectural scales, assume 1 inch on drawing = ~139 pixels on screen (calibrated)
-                # Then scale_ratio = (139 pixels/inch) * (12 inches/foot) / scale_factor
-                self.scale_ratio = (139.0 * 12.0) / scale_factor  # Calibrated for 25ft measurement
+                # Set initial scale ratio - this should be calibrated with actual measurements
+                # Store the architectural scale factor for later calibration
+                # For now, use a reasonable default that will be overridden by calibration
+                self.scale_ratio = 10.0  # Default placeholder - will be calibrated
+                self._needs_calibration = True
                 self.scale_changed.emit(self.scale_ratio, self.scale_string)
                 return True
                 
@@ -173,6 +178,20 @@ class ScaleManager(QObject):
             self.scale_ratio = pixel_distance / real_distance
             self.units = "feet"  # Assuming feet for now
             
+            # Clear the calibration flag
+            self._needs_calibration = False
+            
+            # If we have an architectural scale factor, update the pixel-to-inch ratio
+            if hasattr(self, '_architectural_scale_factor') and self._architectural_scale_factor:
+                # Calculate pixels per inch on drawing from this calibration
+                # real_distance feet = real_distance * 12 inches in reality
+                # At architectural scale, this equals (real_distance * 12) / scale_factor inches on drawing
+                # So pixel_distance pixels = ((real_distance * 12) / scale_factor) inches on drawing
+                # Therefore: pixels per inch on drawing = pixel_distance / ((real_distance * 12) / scale_factor)
+                drawing_inches = (real_distance * 12) / self._architectural_scale_factor
+                self._calibrated_pixels_per_inch = pixel_distance / drawing_inches
+                print(f"Calibrated: {self._calibrated_pixels_per_inch:.2f} pixels per inch on drawing")
+            
             # If a scale string is provided, use it; otherwise generate one
             if scale_string:
                 self.scale_string = scale_string
@@ -187,6 +206,14 @@ class ScaleManager(QObject):
             return True
             
         return False
+        
+    def _apply_calibrated_scale(self):
+        """Apply calibrated pixel ratio to current architectural scale"""
+        if hasattr(self, '_architectural_scale_factor') and hasattr(self, '_calibrated_pixels_per_inch'):
+            # Recalculate scale ratio using calibrated pixel-to-inch ratio
+            # scale_ratio = (pixels per inch on drawing) * (12 inches per foot) / scale_factor
+            self.scale_ratio = (self._calibrated_pixels_per_inch * 12.0) / self._architectural_scale_factor
+            self._needs_calibration = False
         
     def pixels_to_real(self, pixels):
         """Convert pixels to real-world units"""
