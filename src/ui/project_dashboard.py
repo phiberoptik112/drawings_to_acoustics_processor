@@ -13,7 +13,7 @@ from PySide6.QtGui import QFont, QIcon
 from models import get_session, Project, Drawing, Space, HVACPath
 from ui.drawing_interface import DrawingInterface
 from ui.results_widget import ResultsWidget
-from data import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
+from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 
 
 class ProjectDashboard(QMainWindow):
@@ -380,7 +380,8 @@ class ProjectDashboard(QMainWindow):
             
     def refresh_component_library(self):
         """Refresh the component library display"""
-        from data import STANDARD_COMPONENTS, STANDARD_MATERIALS
+        from data.components import STANDARD_COMPONENTS
+        from data.materials import STANDARD_MATERIALS
         
         self.library_list.clear()
         

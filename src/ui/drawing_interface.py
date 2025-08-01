@@ -16,7 +16,8 @@ from models import get_session, Drawing, Project, Space, RoomBoundary, DrawingEl
 from drawing import PDFViewer, DrawingOverlay, ScaleManager, ToolType
 from ui.dialogs.scale_dialog import ScaleDialog
 from ui.dialogs.room_properties import RoomPropertiesDialog
-from data import STANDARD_COMPONENTS, ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
+from data.components import STANDARD_COMPONENTS
+from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 from calculations import RT60Calculator, NoiseCalculator, HVACPathCalculator
 
 
@@ -763,8 +764,10 @@ class DrawingInterface(QMainWindow):
             
             # Calculate RT60
             rt60_results = self.rt60_calculator.calculate_space_rt60(space_data)
+            calculated_rt60 = None
             if rt60_results and 'rt60' in rt60_results:
                 space.calculated_rt60 = rt60_results['rt60']
+                calculated_rt60 = rt60_results['rt60']
                 
             # Create room boundary record
             rectangle_data = space_data.get('rectangle_data', {})
@@ -785,9 +788,10 @@ class DrawingInterface(QMainWindow):
             session.close()
             
             # Update UI
+            rt60_display = f"{calculated_rt60:.2f} seconds" if calculated_rt60 else "Not calculated"
             QMessageBox.information(self, "Success", 
                                    f"Space '{space_data['name']}' created successfully!\n"
-                                   f"Calculated RT60: {space.calculated_rt60:.2f} seconds")
+                                   f"Calculated RT60: {rt60_display}")
             
             # Remove rectangle from elements and add space indicator
             self.update_elements_after_space_creation(space_data['name'])

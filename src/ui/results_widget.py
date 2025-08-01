@@ -12,7 +12,7 @@ from PySide6.QtGui import QFont, QPalette, QColor
 from models import get_session, Project, Space, Drawing
 from models.hvac import HVACPath, HVACComponent
 from calculations import HVACPathCalculator, NCRatingAnalyzer
-from data import ExcelExporter, EXCEL_EXPORT_AVAILABLE
+from data.excel_exporter import ExcelExporter, EXCEL_EXPORT_AVAILABLE
 
 
 class ResultsWidget(QWidget):
