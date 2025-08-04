@@ -46,6 +46,9 @@ class DrawingInterface(QMainWindow):
         # Selected element for context operations
         self.selected_rectangle = None
         
+        # Current page tracking
+        self.current_page_number = 1
+        
         # Initialize base scale ratio for zoom adjustments
         self._base_scale_ratio = 1.0
         
@@ -267,9 +270,10 @@ class DrawingInterface(QMainWindow):
         # Element actions
         element_actions_layout = QHBoxLayout()
         
-        self.create_room_btn = QPushButton("Create Room")
+        self.create_room_btn = QPushButton("🏠 New Space")
         self.create_room_btn.clicked.connect(self.create_room_from_selected)
         self.create_room_btn.setEnabled(False)
+        self.create_room_btn.setToolTip("Convert selected rectangle to a space with acoustic properties")
         
         self.delete_element_btn = QPushButton("Delete")
         self.delete_element_btn.clicked.connect(self.delete_selected_element)
@@ -415,8 +419,22 @@ class DrawingInterface(QMainWindow):
             self.scale_manager.scale_changed.emit(self.scale_manager.scale_ratio, self.scale_manager.scale_string)
         
     def page_changed(self, page_number):
-        """Handle PDF page change"""
-        # Clear all drawing elements when changing pages
+        """Handle PDF page change - save current page elements and load new page elements"""
+        # Save current page elements before changing
+        if self.drawing_overlay and hasattr(self, 'current_page_number'):
+            try:
+                overlay_data = self.drawing_overlay.get_elements_data()
+                if any(overlay_data.values()):  # If there are any elements to save
+                    self.element_manager.save_elements(
+                        self.drawing.id, self.project_id, overlay_data, self.current_page_number
+                    )
+            except Exception as e:
+                print(f"Warning: Could not save elements for page {self.current_page_number}: {e}")
+        
+        # Update current page number (page_number is 0-indexed, we store 1-indexed)
+        self.current_page_number = page_number + 1
+        
+        # Clear overlay elements for new page
         if self.drawing_overlay:
             self.drawing_overlay.clear_all_elements()
             self.elements_list.clear()
@@ -425,8 +443,11 @@ class DrawingInterface(QMainWindow):
         # Update overlay size for new page
         self.update_overlay_size()
         
+        # Load elements for the new page
+        self.load_saved_elements()
+        
         # Update status bar
-        self.status_bar.showMessage(f"Page {page_number + 1} - Drawing elements cleared", 3000)
+        self.status_bar.showMessage(f"Page {self.current_page_number} - Loaded page-specific elements", 3000)
         
     def element_created(self, element_data):
         """Handle new drawing element creation"""
@@ -544,7 +565,7 @@ class DrawingInterface(QMainWindow):
             if self.drawing_overlay:
                 overlay_data = self.drawing_overlay.get_elements_data()
                 elements_saved = self.element_manager.save_elements(
-                    self.drawing.id, self.project_id, overlay_data
+                    self.drawing.id, self.project_id, overlay_data, self.current_page_number
                 )
                 
                 if elements_saved > 0:
@@ -554,12 +575,12 @@ class DrawingInterface(QMainWindow):
             QMessageBox.warning(self, "Warning", f"Could not save drawing:\n{str(e)}")
             
     def load_saved_elements(self):
-        """Load saved drawing elements from database"""
+        """Load saved drawing elements from database for current page"""
         if not self.drawing or not self.drawing_overlay:
             return
             
         try:
-            overlay_data = self.element_manager.load_elements(self.drawing.id)
+            overlay_data = self.element_manager.load_elements(self.drawing.id, self.current_page_number)
             
             if any(overlay_data.values()):  # If there are any elements
                 self.drawing_overlay.load_elements_data(overlay_data)
@@ -569,9 +590,80 @@ class DrawingInterface(QMainWindow):
                 
                 elements_count = sum(len(elements) for elements in overlay_data.values())
                 self.status_bar.showMessage(f"Loaded {elements_count} saved elements", 2000)
+            
+            # Also load space rectangles from RoomBoundary records
+            self.load_space_rectangles()
                 
         except Exception as e:
             QMessageBox.warning(self, "Warning", f"Could not load saved elements:\n{str(e)}")
+            
+    def load_space_rectangles(self):
+        """Load space rectangles from RoomBoundary records in the database for current page"""
+        if not self.drawing:
+            return
+            
+        try:
+            session = get_session()
+            
+            # Get all room boundaries for this drawing and page
+            from models.space import RoomBoundary, Space
+            boundaries = session.query(RoomBoundary).filter(
+                RoomBoundary.drawing_id == self.drawing.id,
+                RoomBoundary.page_number == self.current_page_number
+            ).all()
+            
+            space_rectangles = []
+            for boundary in boundaries:
+                # Get the associated space name
+                space_name = boundary.space.name if boundary.space else f"Space {boundary.space_id}"
+                
+                # Create rectangle data compatible with drawing overlay
+                rect_data = {
+                    'type': 'rectangle',
+                    'bounds': {
+                        'x': int(boundary.x_position),
+                        'y': int(boundary.y_position), 
+                        'width': int(boundary.width),
+                        'height': int(boundary.height)
+                    },
+                    'x': int(boundary.x_position),
+                    'y': int(boundary.y_position),
+                    'width': int(boundary.width),
+                    'height': int(boundary.height),
+                    'area_real': boundary.calculated_area or 0,
+                    'area_formatted': f"{boundary.calculated_area:.0f} sf" if boundary.calculated_area else "0 sf",
+                    'space_id': boundary.space_id,
+                    'space_name': space_name,
+                    'boundary_id': boundary.id,
+                    'converted_to_space': True,  # Mark as already converted
+                    'width_real': self.scale_manager.pixels_to_real(boundary.width) if self.scale_manager else boundary.width / 50,
+                    'height_real': self.scale_manager.pixels_to_real(boundary.height) if self.scale_manager else boundary.height / 50
+                }
+                
+                space_rectangles.append(rect_data)
+                
+            session.close()
+            
+            if space_rectangles:
+                # Add space rectangles to the overlay
+                self.drawing_overlay.rectangles.extend(space_rectangles)
+                
+                # Add to elements list
+                for rect_data in space_rectangles:
+                    area_formatted = rect_data.get('area_formatted', '0 sf')
+                    space_name = rect_data.get('space_name', 'Unknown Space')
+                    item = QListWidgetItem(f"🏠 {space_name} - {area_formatted}")
+                    item.setData(Qt.UserRole, rect_data)
+                    self.elements_list.addItem(item)
+                
+                # Trigger repaint
+                self.drawing_overlay.update()
+                
+                self.status_bar.showMessage(f"Loaded {len(space_rectangles)} space rectangles", 2000)
+                
+        except Exception as e:
+            print(f"Error loading space rectangles: {e}")
+            # Don't show error to user as this is optional functionality
             
     def rebuild_elements_list(self, overlay_data):
         """Rebuild elements list from loaded data"""
@@ -759,9 +851,10 @@ class DrawingInterface(QMainWindow):
         try:
             session = get_session()
             
-            # Create space record
+            # Create space record with drawing association
             space = Space(
                 project_id=self.project_id,
+                drawing_id=self.drawing.id if self.drawing else None,  # Set drawing_id directly
                 name=space_data['name'],
                 description=space_data['description'],
                 floor_area=space_data['floor_area'],
@@ -777,6 +870,15 @@ class DrawingInterface(QMainWindow):
             session.add(space)
             session.flush()
             
+            # Set up multiple materials if available
+            from models.space import SurfaceType
+            if hasattr(space_data, 'ceiling_materials'):
+                space.set_surface_materials(SurfaceType.CEILING, space_data['ceiling_materials'], session)
+            if hasattr(space_data, 'wall_materials'):
+                space.set_surface_materials(SurfaceType.WALL, space_data['wall_materials'], session)
+            if hasattr(space_data, 'floor_materials'):
+                space.set_surface_materials(SurfaceType.FLOOR, space_data['floor_materials'], session)
+            
             # Calculate RT60
             rt60_results = self.rt60_calculator.calculate_space_rt60(space_data)
             calculated_rt60 = None
@@ -790,6 +892,7 @@ class DrawingInterface(QMainWindow):
                 boundary = RoomBoundary(
                     space_id=space.id,
                     drawing_id=self.drawing.id,
+                    page_number=self.current_page_number,
                     x_position=rectangle_data.get('x', 0),
                     y_position=rectangle_data.get('y', 0),
                     width=rectangle_data.get('width', 0),
@@ -802,21 +905,44 @@ class DrawingInterface(QMainWindow):
             session.commit()
             session.close()
             
-            # Update UI
+            # Update UI with enhanced feedback
             rt60_display = f"{calculated_rt60:.2f} seconds" if calculated_rt60 else "Not calculated"
-            QMessageBox.information(self, "Success", 
-                                   f"Space '{space_data['name']}' created successfully!\n"
-                                   f"Calculated RT60: {rt60_display}")
             
-            # Remove rectangle from elements and add space indicator
+            # Show detailed success message with next steps
+            next_steps = (
+                "\n💡 Next Steps:\n"
+                "• Edit space properties to set materials\n"
+                "• Add HVAC components and connect with ducts\n"
+                "• View results in the main project dashboard"
+            )
+            
+            QMessageBox.information(
+                self, 
+                "✅ Space Created Successfully!", 
+                f"Space '{space_data['name']}' has been created and linked to this drawing.\n\n"
+                f"📏 Dimensions:\n"
+                f"  • Area: {space_data['floor_area']:.1f} sf\n"
+                f"  • Volume: {space_data.get('volume', 0):.1f} cf\n"
+                f"  • Height: {space_data['ceiling_height']:.1f} ft\n\n"
+                f"🔊 Acoustics:\n"
+                f"  • Target RT60: {space_data['target_rt60']:.1f} seconds\n"
+                f"  • Calculated RT60: {rt60_display}\n\n"
+                f"📋 Drawing: {self.drawing.name if self.drawing else 'None'}"
+                f"{next_steps}"
+            )
+            
+            # Update status bar
+            self.status_bar.showMessage(f"Created space '{space_data['name']}' with {space_data['floor_area']:.0f} sf", 5000)
+            
+            # Update rectangle to show it's now a space
             self.update_elements_after_space_creation(space_data['name'])
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create space:\n{str(e)}")
             
     def update_elements_after_space_creation(self, space_name):
-        """Update elements list after space creation"""
-        # Find and update the rectangle item
+        """Update elements list and drawing overlay after space creation"""
+        # Find and update the rectangle item in the elements list
         for i in range(self.elements_list.count()):
             item = self.elements_list.item(i)
             element_data = item.data(Qt.UserRole)
@@ -824,15 +950,26 @@ class DrawingInterface(QMainWindow):
             if element_data and element_data.get('type') == 'rectangle':
                 # Check if this is the rectangle we just converted
                 if element_data == self.selected_rectangle:
-                    # Update item text to indicate it's now a space
+                    # Update item text to show it's now a space
                     area_text = element_data.get('area_formatted', '')
-                    item.setText(f"🏠 Space: {space_name} - {area_text}")
+                    item.setText(f"🏠 {space_name} - {area_text}")
                     
                     # Update element data to mark as converted
                     element_data['converted_to_space'] = True
                     element_data['space_name'] = space_name
                     item.setData(Qt.UserRole, element_data)
                     break
+        
+        # Update drawing overlay to show visual changes
+        if self.drawing_overlay and self.selected_rectangle:
+            for rect_data in self.drawing_overlay.rectangles:
+                if rect_data == self.selected_rectangle:
+                    rect_data['converted_to_space'] = True
+                    rect_data['space_name'] = space_name
+                    break
+            
+            # Trigger repaint to show the rectangle in green with space name
+            self.drawing_overlay.update()
                     
         # Clear selection
         self.elements_list.clearSelection()

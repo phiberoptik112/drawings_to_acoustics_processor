@@ -51,6 +51,7 @@ AcousticAnalysis/
 # Logs
 *.log
 logs/
+claude_convo_bak/
 
 # OS
 .DS_Store

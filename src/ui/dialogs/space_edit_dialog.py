@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
 from PySide6.QtCore import Qt, Signal
 
 from models import get_session
-from models.space import Space
+from models.space import Space, SurfaceType
 from data.materials import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS, get_materials_by_category
 
 
@@ -340,6 +340,11 @@ class SpaceEditDialog(QDialog):
         self.name_edit.setPlaceholderText("Enter room name")
         basic_layout.addRow("Room Name:", self.name_edit)
         
+        # Show associated drawing information
+        self.drawing_label = QLabel("No drawing assigned")
+        self.drawing_label.setStyleSheet("color: #666; font-style: italic;")
+        basic_layout.addRow("Associated Drawing:", self.drawing_label)
+        
         self.description_edit = QTextEdit()
         self.description_edit.setMaximumHeight(60)
         self.description_edit.setPlaceholderText("Optional description")
@@ -593,6 +598,17 @@ class SpaceEditDialog(QDialog):
         self.name_edit.setText(self.space.name or "")
         self.description_edit.setPlainText(self.space.description or "")
         
+        # Load drawing information
+        if self.space.drawing:
+            drawing_text = f"{self.space.drawing.name}"
+            if self.space.drawing.scale_string:
+                drawing_text += f" (Scale: {self.space.drawing.scale_string})"
+            self.drawing_label.setText(drawing_text)
+            self.drawing_label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+        else:
+            self.drawing_label.setText("No drawing assigned")
+            self.drawing_label.setStyleSheet("color: #e74c3c; font-style: italic;")
+        
         # Load geometry
         if self.space.floor_area:
             self.area_spin.setValue(self.space.floor_area)
@@ -611,23 +627,36 @@ class SpaceEditDialog(QDialog):
         if self.space.calculated_nc:
             self.calculated_nc_label.setText(f"NC {self.space.calculated_nc:.0f}")
             
-        # Load materials (convert single materials to lists for backward compatibility)
+        # Load materials using new multiple materials system with fallback to legacy
         print(f"DEBUG: Loading materials for space '{self.space.name}'")
-        print(f"DEBUG: Raw materials from database:")
-        print(f"  ceiling_material: '{self.space.ceiling_material}'")
-        print(f"  wall_material: '{self.space.wall_material}'")
-        print(f"  floor_material: '{self.space.floor_material}'")
         
-        # Use find_material_key_by_name to handle potential key mismatches
-        ceiling_key = self.find_material_key_by_name(self.space.ceiling_material)
-        wall_key = self.find_material_key_by_name(self.space.wall_material)
-        floor_key = self.find_material_key_by_name(self.space.floor_material)
+        # Try to load from new system first
+        ceiling_materials = self.space.get_ceiling_materials()
+        wall_materials = self.space.get_wall_materials()
+        floor_materials = self.space.get_floor_materials()
         
-        ceiling_materials = [ceiling_key] if ceiling_key else []
-        wall_materials = [wall_key] if wall_key else []
-        floor_materials = [floor_key] if floor_key else []
+        print(f"DEBUG: Materials from new system:")
+        print(f"  ceiling_materials: {ceiling_materials}")
+        print(f"  wall_materials: {wall_materials}")
+        print(f"  floor_materials: {floor_materials}")
         
-        print(f"DEBUG: Processed materials:")
+        # If no materials in new system, fall back to legacy single materials
+        if not ceiling_materials and self.space.ceiling_material:
+            ceiling_key = self.find_material_key_by_name(self.space.ceiling_material)
+            ceiling_materials = [ceiling_key] if ceiling_key else []
+            print(f"DEBUG: Fallback ceiling material: {ceiling_materials}")
+            
+        if not wall_materials and self.space.wall_material:
+            wall_key = self.find_material_key_by_name(self.space.wall_material)
+            wall_materials = [wall_key] if wall_key else []
+            print(f"DEBUG: Fallback wall material: {wall_materials}")
+            
+        if not floor_materials and self.space.floor_material:
+            floor_key = self.find_material_key_by_name(self.space.floor_material)
+            floor_materials = [floor_key] if floor_key else []
+            print(f"DEBUG: Fallback floor material: {floor_materials}")
+        
+        print(f"DEBUG: Final processed materials:")
         print(f"  ceiling_materials: {ceiling_materials}")
         print(f"  wall_materials: {wall_materials}")
         print(f"  floor_materials: {floor_materials}")
@@ -811,11 +840,11 @@ class SpaceEditDialog(QDialog):
         floor_key = floor_materials[0] if floor_materials else None
         
         print(f"DEBUG: save_changes - Materials to save:")
-        print(f"  ceiling_key: '{ceiling_key}'")
-        print(f"  wall_key: '{wall_key}'")
-        print(f"  floor_key: '{floor_key}'")
+        print(f"  ceiling_materials: {ceiling_materials}")
+        print(f"  wall_materials: {wall_materials}")
+        print(f"  floor_materials: {floor_materials}")
         
-        if not any([ceiling_key, wall_key, floor_key]):
+        if not any([ceiling_materials, wall_materials, floor_materials]):
             QMessageBox.warning(self, "Validation Error", "Please select at least one material for surfaces.")
             return
             
@@ -834,18 +863,21 @@ class SpaceEditDialog(QDialog):
             space.wall_area = self.wall_area_spin.value()
             space.target_rt60 = self.target_rt60_spin.value()
             
-            # Store materials (for now, store the first material of each type for backward compatibility)
-            space.ceiling_material = ceiling_key
-            space.wall_material = wall_key
-            space.floor_material = floor_key
+            # Store multiple materials using new system
+            space.set_surface_materials(SurfaceType.CEILING, ceiling_materials, session)
+            space.set_surface_materials(SurfaceType.WALL, wall_materials, session)
+            space.set_surface_materials(SurfaceType.FLOOR, floor_materials, session)
             
-            print(f"DEBUG: save_changes - Materials saved to space object:")
+            # Update legacy fields for backward compatibility (use first material)
+            space.ceiling_material = ceiling_materials[0] if ceiling_materials else None
+            space.wall_material = wall_materials[0] if wall_materials else None
+            space.floor_material = floor_materials[0] if floor_materials else None
+            
+            print(f"DEBUG: save_changes - Multiple materials saved to space object")
+            print(f"DEBUG: save_changes - Legacy compatibility fields updated:")
             print(f"  space.ceiling_material: '{space.ceiling_material}'")
             print(f"  space.wall_material: '{space.wall_material}'")
             print(f"  space.floor_material: '{space.floor_material}'")
-            
-            # TODO: In future versions, store multiple materials in separate tables
-            # For now, we could store additional materials as JSON in a new field
             
             # Recalculate volume
             space.calculate_volume()
@@ -861,17 +893,13 @@ class SpaceEditDialog(QDialog):
             
             print(f"DEBUG: save_changes - Changes flushed and committed successfully")
             print(f"DEBUG: save_changes - Space ID: {space.id}")
-            print(f"DEBUG: save_changes - Final space object state:")
-            print(f"  space.ceiling_material: '{space.ceiling_material}'")
-            print(f"  space.wall_material: '{space.wall_material}'")
-            print(f"  space.floor_material: '{space.floor_material}'")
             
             # Verify the changes were actually saved by doing a fresh query
             fresh_space = session.query(Space).filter(Space.id == space.id).first()
             print(f"DEBUG: save_changes - Fresh query verification:")
-            print(f"  fresh_space.ceiling_material: '{fresh_space.ceiling_material}'")
-            print(f"  fresh_space.wall_material: '{fresh_space.wall_material}'")
-            print(f"  fresh_space.floor_material: '{fresh_space.floor_material}'")
+            print(f"  fresh_space ceiling materials: {fresh_space.get_ceiling_materials()}")
+            print(f"  fresh_space wall materials: {fresh_space.get_wall_materials()}")
+            print(f"  fresh_space floor materials: {fresh_space.get_floor_materials()}")
             
             session.close()
             

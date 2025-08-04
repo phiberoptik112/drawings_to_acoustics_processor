@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QTabWidget, QMenuBar, QStatusBar, QMessageBox,
                              QFileDialog, QSplitter, QTextEdit, QGroupBox, QDialog)
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtGui import QFont, QIcon, QColor
 
 from models import get_session, Project, Drawing, Space, HVACPath
 from ui.drawing_interface import DrawingInterface
@@ -341,18 +341,71 @@ class ProjectDashboard(QMainWindow):
             QMessageBox.warning(self, "Warning", f"Could not load drawings:\n{str(e)}")
             
     def refresh_spaces(self):
-        """Refresh the spaces list"""
+        """Refresh the spaces list with enhanced status information"""
         try:
             session = get_session()
             spaces = session.query(Space).filter(Space.project_id == self.project_id).all()
             
             self.spaces_list.clear()
             for space in spaces:
-                # Show analysis status with emoji
-                status_icon = "✅" if space.calculated_rt60 else "❌"
-                item_text = f"🏢 {space.name} {status_icon}"
+                # RT60 analysis status
+                rt60_icon = "✅" if space.calculated_rt60 else "❌"
+                
+                # Get mechanical noise status
+                try:
+                    noise_status = space.get_mechanical_noise_status()
+                    nc_rating = noise_status.get('nc_rating')
+                    
+                    if nc_rating is not None:
+                        if nc_rating <= 25:
+                            noise_icon = "🔇"  # Very quiet
+                        elif nc_rating <= 35:
+                            noise_icon = "🔉"  # Moderate
+                        elif nc_rating <= 45:
+                            noise_icon = "🔊"  # Loud
+                        else:
+                            noise_icon = "📢"  # Very loud
+                        noise_text = f"NC{nc_rating}"
+                    else:
+                        noise_icon = "🔇"
+                        noise_text = "No HVAC"
+                except Exception:
+                    noise_icon = "❓"
+                    noise_text = "Error"
+                
+                # Drawing association status
+                drawing_icon = "📋" if space.drawing_id else "❔"
+                
+                # Build item text with comprehensive status
+                item_text = f"{drawing_icon} {space.name}"
+                
+                # Add status indicators
+                status_parts = []
+                status_parts.append(f"RT60: {rt60_icon}")
+                status_parts.append(f"Noise: {noise_icon}{noise_text}")
+                
+                if status_parts:
+                    item_text += f" | {' | '.join(status_parts)}"
+                
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, space.id)
+                
+                # Color code based on overall status
+                if space.calculated_rt60 and nc_rating is not None:
+                    # Both calculated - color based on noise level
+                    if nc_rating <= 35:
+                        item.setBackground(QColor(220, 255, 220))  # Light green
+                    elif nc_rating <= 45:
+                        item.setBackground(QColor(255, 255, 220))  # Light yellow
+                    else:
+                        item.setBackground(QColor(255, 220, 220))  # Light red
+                elif space.calculated_rt60:
+                    # Only RT60 calculated
+                    item.setBackground(QColor(240, 240, 255))  # Light blue
+                else:
+                    # Nothing calculated
+                    item.setBackground(QColor(245, 245, 245))  # Light gray
+                
                 self.spaces_list.addItem(item)
                 
             session.close()
@@ -496,7 +549,73 @@ class ProjectDashboard(QMainWindow):
         
     def new_space(self):
         """Create a new space"""
-        QMessageBox.information(self, "New Space", "Space creation will be implemented.")
+        try:
+            from .dialogs.new_space_dialog import NewSpaceDialog
+            
+            dialog = NewSpaceDialog(self, self.project_id)
+            result = dialog.exec()
+            
+            if result == QDialog.Accepted:
+                # Refresh the spaces list to show the new space
+                self.refresh_spaces()
+                
+        except ImportError:
+            # Fallback to manual space creation if dialog doesn't exist
+            self.create_manual_space()
+    
+    def create_manual_space(self):
+        """Create a space manually without drawing integration"""
+        from PySide6.QtWidgets import QInputDialog
+        from models.space import Space
+        from models import get_session
+        
+        # Get space name
+        space_name, ok = QInputDialog.getText(
+            self, 
+            "New Space", 
+            "Enter space name:",
+            text="New Space"
+        )
+        
+        if not ok or not space_name.strip():
+            return
+            
+        try:
+            session = get_session()
+            
+            # Create basic space
+            space = Space(
+                project_id=self.project_id,
+                name=space_name.strip(),
+                description="Created from project dashboard",
+                floor_area=100.0,  # Default area
+                ceiling_height=9.0,  # Default height
+                target_rt60=0.8,
+                # Set default materials
+                ceiling_material='acoustic_ceiling_tile',
+                wall_material='painted_drywall',
+                floor_material='carpet_on_concrete'
+            )
+            
+            session.add(space)
+            session.commit()
+            session.close()
+            
+            QMessageBox.information(
+                self, 
+                "Space Created", 
+                f"Space '{space_name}' created successfully.\n\n"
+                "To set precise dimensions and materials:\n"
+                "1. Draw a rectangle on a PDF drawing\n"
+                "2. Right-click and select 'Create Room/Space'\n"
+                "3. Or edit this space's properties to set dimensions manually"
+            )
+            
+            # Refresh the spaces list
+            self.refresh_spaces()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create space:\n{str(e)}")
         
     def edit_space(self):
         """Edit space properties"""

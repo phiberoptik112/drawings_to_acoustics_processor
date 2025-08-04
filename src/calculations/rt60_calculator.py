@@ -151,7 +151,7 @@ class RT60Calculator:
         Calculate RT60 for a space
         
         Args:
-            space_data: Dict with volume, areas, and materials
+            space_data: Dict with volume, areas, and materials (supports both single and multiple materials)
             method: 'sabine' or 'eyring'
             
         Returns:
@@ -163,9 +163,18 @@ class RT60Calculator:
         wall_area = space_data.get('wall_area', 0)
         ceiling_area = space_data.get('ceiling_area', floor_area)  # Default to floor area
         
-        ceiling_material = space_data.get('ceiling_material')
-        wall_material = space_data.get('wall_material')
-        floor_material = space_data.get('floor_material')
+        # Support both new multiple materials format and legacy single materials
+        ceiling_materials = space_data.get('ceiling_materials', [])
+        wall_materials = space_data.get('wall_materials', [])
+        floor_materials = space_data.get('floor_materials', [])
+        
+        # Fallback to legacy single material fields if no multiple materials
+        if not ceiling_materials and space_data.get('ceiling_material'):
+            ceiling_materials = [space_data.get('ceiling_material')]
+        if not wall_materials and space_data.get('wall_material'):
+            wall_materials = [space_data.get('wall_material')]
+        if not floor_materials and space_data.get('floor_material'):
+            floor_materials = [space_data.get('floor_material')]
         
         if volume <= 0:
             return {
@@ -174,29 +183,41 @@ class RT60Calculator:
                 'error': 'Invalid volume'
             }
             
-        # Prepare surfaces for calculation
+        # Prepare surfaces for calculation - now handling multiple materials per surface
         surfaces = []
         
-        if ceiling_area > 0 and ceiling_material:
-            surfaces.append({
-                'area': ceiling_area,
-                'material_key': ceiling_material,
-                'type': 'ceiling'
-            })
+        # Add ceiling surfaces (distribute area across materials)
+        if ceiling_area > 0 and ceiling_materials:
+            area_per_material = ceiling_area / len(ceiling_materials)
+            for i, material_key in enumerate(ceiling_materials):
+                if material_key:  # Skip None/empty materials
+                    surfaces.append({
+                        'area': area_per_material,
+                        'material_key': material_key,
+                        'type': f'ceiling_{i+1}' if len(ceiling_materials) > 1 else 'ceiling'
+                    })
             
-        if wall_area > 0 and wall_material:
-            surfaces.append({
-                'area': wall_area,
-                'material_key': wall_material,
-                'type': 'wall'
-            })
+        # Add wall surfaces (distribute area across materials)
+        if wall_area > 0 and wall_materials:
+            area_per_material = wall_area / len(wall_materials)
+            for i, material_key in enumerate(wall_materials):
+                if material_key:  # Skip None/empty materials
+                    surfaces.append({
+                        'area': area_per_material,
+                        'material_key': material_key,
+                        'type': f'wall_{i+1}' if len(wall_materials) > 1 else 'wall'
+                    })
             
-        if floor_area > 0 and floor_material:
-            surfaces.append({
-                'area': floor_area,
-                'material_key': floor_material,
-                'type': 'floor'
-            })
+        # Add floor surfaces (distribute area across materials)
+        if floor_area > 0 and floor_materials:
+            area_per_material = floor_area / len(floor_materials)
+            for i, material_key in enumerate(floor_materials):
+                if material_key:  # Skip None/empty materials
+                    surfaces.append({
+                        'area': area_per_material,
+                        'material_key': material_key,
+                        'type': f'floor_{i+1}' if len(floor_materials) > 1 else 'floor'
+                    })
             
         if not surfaces:
             return {

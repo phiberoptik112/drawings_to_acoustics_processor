@@ -158,12 +158,6 @@ class DrawingOverlay(QWidget):
             
     def draw_rectangles(self, painter):
         """Draw room boundary rectangles"""
-        pen = QPen(QColor(0, 120, 215), 2, Qt.SolidLine)
-        brush = QBrush(QColor(0, 120, 215, 30))
-        
-        painter.setPen(pen)
-        painter.setBrush(brush)
-        
         for rect_data in self.rectangles:
             bounds = rect_data['bounds']
             
@@ -174,18 +168,46 @@ class DrawingOverlay(QWidget):
             else:
                 # Already a QRect object
                 rect = bounds
-                
+            
+            # Differentiate between regular rectangles and converted spaces
+            is_space = rect_data.get('converted_to_space', False)
+            
+            if is_space:
+                # Green for spaces that are already converted
+                pen = QPen(QColor(34, 139, 34), 3, Qt.SolidLine)  # Forest green
+                brush = QBrush(QColor(34, 139, 34, 40))
+            else:
+                # Blue for regular rectangles
+                pen = QPen(QColor(0, 120, 215), 2, Qt.SolidLine)
+                brush = QBrush(QColor(0, 120, 215, 30))
+            
+            painter.setPen(pen)
+            painter.setBrush(brush)
             painter.drawRect(rect)
             
-            # Draw area label
+            # Draw label
             center_x = rect.center().x()
             center_y = rect.center().y()
             
-            area_text = rect_data.get('area_formatted', f"{rect_data.get('area_real', 0):.0f} sf")
-            
-            painter.setPen(QPen(Qt.black))
-            painter.setFont(QFont("Arial", 10, QFont.Bold))
-            painter.drawText(center_x - 30, center_y, area_text)
+            if is_space:
+                # Show space name for converted spaces
+                space_name = rect_data.get('space_name', 'Space')
+                area_text = rect_data.get('area_formatted', f"{rect_data.get('area_real', 0):.0f} sf")
+                
+                painter.setPen(QPen(Qt.black))
+                painter.setFont(QFont("Arial", 9, QFont.Bold))
+                
+                # Draw space name above area
+                painter.drawText(center_x - 40, center_y - 8, space_name)
+                painter.setFont(QFont("Arial", 8))
+                painter.drawText(center_x - 30, center_y + 8, area_text)
+            else:
+                # Show area for regular rectangles
+                area_text = rect_data.get('area_formatted', f"{rect_data.get('area_real', 0):.0f} sf")
+                
+                painter.setPen(QPen(Qt.black))
+                painter.setFont(QFont("Arial", 10, QFont.Bold))
+                painter.drawText(center_x - 30, center_y, area_text)
             
     def draw_components(self, painter):
         """Draw HVAC components"""
@@ -230,7 +252,7 @@ class DrawingOverlay(QWidget):
             
             length_text = seg_data.get('length_formatted', f"{seg_data.get('length_real', 0):.1f} ft")
             
-            painter.setPen(QPen(Qt.darkGreen))
+            painter.setPen(QPen(Qt.black))
             painter.setFont(QFont("Arial", 9))
             painter.drawText(mid_x + 5, mid_y - 5, length_text)
             
@@ -256,7 +278,7 @@ class DrawingOverlay(QWidget):
             
             length_text = meas_data.get('length_formatted', f"{meas_data.get('length_real', 0):.1f} ft")
             
-            painter.setPen(QPen(Qt.red))
+            painter.setPen(QPen(Qt.black))
             painter.setFont(QFont("Arial", 9, QFont.Bold))
             painter.drawText(mid_x + 5, mid_y - 10, f"📏 {length_text}")
             
