@@ -6,12 +6,14 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QLabel, QLineEdit, QTextEdit, QComboBox, 
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QMessageBox, QTabWidget, QWidget, QListWidget,
-                             QListWidgetItem, QScrollArea, QSizePolicy)
-from PySide6.QtCore import Qt, Signal
+                             QListWidgetItem, QScrollArea, QSizePolicy, QSplitter)
+from PySide6.QtCore import Qt, Signal, QTimer
 
 from models import get_session
 from models.space import Space, SurfaceType
 from data.materials import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS, get_materials_by_category
+from calculations.rt60_calculator import RT60Calculator
+from ui.rt60_plot_widget import RT60PlotContainer
 
 
 class MaterialSearchWidget(QWidget):
@@ -258,6 +260,15 @@ class SpaceEditDialog(QDialog):
     def __init__(self, parent=None, space=None):
         super().__init__(parent)
         self.space = space
+        
+        # Initialize RT60 calculator
+        self.rt60_calculator = RT60Calculator()
+        
+        # Timer for debouncing plot updates
+        self.plot_update_timer = QTimer()
+        self.plot_update_timer.setSingleShot(True)
+        self.plot_update_timer.timeout.connect(self.update_rt60_plot)
+        
         self.init_ui()
         self.load_space_data()
         
@@ -265,11 +276,14 @@ class SpaceEditDialog(QDialog):
         """Initialize the user interface"""
         self.setWindowTitle(f"Edit Space: {self.space.name if self.space else 'Unknown'}")
         self.setModal(True)
-        self.setFixedSize(900, 1000)  # Increased size for better visibility of search windows
+        self.setFixedSize(1400, 1000)  # Increased width for plot
         
         layout = QVBoxLayout()
         
-        # Create tabs
+        # Create main splitter for tabs and plot
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Left side: Create tabs
         tabs = QTabWidget()
         
         # Basic properties tab
@@ -284,7 +298,16 @@ class SpaceEditDialog(QDialog):
         calc_tab = self.create_calculations_tab()
         tabs.addTab(calc_tab, "Calculations")
         
-        layout.addWidget(tabs)
+        main_splitter.addWidget(tabs)
+        
+        # Right side: RT60 Plot
+        self.plot_container = RT60PlotContainer()
+        main_splitter.addWidget(self.plot_container)
+        
+        # Set splitter proportions (60% tabs, 40% plot)
+        main_splitter.setSizes([840, 560])
+        
+        layout.addWidget(main_splitter)
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -361,6 +384,7 @@ class SpaceEditDialog(QDialog):
         self.area_spin.setRange(1.0, 100000.0)
         self.area_spin.setSuffix(" sf")
         self.area_spin.valueChanged.connect(self.calculate_volume)
+        self.area_spin.valueChanged.connect(lambda: self.schedule_plot_update())
         geometry_layout.addRow("Floor Area:", self.area_spin)
         
         self.ceiling_height_spin = QDoubleSpinBox()
@@ -368,6 +392,7 @@ class SpaceEditDialog(QDialog):
         self.ceiling_height_spin.setValue(9.0)
         self.ceiling_height_spin.setSuffix(" ft")
         self.ceiling_height_spin.valueChanged.connect(self.calculate_volume)
+        self.ceiling_height_spin.valueChanged.connect(lambda: self.schedule_plot_update())
         geometry_layout.addRow("Ceiling Height:", self.ceiling_height_spin)
         
         self.volume_label = QLabel("Not calculated")
@@ -376,6 +401,7 @@ class SpaceEditDialog(QDialog):
         self.wall_area_spin = QDoubleSpinBox()
         self.wall_area_spin.setRange(1.0, 100000.0)
         self.wall_area_spin.setSuffix(" sf")
+        self.wall_area_spin.valueChanged.connect(lambda: self.schedule_plot_update())
         geometry_layout.addRow("Wall Area:", self.wall_area_spin)
         
         geometry_group.setLayout(geometry_layout)
@@ -429,11 +455,13 @@ class SpaceEditDialog(QDialog):
         # Create material list widget first
         self.ceiling_materials = MaterialListWidget('ceiling')
         self.ceiling_materials.material_removed.connect(self.update_calculations_preview)
+        self.ceiling_materials.material_removed.connect(lambda: self.schedule_plot_update())
         
         # Search widget for ceiling materials
         self.ceiling_search = MaterialSearchWidget('ceiling')
         self.ceiling_search.material_selected.connect(lambda key: self.ceiling_materials.add_material(key))
         self.ceiling_search.material_selected.connect(self.update_calculations_preview)
+        self.ceiling_search.material_selected.connect(lambda: self.schedule_plot_update())
         ceiling_layout.addWidget(self.ceiling_search)
         
         # Add selected ceiling materials
@@ -449,11 +477,13 @@ class SpaceEditDialog(QDialog):
         # Create material list widget first
         self.wall_materials = MaterialListWidget('wall')
         self.wall_materials.material_removed.connect(self.update_calculations_preview)
+        self.wall_materials.material_removed.connect(lambda: self.schedule_plot_update())
         
         # Search widget for wall materials
         self.wall_search = MaterialSearchWidget('wall')
         self.wall_search.material_selected.connect(lambda key: self.wall_materials.add_material(key))
         self.wall_search.material_selected.connect(self.update_calculations_preview)
+        self.wall_search.material_selected.connect(lambda: self.schedule_plot_update())
         wall_layout.addWidget(self.wall_search)
         
         # Add selected wall materials
@@ -469,11 +499,13 @@ class SpaceEditDialog(QDialog):
         # Create material list widget first
         self.floor_materials = MaterialListWidget('floor')
         self.floor_materials.material_removed.connect(self.update_calculations_preview)
+        self.floor_materials.material_removed.connect(lambda: self.schedule_plot_update())
         
         # Search widget for floor materials
         self.floor_search = MaterialSearchWidget('floor')
         self.floor_search.material_selected.connect(lambda key: self.floor_materials.add_material(key))
         self.floor_search.material_selected.connect(self.update_calculations_preview)
+        self.floor_search.material_selected.connect(lambda: self.schedule_plot_update())
         floor_layout.addWidget(self.floor_search)
         
         # Add selected floor materials
@@ -668,6 +700,9 @@ class SpaceEditDialog(QDialog):
         # Calculate initial volume
         self.calculate_volume()
         self.update_calculations_preview()
+        
+        # Initialize RT60 plot
+        self.schedule_plot_update()
         
     def room_type_index_changed(self, index):
         """Handle room type combo box index change"""
@@ -922,6 +957,57 @@ class SpaceEditDialog(QDialog):
         
         # Then close the dialog
         self.accept()
+    
+    def schedule_plot_update(self):
+        """Schedule a plot update with debouncing"""
+        self.plot_update_timer.start(300)  # 300ms delay to debounce rapid changes
+    
+    def update_rt60_plot(self):
+        """Update the RT60 plot with current space data"""
+        try:
+            # Get current room volume
+            floor_area = self.area_spin.value()
+            height = self.ceiling_height_spin.value()
+            volume = floor_area * height
+            
+            if volume <= 0:
+                self.plot_container.clear_rt60_data()
+                return
+            
+            # Update plot with current volume
+            self.plot_container.update_volume(volume)
+            
+            # Get material selections
+            ceiling_materials = self.ceiling_materials.get_materials()
+            wall_materials = self.wall_materials.get_materials()
+            floor_materials = self.floor_materials.get_materials()
+            
+            # Check if we have materials to calculate with
+            if not any([ceiling_materials, wall_materials, floor_materials]):
+                self.plot_container.clear_rt60_data()
+                return
+            
+            # Prepare space data for RT60 calculation
+            space_data = {
+                'volume': volume,
+                'floor_area': floor_area,
+                'ceiling_area': floor_area,  # Assume ceiling area = floor area
+                'wall_area': self.wall_area_spin.value(),
+                'ceiling_materials': ceiling_materials,
+                'wall_materials': wall_materials,
+                'floor_materials': floor_materials
+            }
+            
+            # Calculate RT60 frequency response
+            results = self.rt60_calculator.calculate_rt60_frequency_response(space_data)
+            
+            # Update plot with RT60 data
+            rt60_by_freq = results.get('rt60_by_frequency', {})
+            self.plot_container.update_rt60_data(rt60_by_freq)
+            
+        except Exception as e:
+            print(f"Error updating RT60 plot: {e}")
+            self.plot_container.clear_rt60_data()
         
                 
     def get_updated_space_data(self):

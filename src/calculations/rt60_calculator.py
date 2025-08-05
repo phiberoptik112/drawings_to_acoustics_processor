@@ -378,6 +378,36 @@ class RT60Calculator:
         report += f"Average Absorption Coeff: {results['avg_absorption_coeff']:.3f}\n"
         
         return report
+        
+    def calculate_rt60_frequency_response(self, space_data, method='sabine'):
+        """
+        Calculate RT60 across all frequency bands
+        
+        Args:
+            space_data: Dict with volume, areas, and materials 
+            method: 'sabine' or 'eyring'
+            
+        Returns:
+            dict: RT60 values by frequency
+        """
+        frequencies = [125, 250, 500, 1000, 2000, 4000]
+        rt60_by_frequency = {}
+        
+        for frequency in frequencies:
+            # Add frequency to space data for this calculation
+            freq_space_data = space_data.copy()
+            freq_space_data['frequency'] = frequency
+            
+            # Calculate RT60 for this frequency
+            results = self.calculate_space_rt60(freq_space_data, method)
+            rt60_by_frequency[frequency] = results.get('rt60', 0)
+        
+        return {
+            'rt60_by_frequency': rt60_by_frequency,
+            'frequencies': frequencies,
+            'method': method,
+            'space_data': space_data
+        }
 
 
 # Convenience functions for common calculations
