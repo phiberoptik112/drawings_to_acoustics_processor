@@ -246,7 +246,10 @@ class RT60PlotWidget(QWidget):
 
 
 class RT60PlotContainer(QWidget):
-    """Container widget with plot and controls"""
+    """Container widget with plot and materials summary"""
+    
+    # Signals
+    materials_changed = Signal()  # Emitted when doors/windows change requiring RT60 recalculation
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -256,9 +259,17 @@ class RT60PlotContainer(QWidget):
         """Initialize container UI"""
         layout = QVBoxLayout()
         
+        # Create main splitter for plot and materials summary
+        from PySide6.QtWidgets import QSplitter
+        main_splitter = QSplitter(Qt.Orientation.Vertical)
+        
+        # Top section: RT60 Plot with controls
+        plot_section = QWidget()
+        plot_layout = QVBoxLayout()
+        
         # Create the plot widget
         self.plot_widget = RT60PlotWidget()
-        layout.addWidget(self.plot_widget)
+        plot_layout.addWidget(self.plot_widget)
         
         # Control panel
         controls_layout = QHBoxLayout()
@@ -275,7 +286,42 @@ class RT60PlotContainer(QWidget):
         self.status_display.setStyleSheet("color: #2c3e50;")
         controls_layout.addWidget(self.status_display)
         
-        layout.addLayout(controls_layout)
+        plot_layout.addLayout(controls_layout)
+        plot_section.setLayout(plot_layout)
+        
+        main_splitter.addWidget(plot_section)
+        
+        # Bottom section: Materials Summary
+        try:
+            from .materials_summary_widget import MaterialsSummaryWidget
+            self.materials_summary = MaterialsSummaryWidget()
+            self.materials_summary.doors_windows_changed.connect(self.on_materials_changed)
+            main_splitter.addWidget(self.materials_summary)
+        except ImportError as e:
+            try:
+                # Try alternative import for testing
+                import sys
+                import os
+                current_dir = os.path.dirname(__file__)
+                if current_dir not in sys.path:
+                    sys.path.insert(0, current_dir)
+                from materials_summary_widget import MaterialsSummaryWidget
+                self.materials_summary = MaterialsSummaryWidget()
+                self.materials_summary.doors_windows_changed.connect(self.on_materials_changed)
+                main_splitter.addWidget(self.materials_summary)
+            except ImportError:
+                print(f"Warning: Could not import MaterialsSummaryWidget: {e}")
+                # Create placeholder widget
+                placeholder = QLabel("Materials Summary Widget not available")
+                placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                placeholder.setStyleSheet("color: #7f8c8d; font-style: italic;")
+                main_splitter.addWidget(placeholder)
+                self.materials_summary = None
+        
+        # Set splitter proportions (70% plot, 30% materials summary)
+        main_splitter.setSizes([490, 210]) 
+        
+        layout.addWidget(main_splitter)
         self.setLayout(layout)
     
     def update_volume(self, volume: float):
@@ -289,6 +335,36 @@ class RT60PlotContainer(QWidget):
         self.plot_widget.update_current_rt60(rt60_values)
         self.update_status()
     
+    def update_materials_data(self, ceiling_materials: List[str], wall_materials: List[str], 
+                            floor_materials: List[str], areas: Dict[str, float]):
+        """Update materials summary with current material selections"""
+        if self.materials_summary:
+            self.materials_summary.update_materials_data(
+                ceiling_materials, wall_materials, floor_materials, areas
+            )
+            
+    def update_materials_data_detailed(self, ceiling_materials: List[str], wall_materials: List[str], 
+                                     floor_materials: List[str], areas: Dict[str, float],
+                                     ceiling_materials_data: List[Dict], wall_materials_data: List[Dict],
+                                     floor_materials_data: List[Dict]):
+        """Update materials summary with detailed material data including square footages"""
+        if self.materials_summary:
+            self.materials_summary.update_materials_data(
+                ceiling_materials, wall_materials, floor_materials, areas,
+                ceiling_materials_data, wall_materials_data, floor_materials_data
+            )
+    
+    def get_doors_windows_data(self) -> List[Dict]:
+        """Get doors/windows data from materials summary"""
+        if self.materials_summary:
+            return self.materials_summary.get_doors_windows_data()
+        return []
+    
+    def on_materials_changed(self):
+        """Handle materials summary changes - emit signal for RT60 recalculation"""
+        # This will be connected to the parent dialog to trigger RT60 recalculation
+        self.materials_changed.emit()
+    
     def update_status(self):
         """Update status display"""
         status = self.plot_widget.get_current_status()
@@ -297,4 +373,6 @@ class RT60PlotContainer(QWidget):
     def clear_rt60_data(self):
         """Clear RT60 data"""
         self.plot_widget.clear_current_rt60()
+        if self.materials_summary:
+            self.materials_summary.clear_all_data()
         self.update_status()

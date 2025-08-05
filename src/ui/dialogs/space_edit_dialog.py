@@ -6,7 +6,8 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QLabel, QLineEdit, QTextEdit, QComboBox, 
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QMessageBox, QTabWidget, QWidget, QListWidget,
-                             QListWidgetItem, QScrollArea, QSizePolicy, QSplitter)
+                             QListWidgetItem, QScrollArea, QSizePolicy, QSplitter,
+                             QTableWidget, QTableWidgetItem, QHeaderView)
 from PySide6.QtCore import Qt, Signal, QTimer
 
 from models import get_session
@@ -157,25 +158,34 @@ class MaterialSearchWidget(QWidget):
 
 
 class MaterialListWidget(QWidget):
-    """Widget for displaying and managing selected materials"""
+    """Widget for displaying and managing selected materials with square footage"""
     
     material_removed = Signal(str)  # Emits material key when removed
+    material_changed = Signal()     # Emits when material square footage changes
     
     def __init__(self, surface_type, parent=None):
         super().__init__(parent)
         self.surface_type = surface_type
-        self.materials = []  # List of material keys
+        self.materials_data = []  # List of dicts with material_key and square_footage
+        self.total_surface_area = 0  # Total available surface area
         self.init_ui()
         
     def init_ui(self):
         """Initialize the materials list interface"""
         layout = QVBoxLayout()
         
-        # Header
+        # Header with surface area info
         header_layout = QHBoxLayout()
         header_label = QLabel(f"Selected {self.surface_type.title()} Materials:")
         header_label.setStyleSheet("font-weight: bold;")
         header_layout.addWidget(header_label)
+        
+        header_layout.addStretch()
+        
+        # Surface area info
+        self.area_info_label = QLabel("Total: 0 sf")
+        self.area_info_label.setStyleSheet("color: #7f8c8d; font-size: 10px;")
+        header_layout.addWidget(self.area_info_label)
         
         # Remove button
         self.remove_btn = QPushButton("Remove Selected")
@@ -185,72 +195,231 @@ class MaterialListWidget(QWidget):
         
         layout.addLayout(header_layout)
         
-        # Materials list
-        self.materials_list = QListWidget()
-        self.materials_list.setMinimumHeight(80)
-        self.materials_list.setMaximumHeight(200)  # Increased from 100
-        self.materials_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.materials_list.itemSelectionChanged.connect(self.update_remove_button)
-        layout.addWidget(self.materials_list)
+        # Materials table (instead of list)
+        self.materials_table = QTableWidget()
+        self.materials_table.setColumnCount(4)
+        self.materials_table.setHorizontalHeaderLabels(["Material Name", "NRC", "Area (sf)", "% Coverage"])
+        
+        # Configure table
+        self.materials_table.setMinimumHeight(80)
+        self.materials_table.setMaximumHeight(200)
+        self.materials_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.materials_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.materials_table.itemSelectionChanged.connect(self.update_remove_button)
+        
+        # Set column widths
+        header = self.materials_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # Material Name
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)    # NRC
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)    # Area
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)    # Coverage
+        
+        self.materials_table.setColumnWidth(1, 60)   # NRC
+        self.materials_table.setColumnWidth(2, 80)   # Area
+        self.materials_table.setColumnWidth(3, 80)   # Coverage
+        
+        layout.addWidget(self.materials_table)
+        
+        # Usage summary
+        self.usage_label = QLabel("No materials selected")
+        self.usage_label.setStyleSheet("color: #7f8c8d; font-size: 10px; margin: 5px;")
+        layout.addWidget(self.usage_label)
         
         self.setLayout(layout)
         
-    def add_material(self, material_key):
-        """Add a material to the list"""
-        print(f"DEBUG: MaterialListWidget.add_material({self.surface_type}): '{material_key}'")
-        print(f"DEBUG:   Current materials: {self.materials}")
-        print(f"DEBUG:   Material key in STANDARD_MATERIALS: {material_key in STANDARD_MATERIALS}")
+    def set_total_surface_area(self, area):
+        """Set the total available surface area for this surface type"""
+        self.total_surface_area = area
+        self.area_info_label.setText(f"Total: {area:.0f} sf")
+        self.update_display()
         
-        if material_key not in self.materials and material_key in STANDARD_MATERIALS:
-            self.materials.append(material_key)
-            print(f"DEBUG:   Material added successfully. New materials: {self.materials}")
+    def add_material(self, material_key, default_area=None):
+        """Add a material to the list with default square footage"""
+        print(f"DEBUG: MaterialListWidget.add_material({self.surface_type}): '{material_key}'")
+        
+        # Check if material already exists
+        if any(m['material_key'] == material_key for m in self.materials_data):
+            print(f"DEBUG:   Material already exists")
+            return
+            
+        if material_key in STANDARD_MATERIALS:
+            # Calculate default area (remaining area or 10% of total, whichever is smaller)
+            used_area = sum(m['square_footage'] for m in self.materials_data)
+            remaining_area = max(0, self.total_surface_area - used_area)
+            
+            if default_area is None:
+                default_area = min(remaining_area, self.total_surface_area * 0.1) if self.total_surface_area > 0 else 100
+                default_area = max(1, default_area)  # Minimum 1 sf
+            
+            material_data = {
+                'material_key': material_key,
+                'square_footage': default_area
+            }
+            
+            self.materials_data.append(material_data)
+            print(f"DEBUG:   Material added with {default_area:.0f} sf")
             self.update_display()
+            self.material_changed.emit()
         else:
-            print(f"DEBUG:   Material not added. Already exists: {material_key in self.materials}")
+            print(f"DEBUG:   Material not found in STANDARD_MATERIALS")
             
     def remove_selected_material(self):
         """Remove the selected material from the list"""
-        current_item = self.materials_list.currentItem()
-        if current_item:
-            material_key = current_item.data(Qt.UserRole)
-            if material_key in self.materials:
-                self.materials.remove(material_key)
-                self.material_removed.emit(material_key)
-                self.update_display()
+        current_row = self.materials_table.currentRow()
+        if 0 <= current_row < len(self.materials_data):
+            material_data = self.materials_data[current_row]
+            material_key = material_data['material_key']
+            
+            self.materials_data.pop(current_row)
+            self.material_removed.emit(material_key)
+            self.update_display()
+            self.material_changed.emit()
                 
     def update_display(self):
         """Update the display of materials"""
-        print(f"DEBUG: MaterialListWidget.update_display({self.surface_type}): {self.materials}")
-        self.materials_list.clear()
+        print(f"DEBUG: MaterialListWidget.update_display({self.surface_type}): {len(self.materials_data)} materials")
+        self.materials_table.setRowCount(len(self.materials_data))
         
-        for material_key in self.materials:
-            print(f"DEBUG:   Processing material key: '{material_key}'")
+        total_used_area = 0
+        
+        for row, material_data in enumerate(self.materials_data):
+            material_key = material_data['material_key']
+            square_footage = material_data['square_footage']
+            total_used_area += square_footage
+            
             if material_key in STANDARD_MATERIALS:
                 material = STANDARD_MATERIALS[material_key]
-                coeff_display = material.get('nrc', material['absorption_coeff'])
-                display_name = f"{material['name']} (α={coeff_display:.2f})"
                 
-                item = QListWidgetItem(display_name)
-                item.setData(Qt.UserRole, material_key)
-                item.setData(Qt.UserRole + 1, material)
-                self.materials_list.addItem(item)
-                print(f"DEBUG:     Added material: {display_name}")
+                # Material name
+                name_item = QTableWidgetItem(material['name'])
+                name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                name_item.setData(Qt.UserRole, material_key)
+                self.materials_table.setItem(row, 0, name_item)
+                
+                # NRC
+                nrc = material.get('nrc', material['absorption_coeff'])
+                nrc_item = QTableWidgetItem(f"{nrc:.2f}")
+                nrc_item.setFlags(nrc_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.materials_table.setItem(row, 1, nrc_item)
+                
+                # Square footage (editable)
+                area_item = QTableWidgetItem(f"{square_footage:.0f}")
+                area_item.setData(Qt.UserRole, row)  # Store row index for editing
+                self.materials_table.setItem(row, 2, area_item)
+                
+                # Coverage percentage
+                coverage = (square_footage / self.total_surface_area * 100) if self.total_surface_area > 0 else 0
+                coverage_item = QTableWidgetItem(f"{coverage:.1f}%")
+                coverage_item.setFlags(coverage_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.materials_table.setItem(row, 3, coverage_item)
+        
+        # Connect cell changed signal for area editing
+        self.materials_table.cellChanged.connect(self.on_cell_changed)
+        
+        # Update usage summary
+        if self.materials_data:
+            coverage_total = (total_used_area / self.total_surface_area * 100) if self.total_surface_area > 0 else 0
+            remaining = max(0, self.total_surface_area - total_used_area)
+            
+            if coverage_total > 100:
+                self.usage_label.setText(f"⚠️ Over-coverage: {coverage_total:.1f}% ({total_used_area:.0f} sf used, {self.total_surface_area:.0f} sf available)")
+                self.usage_label.setStyleSheet("color: #e74c3c; font-size: 10px; margin: 5px; font-weight: bold;")
             else:
-                print(f"DEBUG:     Material key '{material_key}' not found in STANDARD_MATERIALS")
-                print(f"DEBUG:     Available keys (first 10): {list(STANDARD_MATERIALS.keys())[:10]}")
+                self.usage_label.setText(f"Coverage: {coverage_total:.1f}% ({total_used_area:.0f} sf used, {remaining:.0f} sf remaining)")
+                self.usage_label.setStyleSheet("color: #27ae60; font-size: 10px; margin: 5px;")
+        else:
+            self.usage_label.setText("No materials selected")
+            self.usage_label.setStyleSheet("color: #7f8c8d; font-size: 10px; margin: 5px;")
+            
+    def on_cell_changed(self, row, column):
+        """Handle cell value changes (for square footage editing)"""
+        if column == 2 and 0 <= row < len(self.materials_data):  # Area column
+            try:
+                # Temporarily disconnect to avoid recursive calls
+                self.materials_table.cellChanged.disconnect(self.on_cell_changed)
+                
+                item = self.materials_table.item(row, column)
+                new_area = float(item.text())
+                new_area = max(0, new_area)  # Don't allow negative areas
+                
+                # Update the data
+                self.materials_data[row]['square_footage'] = new_area
+                
+                # Update the display
+                item.setText(f"{new_area:.0f}")
+                
+                # Update coverage percentage
+                coverage = (new_area / self.total_surface_area * 100) if self.total_surface_area > 0 else 0
+                coverage_item = self.materials_table.item(row, 3)
+                if coverage_item:
+                    coverage_item.setText(f"{coverage:.1f}%")
+                
+                # Update usage summary
+                self.update_usage_summary()
+                
+                # Reconnect and emit change signal
+                self.materials_table.cellChanged.connect(self.on_cell_changed)
+                self.material_changed.emit()
+                
+            except ValueError:
+                # Restore original value if invalid input
+                self.materials_table.cellChanged.disconnect(self.on_cell_changed)
+                original_area = self.materials_data[row]['square_footage']
+                item.setText(f"{original_area:.0f}")
+                self.materials_table.cellChanged.connect(self.on_cell_changed)
+                
+    def update_usage_summary(self):
+        """Update just the usage summary without full display refresh"""
+        total_used_area = sum(m['square_footage'] for m in self.materials_data)
+        
+        if self.materials_data:
+            coverage_total = (total_used_area / self.total_surface_area * 100) if self.total_surface_area > 0 else 0
+            remaining = max(0, self.total_surface_area - total_used_area)
+            
+            if coverage_total > 100:
+                self.usage_label.setText(f"⚠️ Over-coverage: {coverage_total:.1f}% ({total_used_area:.0f} sf used, {self.total_surface_area:.0f} sf available)")
+                self.usage_label.setStyleSheet("color: #e74c3c; font-size: 10px; margin: 5px; font-weight: bold;")
+            else:
+                self.usage_label.setText(f"Coverage: {coverage_total:.1f}% ({total_used_area:.0f} sf used, {remaining:.0f} sf remaining)")
+                self.usage_label.setStyleSheet("color: #27ae60; font-size: 10px; margin: 5px;")
+        else:
+            self.usage_label.setText("No materials selected")
+            self.usage_label.setStyleSheet("color: #7f8c8d; font-size: 10px; margin: 5px;")
                 
     def update_remove_button(self):
         """Update the remove button state"""
-        self.remove_btn.setEnabled(self.materials_list.currentItem() is not None)
+        self.remove_btn.setEnabled(self.materials_table.currentRow() >= 0)
+        
+    def get_materials_data(self):
+        """Get the list of materials with their square footages"""
+        return self.materials_data.copy()
         
     def get_materials(self):
-        """Get the list of material keys"""
-        return self.materials.copy()
+        """Get the list of material keys (for backward compatibility)"""
+        return [m['material_key'] for m in self.materials_data]
         
     def set_materials(self, materials):
-        """Set the list of materials"""
+        """Set the list of materials (backward compatibility)"""
         print(f"DEBUG: MaterialListWidget.set_materials({self.surface_type}): {materials}")
-        self.materials = materials.copy() if materials else []
+        
+        self.materials_data = []
+        if materials:
+            # Convert old format to new format with default areas
+            default_area_per_material = self.total_surface_area / len(materials) if materials and self.total_surface_area > 0 else 100
+            
+            for material_key in materials:
+                if material_key:
+                    self.materials_data.append({
+                        'material_key': material_key,
+                        'square_footage': default_area_per_material
+                    })
+        
+        self.update_display()
+        
+    def set_materials_data(self, materials_data):
+        """Set materials with specific square footages"""
+        print(f"DEBUG: MaterialListWidget.set_materials_data({self.surface_type}): {materials_data}")
+        self.materials_data = materials_data.copy() if materials_data else []
         self.update_display()
 
 
@@ -302,6 +471,7 @@ class SpaceEditDialog(QDialog):
         
         # Right side: RT60 Plot
         self.plot_container = RT60PlotContainer()
+        self.plot_container.materials_changed.connect(lambda: self.schedule_plot_update())
         main_splitter.addWidget(self.plot_container)
         
         # Set splitter proportions (60% tabs, 40% plot)
@@ -456,6 +626,8 @@ class SpaceEditDialog(QDialog):
         self.ceiling_materials = MaterialListWidget('ceiling')
         self.ceiling_materials.material_removed.connect(self.update_calculations_preview)
         self.ceiling_materials.material_removed.connect(lambda: self.schedule_plot_update())
+        self.ceiling_materials.material_changed.connect(self.update_calculations_preview)
+        self.ceiling_materials.material_changed.connect(lambda: self.schedule_plot_update())
         
         # Search widget for ceiling materials
         self.ceiling_search = MaterialSearchWidget('ceiling')
@@ -478,6 +650,8 @@ class SpaceEditDialog(QDialog):
         self.wall_materials = MaterialListWidget('wall')
         self.wall_materials.material_removed.connect(self.update_calculations_preview)
         self.wall_materials.material_removed.connect(lambda: self.schedule_plot_update())
+        self.wall_materials.material_changed.connect(self.update_calculations_preview)
+        self.wall_materials.material_changed.connect(lambda: self.schedule_plot_update())
         
         # Search widget for wall materials
         self.wall_search = MaterialSearchWidget('wall')
@@ -500,6 +674,8 @@ class SpaceEditDialog(QDialog):
         self.floor_materials = MaterialListWidget('floor')
         self.floor_materials.material_removed.connect(self.update_calculations_preview)
         self.floor_materials.material_removed.connect(lambda: self.schedule_plot_update())
+        self.floor_materials.material_changed.connect(self.update_calculations_preview)
+        self.floor_materials.material_changed.connect(lambda: self.schedule_plot_update())
         
         # Search widget for floor materials
         self.floor_search = MaterialSearchWidget('floor')
@@ -738,13 +914,20 @@ class SpaceEditDialog(QDialog):
         self.update_calculations_preview()
         
     def calculate_volume(self):
-        """Calculate room volume"""
+        """Calculate room volume and update surface areas"""
         floor_area = self.area_spin.value()
         height = self.ceiling_height_spin.value()
+        wall_area = self.wall_area_spin.value()
         
         if floor_area > 0 and height > 0:
             volume = floor_area * height
             self.volume_label.setText(f"{volume:,.0f} cf")
+            
+            # Update surface areas in material widgets
+            self.ceiling_materials.set_total_surface_area(floor_area)  # Ceiling area = floor area
+            self.wall_materials.set_total_surface_area(wall_area)
+            self.floor_materials.set_total_surface_area(floor_area)
+            
             self.update_calculations_preview()
         else:
             self.volume_label.setText("Not calculated")
@@ -977,25 +1160,58 @@ class SpaceEditDialog(QDialog):
             # Update plot with current volume
             self.plot_container.update_volume(volume)
             
-            # Get material selections
-            ceiling_materials = self.ceiling_materials.get_materials()
-            wall_materials = self.wall_materials.get_materials()
-            floor_materials = self.floor_materials.get_materials()
+            # Get material data with square footages
+            ceiling_materials_data = self.ceiling_materials.get_materials_data()
+            wall_materials_data = self.wall_materials.get_materials_data()
+            floor_materials_data = self.floor_materials.get_materials_data()
+            
+            # Extract just the keys for backward compatibility with plot container
+            ceiling_materials = [m['material_key'] for m in ceiling_materials_data]
+            wall_materials = [m['material_key'] for m in wall_materials_data]  
+            floor_materials = [m['material_key'] for m in floor_materials_data]
+            
+            # Update materials summary with current data including specific square footages
+            areas = {
+                'ceiling_area': floor_area,
+                'wall_area': self.wall_area_spin.value(),
+                'floor_area': floor_area
+            }
+            
+            # Pass the detailed materials data if available
+            if hasattr(self.plot_container, 'update_materials_data_detailed'):
+                self.plot_container.update_materials_data_detailed(
+                    ceiling_materials, wall_materials, floor_materials, areas,
+                    ceiling_materials_data, wall_materials_data, floor_materials_data
+                )
+            else:
+                # Fallback to old method
+                self.plot_container.update_materials_data(
+                    ceiling_materials, wall_materials, floor_materials, areas
+                )
+            
+            # Get doors/windows data from the materials summary
+            doors_windows_data = self.plot_container.get_doors_windows_data()
             
             # Check if we have materials to calculate with
-            if not any([ceiling_materials, wall_materials, floor_materials]):
+            if not any([ceiling_materials_data, wall_materials_data, floor_materials_data, doors_windows_data]):
                 self.plot_container.clear_rt60_data()
                 return
             
-            # Prepare space data for RT60 calculation
+            # Prepare space data for RT60 calculation including doors/windows with actual square footages
             space_data = {
                 'volume': volume,
                 'floor_area': floor_area,
                 'ceiling_area': floor_area,  # Assume ceiling area = floor area
                 'wall_area': self.wall_area_spin.value(),
+                'ceiling_materials_data': ceiling_materials_data,
+                'wall_materials_data': wall_materials_data,
+                'floor_materials_data': floor_materials_data,
+                'doors_windows': doors_windows_data,
+                'include_doors_windows': True,
+                # Keep old format for backward compatibility
                 'ceiling_materials': ceiling_materials,
                 'wall_materials': wall_materials,
-                'floor_materials': floor_materials
+                'floor_materials': floor_materials,
             }
             
             # Calculate RT60 frequency response

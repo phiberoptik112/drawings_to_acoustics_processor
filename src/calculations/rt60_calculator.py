@@ -6,7 +6,17 @@ import math
 try:
     from ..data.materials import STANDARD_MATERIALS
 except ImportError:
-    from data.materials import STANDARD_MATERIALS
+    try:
+        from data.materials import STANDARD_MATERIALS
+    except ImportError:
+        import sys
+        import os
+        # Add src directory to path for testing
+        current_dir = os.path.dirname(__file__)
+        src_dir = os.path.dirname(current_dir)
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        from data.materials import STANDARD_MATERIALS
 
 
 class RT60Calculator:
@@ -15,7 +25,7 @@ class RT60Calculator:
     def __init__(self):
         self.materials_db = STANDARD_MATERIALS
         
-    def calculate_surface_absorption(self, area, material_key, frequency=None):
+    def calculate_surface_absorption(self, area, material_key, frequency=None, absorption_coefficients=None):
         """
         Calculate absorption for a surface
         
@@ -23,16 +33,30 @@ class RT60Calculator:
             area: Surface area in square feet
             material_key: Material identifier
             frequency: Optional frequency (125, 250, 500, 1000, 2000, 4000) for specific calculation
+            absorption_coefficients: Optional direct coefficients (for doors/windows)
         
         Returns:
             float: Absorption in sabins
         """
+        # If direct coefficients provided (for doors/windows), use those
+        if absorption_coefficients:
+            if frequency and frequency in absorption_coefficients:
+                absorption_coeff = absorption_coefficients[frequency]
+            else:
+                # Use NRC-equivalent (average of 250, 500, 1000, 2000 Hz)
+                nrc_frequencies = [250, 500, 1000, 2000]
+                nrc_coeffs = [absorption_coefficients.get(f, 0) for f in nrc_frequencies]
+                absorption_coeff = sum(nrc_coeffs) / 4.0
+            
+            return area * absorption_coeff
+        
+        # Standard material lookup
         if material_key not in self.materials_db:
             return 0.0
             
         material = self.materials_db[material_key]
         
-        # Use frequency-specific coefficient if available and requested
+        # Use frequency-specific coefficient if available and requested  
         if frequency and 'coefficients' in material:
             freq_str = str(frequency)
             if freq_str in material['coefficients']:
@@ -51,7 +75,7 @@ class RT60Calculator:
         Calculate total absorption from multiple surfaces
         
         Args:
-            surfaces: List of dicts with 'area' and 'material_key'
+            surfaces: List of dicts with 'area', 'material_key', and optional 'absorption_coefficients'
             frequency: Optional frequency for frequency-specific calculation
         
         Returns:
@@ -62,9 +86,12 @@ class RT60Calculator:
         for surface in surfaces:
             area = surface.get('area', 0)
             material_key = surface.get('material_key')
+            absorption_coefficients = surface.get('absorption_coefficients')
             
             if area > 0 and material_key:
-                absorption = self.calculate_surface_absorption(area, material_key, frequency)
+                absorption = self.calculate_surface_absorption(
+                    area, material_key, frequency, absorption_coefficients
+                )
                 total_absorption += absorption
                 
         return total_absorption
@@ -151,7 +178,7 @@ class RT60Calculator:
         Calculate RT60 for a space
         
         Args:
-            space_data: Dict with volume, areas, and materials (supports both single and multiple materials)
+            space_data: Dict with volume, areas, materials, and optional doors/windows
             method: 'sabine' or 'eyring'
             
         Returns:
@@ -163,7 +190,12 @@ class RT60Calculator:
         wall_area = space_data.get('wall_area', 0)
         ceiling_area = space_data.get('ceiling_area', floor_area)  # Default to floor area
         
-        # Support both new multiple materials format and legacy single materials
+        # Support new materials_data format with specific square footages
+        ceiling_materials_data = space_data.get('ceiling_materials_data', [])
+        wall_materials_data = space_data.get('wall_materials_data', [])
+        floor_materials_data = space_data.get('floor_materials_data', [])
+        
+        # Fallback to legacy multiple materials format
         ceiling_materials = space_data.get('ceiling_materials', [])
         wall_materials = space_data.get('wall_materials', [])
         floor_materials = space_data.get('floor_materials', [])
@@ -176,6 +208,10 @@ class RT60Calculator:
         if not floor_materials and space_data.get('floor_material'):
             floor_materials = [space_data.get('floor_material')]
         
+        # Get doors/windows data
+        doors_windows = space_data.get('doors_windows', [])
+        include_doors_windows = space_data.get('include_doors_windows', True)
+        
         if volume <= 0:
             return {
                 'rt60': 0,
@@ -183,11 +219,30 @@ class RT60Calculator:
                 'error': 'Invalid volume'
             }
             
-        # Prepare surfaces for calculation - now handling multiple materials per surface
+        # Calculate total doors/windows area to subtract from wall area
+        doors_windows_area = 0
+        if include_doors_windows and doors_windows:
+            doors_windows_area = sum(item.get('total_area', 0) for item in doors_windows)
+        
+        # Adjust wall area to account for doors/windows
+        effective_wall_area = max(0, wall_area - doors_windows_area)
+            
+        # Prepare surfaces for calculation - now handling specific square footages
         surfaces = []
         
-        # Add ceiling surfaces (distribute area across materials)
-        if ceiling_area > 0 and ceiling_materials:
+        # Add ceiling surfaces with specific square footages
+        if ceiling_materials_data:
+            for i, material_data in enumerate(ceiling_materials_data):
+                material_key = material_data.get('material_key')
+                area = material_data.get('square_footage', 0)
+                if material_key and area > 0:
+                    surfaces.append({
+                        'area': area,
+                        'material_key': material_key,
+                        'type': f'ceiling_{i+1}' if len(ceiling_materials_data) > 1 else 'ceiling'
+                    })
+        elif ceiling_area > 0 and ceiling_materials:
+            # Fallback to equal distribution
             area_per_material = ceiling_area / len(ceiling_materials)
             for i, material_key in enumerate(ceiling_materials):
                 if material_key:  # Skip None/empty materials
@@ -197,9 +252,20 @@ class RT60Calculator:
                         'type': f'ceiling_{i+1}' if len(ceiling_materials) > 1 else 'ceiling'
                     })
             
-        # Add wall surfaces (distribute area across materials)
-        if wall_area > 0 and wall_materials:
-            area_per_material = wall_area / len(wall_materials)
+        # Add wall surfaces with specific square footages
+        if wall_materials_data:
+            for i, material_data in enumerate(wall_materials_data):
+                material_key = material_data.get('material_key')
+                area = material_data.get('square_footage', 0)
+                if material_key and area > 0:
+                    surfaces.append({
+                        'area': area, 
+                        'material_key': material_key,
+                        'type': f'wall_{i+1}' if len(wall_materials_data) > 1 else 'wall'
+                    })
+        elif effective_wall_area > 0 and wall_materials:
+            # Fallback to equal distribution
+            area_per_material = effective_wall_area / len(wall_materials)
             for i, material_key in enumerate(wall_materials):
                 if material_key:  # Skip None/empty materials
                     surfaces.append({
@@ -208,8 +274,19 @@ class RT60Calculator:
                         'type': f'wall_{i+1}' if len(wall_materials) > 1 else 'wall'
                     })
             
-        # Add floor surfaces (distribute area across materials)
-        if floor_area > 0 and floor_materials:
+        # Add floor surfaces with specific square footages
+        if floor_materials_data:
+            for i, material_data in enumerate(floor_materials_data):
+                material_key = material_data.get('material_key')
+                area = material_data.get('square_footage', 0)
+                if material_key and area > 0:
+                    surfaces.append({
+                        'area': area,
+                        'material_key': material_key,
+                        'type': f'floor_{i+1}' if len(floor_materials_data) > 1 else 'floor'
+                    })
+        elif floor_area > 0 and floor_materials:
+            # Fallback to equal distribution  
             area_per_material = floor_area / len(floor_materials)
             for i, material_key in enumerate(floor_materials):
                 if material_key:  # Skip None/empty materials
@@ -217,6 +294,24 @@ class RT60Calculator:
                         'area': area_per_material,
                         'material_key': material_key,
                         'type': f'floor_{i+1}' if len(floor_materials) > 1 else 'floor'
+                    })
+        
+        # Add doors/windows as separate surfaces
+        if include_doors_windows and doors_windows:
+            for i, dw_item in enumerate(doors_windows):
+                material_key = dw_item.get('material_key')
+                area = dw_item.get('total_area', 0)
+                element_type = dw_item.get('type', 'door')
+                
+                if material_key and area > 0:
+                    # For doors/windows, we need to get absorption coefficients differently
+                    # since they may not be in STANDARD_MATERIALS
+                    surfaces.append({
+                        'area': area,
+                        'material_key': material_key,
+                        'type': f'{element_type}_{i+1}',
+                        'absorption_coefficients': dw_item.get('absorption_coefficients', {}),
+                        'is_door_window': True
                     })
             
         if not surfaces:
@@ -253,8 +348,44 @@ class RT60Calculator:
             area = surface['area']
             material_key = surface['material_key']
             surface_type = surface['type']
+            is_door_window = surface.get('is_door_window', False)
+            absorption_coefficients = surface.get('absorption_coefficients')
             
-            if material_key in self.materials_db:
+            if is_door_window and absorption_coefficients:
+                # Handle doors/windows with direct coefficients
+                frequency = space_data.get('frequency')
+                if frequency and frequency in absorption_coefficients:
+                    absorption_coeff = absorption_coefficients[frequency]
+                else:
+                    # Use NRC-equivalent
+                    nrc_frequencies = [250, 500, 1000, 2000]
+                    nrc_coeffs = [absorption_coefficients.get(f, 0) for f in nrc_frequencies]
+                    absorption_coeff = sum(nrc_coeffs) / 4.0
+                
+                absorption = area * absorption_coeff
+                
+                # Try to get material name from enhanced materials or use key
+                try:
+                    from ..data.enhanced_materials import ENHANCED_MATERIALS
+                    material_name = ENHANCED_MATERIALS.get(material_key, {}).get('name', material_key)
+                except ImportError:
+                    material_name = material_key
+                
+                results['surfaces'].append({
+                    'type': surface_type,
+                    'area': area,
+                    'material_name': material_name,
+                    'material_key': material_key,
+                    'absorption_coeff': absorption_coeff,
+                    'absorption': absorption,
+                    'is_door_window': True
+                })
+                
+                total_area += area
+                total_absorption += absorption
+                
+            elif material_key in self.materials_db:
+                # Handle standard materials
                 material = self.materials_db[material_key]
                 
                 # Get appropriate absorption coefficient
@@ -276,7 +407,8 @@ class RT60Calculator:
                     'material_name': material['name'],
                     'material_key': material_key,
                     'absorption_coeff': absorption_coeff,
-                    'absorption': absorption
+                    'absorption': absorption,
+                    'is_door_window': False
                 })
                 
                 total_area += area
