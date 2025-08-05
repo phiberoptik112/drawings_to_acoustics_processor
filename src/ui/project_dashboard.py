@@ -127,10 +127,10 @@ class ProjectDashboard(QMainWindow):
         # Project title and info
         title_label = QLabel(self.project.name)
         title_label.setFont(QFont("Arial", 16, QFont.Bold))
-        title_label.setStyleSheet("color: #2c3e50; margin: 10px;")
+        title_label.setStyleSheet("color: #1a1a1a; margin: 10px;")
         
         description_label = QLabel(self.project.description or "No description")
-        description_label.setStyleSheet("color: #7f8c8d; margin: 10px;")
+        description_label.setStyleSheet("color: #1a1a1a; margin: 10px;")
         
         info_layout = QVBoxLayout()
         info_layout.addWidget(title_label)
