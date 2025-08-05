@@ -20,7 +20,7 @@ class ProjectDialog(QDialog):
         """Initialize the user interface"""
         self.setWindowTitle("New Project")
         self.setModal(True)
-        self.setFixedSize(500, 350)
+        self.resize(500, 350)
         
         # Main layout
         layout = QVBoxLayout()

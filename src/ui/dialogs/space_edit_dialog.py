@@ -15,6 +15,7 @@ from models.space import Space, SurfaceType
 from data.materials import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS, get_materials_by_category
 from calculations.rt60_calculator import RT60Calculator
 from ui.rt60_plot_widget import RT60PlotContainer
+from ui.dialogs.material_search_dialog import MaterialSearchDialog
 
 
 class MaterialSearchWidget(QWidget):
@@ -27,6 +28,7 @@ class MaterialSearchWidget(QWidget):
         self.category = category
         self.filtered_materials = {}
         self.init_ui()
+        self.resize(500, 400)
         
     def init_ui(self):
         """Initialize the search interface"""
@@ -445,7 +447,8 @@ class SpaceEditDialog(QDialog):
         """Initialize the user interface"""
         self.setWindowTitle(f"Edit Space: {self.space.name if self.space else 'Unknown'}")
         self.setModal(True)
-        self.setFixedSize(1400, 1000)  # Increased width for plot
+        self.resize(1400, 1000)  # Initial size, now resizable
+        self.setMinimumSize(800, 600)  # Set minimum size to prevent too small window
         
         layout = QVBoxLayout()
         
@@ -597,6 +600,43 @@ class SpaceEditDialog(QDialog):
         
         acoustic_group.setLayout(acoustic_layout)
         layout.addWidget(acoustic_group)
+        
+        # Advanced Material Search section
+        search_group = QGroupBox("Material Analysis")
+        search_layout = QVBoxLayout()
+        
+        # Instructions
+        instructions = QLabel("Use advanced material search to analyze acoustic treatment needs and find optimal materials.")
+        instructions.setWordWrap(True)
+        instructions.setStyleSheet("color: #7f8c8d; font-style: italic; margin-bottom: 10px;")
+        search_layout.addWidget(instructions)
+        
+        # Advanced Material Search button
+        self.advanced_search_btn = QPushButton("🔍 Advanced Material Search")
+        self.advanced_search_btn.setToolTip("Search materials by frequency response and treatment needs")
+        self.advanced_search_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3498db;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 12px;
+                min-height: 35px;
+            }
+            QPushButton:hover {
+                background-color: #2980b9;
+            }
+            QPushButton:pressed {
+                background-color: #21618c;
+            }
+        """)
+        self.advanced_search_btn.clicked.connect(self.show_advanced_material_search)
+        search_layout.addWidget(self.advanced_search_btn)
+        
+        search_group.setLayout(search_layout)
+        layout.addWidget(search_group)
         
         layout.addStretch()
         widget.setLayout(layout)
@@ -1235,4 +1275,75 @@ class SpaceEditDialog(QDialog):
             'wall_material': self.space.wall_material,
             'floor_material': self.space.floor_material,
             'description': self.space.description
+        }
+    
+    def show_advanced_material_search(self):
+        """Show advanced material search dialog"""
+        # Get current space data for analysis
+        space_data = self.get_space_data_for_search()
+        
+        # Show material search dialog
+        search_dialog = MaterialSearchDialog(self, space_data)
+        search_dialog.material_applied.connect(self.apply_searched_material)
+        search_dialog.exec()
+    
+    def apply_searched_material(self, material, surface_type):
+        """Apply material selected from advanced search"""
+        material_key = material.get('key', '')
+        
+        if surface_type == 'ceiling':
+            # Add material to ceiling materials list
+            self.ceiling_materials.add_material(material_key)
+        elif surface_type == 'wall':
+            # Add material to wall materials list
+            self.wall_materials.add_material(material_key)
+        elif surface_type == 'floor':
+            # Add material to floor materials list
+            self.floor_materials.add_material(material_key)
+        
+        # Update calculations and plot
+        self.update_calculations_preview()
+        self.schedule_plot_update()
+        
+        # Show confirmation message
+        QMessageBox.information(
+            self, 
+            "Material Applied",
+            f"Applied {material.get('name', 'Unknown')} to {surface_type} surface."
+        )
+    
+    def get_space_data_for_search(self):
+        """Get the current space data for material search analysis"""
+        # Calculate volume
+        floor_area = self.area_spin.value()
+        height = self.ceiling_height_spin.value()
+        volume = floor_area * height
+        
+        # Calculate wall area
+        wall_area = self.wall_area_spin.value()
+        
+        # Get current materials data
+        ceiling_materials_data = self.ceiling_materials.get_materials_data()
+        wall_materials_data = self.wall_materials.get_materials_data()
+        floor_materials_data = self.floor_materials.get_materials_data()
+        
+        # Extract material keys for backward compatibility
+        ceiling_materials = [m['material_key'] for m in ceiling_materials_data]
+        wall_materials = [m['material_key'] for m in wall_materials_data]
+        floor_materials = [m['material_key'] for m in floor_materials_data]
+        
+        return {
+            'name': self.name_edit.text().strip(),
+            'description': self.description_edit.toPlainText().strip(),
+            'floor_area': floor_area,
+            'ceiling_height': height,
+            'volume': volume,
+            'wall_area': wall_area,
+            'target_rt60': self.target_rt60_spin.value(),
+            'ceiling_materials': ceiling_materials,
+            'wall_materials': wall_materials,
+            'floor_materials': floor_materials,
+            'ceiling_materials_data': ceiling_materials_data,
+            'wall_materials_data': wall_materials_data,
+            'floor_materials_data': floor_materials_data
         }

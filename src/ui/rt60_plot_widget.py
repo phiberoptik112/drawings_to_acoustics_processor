@@ -35,7 +35,7 @@ class RT60PlotWidget(QWidget):
     
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+        self.resize(800, 600)        
         # Initialize data
         self.frequencies = [125, 250, 500, 1000, 2000, 4000]
         self.current_rt60_values = {}
