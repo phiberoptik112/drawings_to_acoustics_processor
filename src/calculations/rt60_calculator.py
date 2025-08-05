@@ -3,7 +3,10 @@ RT60 Calculator - Reverberation time calculation engine using Sabine and Eyring 
 """
 
 import math
-from data import STANDARD_MATERIALS
+try:
+    from ..data.materials import STANDARD_MATERIALS
+except ImportError:
+    from data.materials import STANDARD_MATERIALS
 
 
 class RT60Calculator:
@@ -12,22 +15,44 @@ class RT60Calculator:
     def __init__(self):
         self.materials_db = STANDARD_MATERIALS
         
-    def calculate_surface_absorption(self, area, material_key):
-        """Calculate absorption for a surface"""
+    def calculate_surface_absorption(self, area, material_key, frequency=None):
+        """
+        Calculate absorption for a surface
+        
+        Args:
+            area: Surface area in square feet
+            material_key: Material identifier
+            frequency: Optional frequency (125, 250, 500, 1000, 2000, 4000) for specific calculation
+        
+        Returns:
+            float: Absorption in sabins
+        """
         if material_key not in self.materials_db:
             return 0.0
             
         material = self.materials_db[material_key]
-        absorption_coeff = material['absorption_coeff']
+        
+        # Use frequency-specific coefficient if available and requested
+        if frequency and 'coefficients' in material:
+            freq_str = str(frequency)
+            if freq_str in material['coefficients']:
+                absorption_coeff = material['coefficients'][freq_str]
+            else:
+                # Fallback to general absorption coefficient
+                absorption_coeff = material['absorption_coeff']
+        else:
+            # Use NRC or general absorption coefficient
+            absorption_coeff = material.get('nrc', material['absorption_coeff'])
         
         return area * absorption_coeff
         
-    def calculate_total_absorption(self, surfaces):
+    def calculate_total_absorption(self, surfaces, frequency=None):
         """
         Calculate total absorption from multiple surfaces
         
         Args:
             surfaces: List of dicts with 'area' and 'material_key'
+            frequency: Optional frequency for frequency-specific calculation
         
         Returns:
             float: Total absorption in sabins
@@ -39,7 +64,7 @@ class RT60Calculator:
             material_key = surface.get('material_key')
             
             if area > 0 and material_key:
-                absorption = self.calculate_surface_absorption(area, material_key)
+                absorption = self.calculate_surface_absorption(area, material_key, frequency)
                 total_absorption += absorption
                 
         return total_absorption
@@ -63,7 +88,7 @@ class RT60Calculator:
             
         return 0.161 * volume / total_absorption
         
-    def calculate_rt60_eyring(self, volume, surfaces):
+    def calculate_rt60_eyring(self, volume, surfaces, frequency=None):
         """
         Calculate RT60 using Eyring formula (more accurate for high absorption)
         
@@ -73,6 +98,7 @@ class RT60Calculator:
         Args:
             volume: Room volume in cubic feet
             surfaces: List of surface dicts with area and material_key
+            frequency: Optional frequency for frequency-specific calculation
             
         Returns:
             float: RT60 in seconds
@@ -85,7 +111,18 @@ class RT60Calculator:
             material_key = surface.get('material_key')
             
             if area > 0 and material_key and material_key in self.materials_db:
-                absorption_coeff = self.materials_db[material_key]['absorption_coeff']
+                material = self.materials_db[material_key]
+                
+                # Get appropriate absorption coefficient
+                if frequency and 'coefficients' in material:
+                    freq_str = str(frequency)
+                    if freq_str in material['coefficients']:
+                        absorption_coeff = material['coefficients'][freq_str]
+                    else:
+                        absorption_coeff = material['absorption_coeff']
+                else:
+                    absorption_coeff = material.get('nrc', material['absorption_coeff'])
+                
                 total_area += area
                 weighted_absorption += area * absorption_coeff
                 
@@ -114,7 +151,7 @@ class RT60Calculator:
         Calculate RT60 for a space
         
         Args:
-            space_data: Dict with volume, areas, and materials
+            space_data: Dict with volume, areas, and materials (supports both single and multiple materials)
             method: 'sabine' or 'eyring'
             
         Returns:
@@ -126,9 +163,18 @@ class RT60Calculator:
         wall_area = space_data.get('wall_area', 0)
         ceiling_area = space_data.get('ceiling_area', floor_area)  # Default to floor area
         
-        ceiling_material = space_data.get('ceiling_material')
-        wall_material = space_data.get('wall_material')
-        floor_material = space_data.get('floor_material')
+        # Support both new multiple materials format and legacy single materials
+        ceiling_materials = space_data.get('ceiling_materials', [])
+        wall_materials = space_data.get('wall_materials', [])
+        floor_materials = space_data.get('floor_materials', [])
+        
+        # Fallback to legacy single material fields if no multiple materials
+        if not ceiling_materials and space_data.get('ceiling_material'):
+            ceiling_materials = [space_data.get('ceiling_material')]
+        if not wall_materials and space_data.get('wall_material'):
+            wall_materials = [space_data.get('wall_material')]
+        if not floor_materials and space_data.get('floor_material'):
+            floor_materials = [space_data.get('floor_material')]
         
         if volume <= 0:
             return {
@@ -137,29 +183,41 @@ class RT60Calculator:
                 'error': 'Invalid volume'
             }
             
-        # Prepare surfaces for calculation
+        # Prepare surfaces for calculation - now handling multiple materials per surface
         surfaces = []
         
-        if ceiling_area > 0 and ceiling_material:
-            surfaces.append({
-                'area': ceiling_area,
-                'material_key': ceiling_material,
-                'type': 'ceiling'
-            })
+        # Add ceiling surfaces (distribute area across materials)
+        if ceiling_area > 0 and ceiling_materials:
+            area_per_material = ceiling_area / len(ceiling_materials)
+            for i, material_key in enumerate(ceiling_materials):
+                if material_key:  # Skip None/empty materials
+                    surfaces.append({
+                        'area': area_per_material,
+                        'material_key': material_key,
+                        'type': f'ceiling_{i+1}' if len(ceiling_materials) > 1 else 'ceiling'
+                    })
             
-        if wall_area > 0 and wall_material:
-            surfaces.append({
-                'area': wall_area,
-                'material_key': wall_material,
-                'type': 'wall'
-            })
+        # Add wall surfaces (distribute area across materials)
+        if wall_area > 0 and wall_materials:
+            area_per_material = wall_area / len(wall_materials)
+            for i, material_key in enumerate(wall_materials):
+                if material_key:  # Skip None/empty materials
+                    surfaces.append({
+                        'area': area_per_material,
+                        'material_key': material_key,
+                        'type': f'wall_{i+1}' if len(wall_materials) > 1 else 'wall'
+                    })
             
-        if floor_area > 0 and floor_material:
-            surfaces.append({
-                'area': floor_area,
-                'material_key': floor_material,
-                'type': 'floor'
-            })
+        # Add floor surfaces (distribute area across materials)
+        if floor_area > 0 and floor_materials:
+            area_per_material = floor_area / len(floor_materials)
+            for i, material_key in enumerate(floor_materials):
+                if material_key:  # Skip None/empty materials
+                    surfaces.append({
+                        'area': area_per_material,
+                        'material_key': material_key,
+                        'type': f'floor_{i+1}' if len(floor_materials) > 1 else 'floor'
+                    })
             
         if not surfaces:
             return {
@@ -169,10 +227,11 @@ class RT60Calculator:
             }
             
         # Calculate RT60
+        frequency = space_data.get('frequency')  # Optional frequency for specific calculations
         if method.lower() == 'eyring':
-            rt60 = self.calculate_rt60_eyring(volume, surfaces)
+            rt60 = self.calculate_rt60_eyring(volume, surfaces, frequency)
         else:
-            total_absorption = self.calculate_total_absorption(surfaces)
+            total_absorption = self.calculate_total_absorption(surfaces, frequency)
             rt60 = self.calculate_rt60_sabine(volume, total_absorption)
             
         # Prepare detailed results
@@ -197,7 +256,18 @@ class RT60Calculator:
             
             if material_key in self.materials_db:
                 material = self.materials_db[material_key]
-                absorption_coeff = material['absorption_coeff']
+                
+                # Get appropriate absorption coefficient
+                frequency = space_data.get('frequency')
+                if frequency and 'coefficients' in material:
+                    freq_str = str(frequency)
+                    if freq_str in material['coefficients']:
+                        absorption_coeff = material['coefficients'][freq_str]
+                    else:
+                        absorption_coeff = material['absorption_coeff']
+                else:
+                    absorption_coeff = material.get('nrc', material['absorption_coeff'])
+                
                 absorption = area * absorption_coeff
                 
                 results['surfaces'].append({

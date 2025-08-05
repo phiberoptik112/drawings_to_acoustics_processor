@@ -3,7 +3,7 @@ Drawing Overlay - Transparent overlay for drawing tools on top of PDF viewer
 """
 
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel
-from PySide6.QtCore import Qt, QPoint, Signal
+from PySide6.QtCore import Qt, QPoint, Signal, QRect
 from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont
 from drawing.drawing_tools import DrawingToolManager, ToolType
 from drawing.scale_manager import ScaleManager
@@ -137,43 +137,77 @@ class DrawingOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         
-        # Draw existing elements
-        self.draw_rectangles(painter)
-        self.draw_components(painter)
-        self.draw_segments(painter)
-        
-        if self.show_measurements:
-            self.draw_measurements(painter)
+        try:
+            # Draw existing elements
+            self.draw_rectangles(painter)
+            self.draw_components(painter)
+            self.draw_segments(painter)
             
-        if self.show_grid:
-            self.draw_grid(painter)
-            
-        # Draw current tool preview
-        current_tool = self.tool_manager.get_current_tool()
-        if current_tool and current_tool.active:
-            current_tool.draw_preview(painter)
+            if self.show_measurements:
+                self.draw_measurements(painter)
+                
+            if self.show_grid:
+                self.draw_grid(painter)
+                
+            # Draw current tool preview
+            current_tool = self.tool_manager.get_current_tool()
+            if current_tool and current_tool.active:
+                current_tool.draw_preview(painter)
+        finally:
+            painter.end()
             
     def draw_rectangles(self, painter):
         """Draw room boundary rectangles"""
-        pen = QPen(QColor(0, 120, 215), 2, Qt.SolidLine)
-        brush = QBrush(QColor(0, 120, 215, 30))
-        
-        painter.setPen(pen)
-        painter.setBrush(brush)
-        
         for rect_data in self.rectangles:
-            rect = rect_data['bounds']
+            bounds = rect_data['bounds']
+            
+            # Handle both QRect objects and dictionary representations
+            if isinstance(bounds, dict):
+                # Convert dictionary back to QRect
+                rect = QRect(bounds['x'], bounds['y'], bounds['width'], bounds['height'])
+            else:
+                # Already a QRect object
+                rect = bounds
+            
+            # Differentiate between regular rectangles and converted spaces
+            is_space = rect_data.get('converted_to_space', False)
+            
+            if is_space:
+                # Green for spaces that are already converted
+                pen = QPen(QColor(34, 139, 34), 3, Qt.SolidLine)  # Forest green
+                brush = QBrush(QColor(34, 139, 34, 40))
+            else:
+                # Blue for regular rectangles
+                pen = QPen(QColor(0, 120, 215), 2, Qt.SolidLine)
+                brush = QBrush(QColor(0, 120, 215, 30))
+            
+            painter.setPen(pen)
+            painter.setBrush(brush)
             painter.drawRect(rect)
             
-            # Draw area label
+            # Draw label
             center_x = rect.center().x()
             center_y = rect.center().y()
             
-            area_text = rect_data.get('area_formatted', f"{rect_data.get('area_real', 0):.0f} sf")
-            
-            painter.setPen(QPen(Qt.black))
-            painter.setFont(QFont("Arial", 10, QFont.Bold))
-            painter.drawText(center_x - 30, center_y, area_text)
+            if is_space:
+                # Show space name for converted spaces
+                space_name = rect_data.get('space_name', 'Space')
+                area_text = rect_data.get('area_formatted', f"{rect_data.get('area_real', 0):.0f} sf")
+                
+                painter.setPen(QPen(Qt.black))
+                painter.setFont(QFont("Arial", 9, QFont.Bold))
+                
+                # Draw space name above area
+                painter.drawText(center_x - 40, center_y - 8, space_name)
+                painter.setFont(QFont("Arial", 8))
+                painter.drawText(center_x - 30, center_y + 8, area_text)
+            else:
+                # Show area for regular rectangles
+                area_text = rect_data.get('area_formatted', f"{rect_data.get('area_real', 0):.0f} sf")
+                
+                painter.setPen(QPen(Qt.black))
+                painter.setFont(QFont("Arial", 10, QFont.Bold))
+                painter.drawText(center_x - 30, center_y, area_text)
             
     def draw_components(self, painter):
         """Draw HVAC components"""
@@ -218,7 +252,7 @@ class DrawingOverlay(QWidget):
             
             length_text = seg_data.get('length_formatted', f"{seg_data.get('length_real', 0):.1f} ft")
             
-            painter.setPen(QPen(Qt.darkGreen))
+            painter.setPen(QPen(Qt.black))
             painter.setFont(QFont("Arial", 9))
             painter.drawText(mid_x + 5, mid_y - 5, length_text)
             
@@ -244,7 +278,7 @@ class DrawingOverlay(QWidget):
             
             length_text = meas_data.get('length_formatted', f"{meas_data.get('length_real', 0):.1f} ft")
             
-            painter.setPen(QPen(Qt.red))
+            painter.setPen(QPen(Qt.black))
             painter.setFont(QFont("Arial", 9, QFont.Bold))
             painter.drawText(mid_x + 5, mid_y - 10, f"📏 {length_text}")
             
@@ -271,6 +305,9 @@ class DrawingOverlay(QWidget):
             
     def clear_all_elements(self):
         """Clear all drawn elements"""
+        # Cancel any active tool first
+        self.tool_manager.cancel_tool()
+        
         self.rectangles.clear()
         self.components.clear()
         self.segments.clear()
@@ -314,7 +351,15 @@ class DrawingOverlay(QWidget):
         
     def load_elements_data(self, data):
         """Load element data from saved state"""
-        self.rectangles = data.get('rectangles', [])
+        # Load rectangles and reconstruct QRect objects
+        rectangles = data.get('rectangles', [])
+        for rect_data in rectangles:
+            bounds = rect_data.get('bounds')
+            if isinstance(bounds, dict):
+                # Reconstruct QRect from dictionary
+                rect_data['bounds'] = QRect(bounds['x'], bounds['y'], bounds['width'], bounds['height'])
+        
+        self.rectangles = rectangles
         self.components = data.get('components', [])
         self.segments = data.get('segments', [])
         self.measurements = data.get('measurements', [])

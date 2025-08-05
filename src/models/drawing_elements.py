@@ -19,6 +19,7 @@ class DrawingElement(Base):
     # Element identification
     element_type = Column(String(50), nullable=False)  # 'rectangle', 'component', 'segment', 'measurement'
     element_name = Column(String(255))  # Optional name/label
+    page_number = Column(Integer, default=1)  # PDF page number where element exists
     
     # Position and geometry (in pixels)
     x_position = Column(Float)
@@ -55,6 +56,7 @@ class DrawingElement(Base):
             'id': self.id,
             'type': self.element_type,
             'name': self.element_name,
+            'page_number': self.page_number,
             'x': self.x_position,
             'y': self.y_position,
             'width': self.width,
@@ -75,7 +77,7 @@ class DrawingElement(Base):
         return data
     
     @classmethod
-    def from_overlay_data(cls, drawing_id, project_id, element_data):
+    def from_overlay_data(cls, drawing_id, project_id, element_data, page_number=1):
         """Create DrawingElement from overlay element data"""
         element_type = element_data.get('type', 'unknown')
         
@@ -84,6 +86,7 @@ class DrawingElement(Base):
             drawing_id=drawing_id,
             project_id=project_id,
             element_type=element_type,
+            page_number=page_number,
             x_position=element_data.get('x'),
             y_position=element_data.get('y'),
             width=element_data.get('width'),
@@ -155,14 +158,15 @@ class DrawingElementManager:
     def __init__(self, session_factory):
         self.get_session = session_factory
         
-    def save_elements(self, drawing_id, project_id, overlay_data):
-        """Save all drawing elements from overlay data"""
+    def save_elements(self, drawing_id, project_id, overlay_data, page_number=1):
+        """Save all drawing elements from overlay data for a specific page"""
         try:
             session = self.get_session()
             
-            # Clear existing elements for this drawing
+            # Clear existing elements for this drawing and page
             session.query(DrawingElement).filter(
-                DrawingElement.drawing_id == drawing_id
+                DrawingElement.drawing_id == drawing_id,
+                DrawingElement.page_number == page_number
             ).delete()
             
             # Save new elements
@@ -177,7 +181,7 @@ class DrawingElementManager:
                             
                         # Create drawing element
                         drawing_element = DrawingElement.from_overlay_data(
-                            drawing_id, project_id, element_data
+                            drawing_id, project_id, element_data, page_number
                         )
                         
                         session.add(drawing_element)
@@ -193,13 +197,14 @@ class DrawingElementManager:
             session.close()
             raise e
             
-    def load_elements(self, drawing_id):
-        """Load drawing elements for overlay reconstruction"""
+    def load_elements(self, drawing_id, page_number=1):
+        """Load drawing elements for overlay reconstruction for a specific page"""
         try:
             session = self.get_session()
             
             elements = session.query(DrawingElement).filter(
-                DrawingElement.drawing_id == drawing_id
+                DrawingElement.drawing_id == drawing_id,
+                DrawingElement.page_number == page_number
             ).order_by(DrawingElement.created_date).all()
             
             # Group elements by type for overlay

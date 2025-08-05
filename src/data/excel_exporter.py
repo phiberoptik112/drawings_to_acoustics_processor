@@ -584,3 +584,6 @@ class ExcelExporter:
             
         except Exception as e:
             return {"error": str(e)}
+
+# Export the availability flag for compatibility
+EXCEL_EXPORT_AVAILABLE = EXCEL_AVAILABLE

@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
-from data import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS
+from data.materials import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS, get_materials_by_category
 
 
 class RoomPropertiesDialog(QDialog):
@@ -90,7 +90,7 @@ class RoomPropertiesDialog(QDialog):
         for key, room_type in ROOM_TYPE_DEFAULTS.items():
             self.room_type_combo.addItem(room_type['name'], key)
             
-        self.room_type_combo.currentDataChanged.connect(self.room_type_changed)
+        self.room_type_combo.currentIndexChanged.connect(self.room_type_index_changed)
         preset_layout.addWidget(self.room_type_combo)
         
         preset_group.setLayout(preset_layout)
@@ -269,20 +269,21 @@ class RoomPropertiesDialog(QDialog):
         
     def populate_material_combo(self, combo_box, category):
         """Populate a material combo box with materials of the specified category"""
-        # Add "Any" option for materials that work in any category
-        all_materials = [(key, mat) for key, mat in STANDARD_MATERIALS.items()]
-        
-        # Filter by category if specified, otherwise show all
+        # Get materials for the specific category
         if category:
-            filtered_materials = [(key, mat) for key, mat in all_materials 
-                                if mat.get('category') == category]
-            if not filtered_materials:  # If no materials for this category, show all
-                filtered_materials = all_materials
+            category_materials = get_materials_by_category(category)
+            if not category_materials:  # If no materials for this category, show all
+                category_materials = STANDARD_MATERIALS
         else:
-            filtered_materials = all_materials
+            category_materials = STANDARD_MATERIALS
             
-        for key, material in filtered_materials:
-            display_name = f"{material['name']} (α={material['absorption_coeff']})"
+        # Sort materials by name for better UX
+        sorted_materials = sorted(category_materials.items(), key=lambda x: x[1]['name'])
+            
+        for key, material in sorted_materials:
+            # Show NRC if available, otherwise show absorption coefficient
+            coeff_display = material.get('nrc', material['absorption_coeff'])
+            display_name = f"{material['name']} (α={coeff_display:.2f})"
             combo_box.addItem(display_name, key)
             
     def update_material_info(self, surface_type):
@@ -324,6 +325,12 @@ class RoomPropertiesDialog(QDialog):
         self.update_material_info('wall')
         self.update_material_info('floor')
         
+    def room_type_index_changed(self, index):
+        """Handle room type combo box index change"""
+        if index >= 0:
+            room_type_key = self.room_type_combo.itemData(index)
+            self.room_type_changed(room_type_key)
+    
     def room_type_changed(self, room_type_key):
         """Handle room type preset change"""
         if not room_type_key or room_type_key not in ROOM_TYPE_DEFAULTS:

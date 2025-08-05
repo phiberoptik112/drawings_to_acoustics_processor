@@ -8,6 +8,8 @@ from .drawing import Drawing
 from .space import Space, RoomBoundary
 from .hvac import HVACComponent, HVACPath, HVACSegment, SegmentFitting
 from .drawing_elements import DrawingElement, DrawingElementManager
+from .rt60_models import (SurfaceCategory, SurfaceType, AcousticMaterial, 
+                         RoomSurfaceInstance, RT60CalculationResult)
 
 __all__ = [
     'Base',
@@ -23,5 +25,10 @@ __all__ = [
     'HVACSegment', 
     'SegmentFitting',
     'DrawingElement',
-    'DrawingElementManager'
+    'DrawingElementManager',
+    'SurfaceCategory',
+    'SurfaceType', 
+    'AcousticMaterial',
+    'RoomSurfaceInstance',
+    'RT60CalculationResult'
 ]

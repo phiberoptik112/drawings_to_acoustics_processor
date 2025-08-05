@@ -158,8 +158,8 @@ class SurfaceManagementWidget(QWidget):
                     material_combo.setCurrentIndex(i)
                     break
         
-        material_combo.currentDataChanged.connect(
-            lambda material_key, r=row: self.material_changed(r, material_key)
+        material_combo.currentIndexChanged.connect(
+            lambda index, r=row: self.material_changed(r, material_combo.itemData(index) if index >= 0 else None)
         )
         self.surface_table.setCellWidget(row, 1, material_combo)
         
@@ -676,7 +676,7 @@ class AcousticsTab(QWidget):
         
         self.room_type_combo = QComboBox()
         self.populate_room_types()
-        self.room_type_combo.currentDataChanged.connect(self.room_type_changed)
+        self.room_type_combo.currentIndexChanged.connect(self.room_type_index_changed)
         target_layout.addRow("Room Type:", self.room_type_combo)
         
         self.target_rt60_spin = QDoubleSpinBox()
@@ -757,6 +757,12 @@ class AcousticsTab(QWidget):
             self.surface_widget.area_calculator = self.area_calculator
             self.surface_widget.update_calculated_areas()
             
+    def room_type_index_changed(self, index):
+        """Handle room type combo box index change"""
+        if index >= 0:
+            room_type_key = self.room_type_combo.itemData(index)
+            self.room_type_changed(room_type_key)
+    
     def room_type_changed(self, room_type_key):
         """Handle room type selection change"""
         if room_type_key in ROOM_TYPE_PRESETS:

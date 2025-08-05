@@ -38,7 +38,7 @@ class SplashScreen(QWidget):
         self.setGeometry(300, 300, 600, 400)
         self.setStyleSheet("""
             QWidget {
-                background-color: #f0f0f0;
+                background-color: #ffffff;
             }
             QLabel#title {
                 font-size: 24px;
@@ -66,7 +66,7 @@ class SplashScreen(QWidget):
                 background-color: #21618c;
             }
             QListWidget {
-                background-color: white;
+                background-color: black;
                 border: 1px solid #bdc3c7;
                 border-radius: 5px;
                 font-size: 12px;
