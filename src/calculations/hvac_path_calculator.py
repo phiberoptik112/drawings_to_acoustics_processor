@@ -85,19 +85,42 @@ class HVACPathCalculator:
             session.add(hvac_path)
             session.flush()  # Get ID
             
-            # Create segments
+            # Create segments using actual connections from drawing
             for i, seg_data in enumerate(segments):
-                from_comp_idx = min(i, len(db_components)-1)
-                to_comp_idx = min(i+1, len(db_components)-1)
+                # Find the actual connected components
+                from_comp_id = None
+                to_comp_id = None
                 
-                hvac_segment = HVACSegment(
-                    hvac_path_id=hvac_path.id,
-                    from_component_id=db_components[from_comp_idx].id,
-                    to_component_id=db_components[to_comp_idx].id,
-                    length=seg_data.get('length_real', 0),
-                    segment_order=i+1,
-                    duct_width=12,  # Default rectangular duct
-                    duct_height=8,
+                # Find from_component
+                if seg_data.get('from_component'):
+                    from_comp_data = seg_data['from_component']
+                    for comp_idx, db_comp in db_components.items():
+                        if (db_comp.x_position == from_comp_data.get('x', 0) and 
+                            db_comp.y_position == from_comp_data.get('y', 0) and
+                            db_comp.component_type == from_comp_data.get('component_type', 'unknown')):
+                            from_comp_id = db_comp.id
+                            break
+                
+                # Find to_component
+                if seg_data.get('to_component'):
+                    to_comp_data = seg_data['to_component']
+                    for comp_idx, db_comp in db_components.items():
+                        if (db_comp.x_position == to_comp_data.get('x', 0) and 
+                            db_comp.y_position == to_comp_data.get('y', 0) and
+                            db_comp.component_type == to_comp_data.get('component_type', 'unknown')):
+                            to_comp_id = db_comp.id
+                            break
+                
+                # Only create segment if we have at least one connection
+                if from_comp_id or to_comp_id:
+                    hvac_segment = HVACSegment(
+                        hvac_path_id=hvac_path.id,
+                        from_component_id=from_comp_id,
+                        to_component_id=to_comp_id,
+                        length=seg_data.get('length_real', 0),
+                        segment_order=i+1,
+                        duct_width=12,  # Default rectangular duct
+                        duct_height=8,
                     duct_shape='rectangular',
                     duct_type='sheet_metal'
                 )

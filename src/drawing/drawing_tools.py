@@ -142,7 +142,10 @@ class ComponentTool(DrawingTool):
                 'component_type': self.component_type,
                 'x': point.x(),
                 'y': point.y(),
-                'position': point
+                'position': {
+                    'x': point.x(),
+                    'y': point.y()
+                }
             }
             self.finished.emit(result)
             
@@ -160,6 +163,38 @@ class ComponentTool(DrawingTool):
                 # Draw as rectangle for equipment
                 rect = QRect(x - size//2, y - size//2, size, size)
                 painter.drawRect(rect)
+            elif self.component_type == 'elbow':
+                # Draw as L-shaped elbow for direction changes
+                painter.setPen(QPen(QColor(100, 100, 100), 3, Qt.SolidLine))
+                painter.setBrush(QBrush(QColor(100, 100, 100, 50)))
+                
+                # Draw L-shape
+                half_size = size // 2
+                painter.drawLine(x - half_size, y, x + half_size, y)  # Horizontal line
+                painter.drawLine(x, y - half_size, x, y + half_size)  # Vertical line
+                
+                # Draw connection points
+                painter.setBrush(QBrush(QColor(255, 255, 0, 150)))
+                painter.drawEllipse(x - half_size - 3, y - 3, 6, 6)  # Left connection
+                painter.drawEllipse(x - 3, y - half_size - 3, 6, 6)  # Top connection
+                painter.drawEllipse(x + half_size - 3, y - 3, 6, 6)  # Right connection
+                painter.drawEllipse(x - 3, y + half_size - 3, 6, 6)  # Bottom connection
+            elif self.component_type == 'branch':
+                # Draw as T-shaped branch for flow distribution
+                painter.setPen(QPen(QColor(150, 75, 0), 3, Qt.SolidLine))
+                painter.setBrush(QBrush(QColor(150, 75, 0, 50)))
+                
+                # Draw T-shape
+                half_size = size // 2
+                painter.drawLine(x - half_size, y, x + half_size, y)  # Horizontal line (main duct)
+                painter.drawLine(x, y - half_size, x, y + half_size)  # Vertical line (branch)
+                
+                # Draw connection points
+                painter.setBrush(QBrush(QColor(255, 255, 0, 150)))
+                painter.drawEllipse(x - half_size - 3, y - 3, 6, 6)  # Left connection (main)
+                painter.drawEllipse(x + half_size - 3, y - 3, 6, 6)  # Right connection (main)
+                painter.drawEllipse(x - 3, y - half_size - 3, 6, 6)  # Top connection (branch)
+                painter.drawEllipse(x - 3, y + half_size - 3, 6, 6)  # Bottom connection (branch)
             else:
                 # Draw as circle for terminals
                 painter.drawEllipse(x - size//2, y - size//2, size, size)
@@ -177,14 +212,130 @@ class SegmentTool(DrawingTool):
         self.pen = QPen(QColor(50, 150, 50), 3, Qt.SolidLine)
         self.from_component = None
         self.to_component = None
+        self.from_segment = None
+        self.to_segment = None
+        self.available_components = []  # List of components to connect to
+        self.available_segments = []  # List of existing segments to connect to
+        
+    def set_available_components(self, components):
+        """Set the list of available components to connect to"""
+        self.available_components = components
+        
+    def set_available_segments(self, segments):
+        """Set the list of available segments to connect to"""
+        self.available_segments = segments
         
     def set_from_component(self, component):
         """Set the starting component for the segment"""
         self.from_component = component
         
+    def find_nearby_component(self, point, max_distance=20):
+        """Find a component near the given point"""
+        if not self.available_components:
+            print(f"DEBUG: No available components to connect to")
+            return None
+            
+        print(f"DEBUG: Looking for component near point ({point.x()}, {point.y()})")
+        print(f"DEBUG: Available components: {len(self.available_components)}")
+        
+        for i, component in enumerate(self.available_components):
+            comp_x = component.get('x', 0)
+            comp_y = component.get('y', 0)
+            
+            distance = math.sqrt((point.x() - comp_x)**2 + (point.y() - comp_y)**2)
+            print(f"DEBUG: Component {i}: ({comp_x}, {comp_y}) - distance: {distance:.1f}")
+            
+            if distance <= max_distance:
+                print(f"DEBUG: Found component at distance {distance:.1f}")
+                return component
+                
+        print(f"DEBUG: No component found within {max_distance} pixels")
+        return None
+        
+    def find_nearby_segment(self, point, max_distance=20):
+        """Find a segment near the given point"""
+        if not self.available_segments:
+            print(f"DEBUG: No available segments to connect to")
+            return None
+            
+        print(f"DEBUG: Looking for segment near point ({point.x()}, {point.y()})")
+        print(f"DEBUG: Available segments: {len(self.available_segments)}")
+        
+        for i, segment in enumerate(self.available_segments):
+            # Check distance to segment endpoints
+            start_x = segment.get('start_x', 0)
+            start_y = segment.get('start_y', 0)
+            end_x = segment.get('end_x', 0)
+            end_y = segment.get('end_y', 0)
+            
+            # Distance to start point
+            start_distance = math.sqrt((point.x() - start_x)**2 + (point.y() - start_y)**2)
+            # Distance to end point
+            end_distance = math.sqrt((point.x() - end_x)**2 + (point.y() - end_y)**2)
+            
+            print(f"DEBUG: Segment {i}: start=({start_x}, {start_y}) end=({end_x}, {end_y})")
+            print(f"DEBUG:   Start distance: {start_distance:.1f}, End distance: {end_distance:.1f}")
+            
+            if start_distance <= max_distance:
+                print(f"DEBUG: Found segment at start point, distance {start_distance:.1f}")
+                return {'segment': segment, 'endpoint': 'start', 'distance': start_distance}
+            elif end_distance <= max_distance:
+                print(f"DEBUG: Found segment at end point, distance {end_distance:.1f}")
+                return {'segment': segment, 'endpoint': 'end', 'distance': end_distance}
+                
+        print(f"DEBUG: No segment found within {max_distance} pixels")
+        return None
+        
+    def start(self, point):
+        """Start segment drawing - try to connect to nearby component or segment"""
+        super().start(point)
+        
+        # Try to find a component at the start point
+        self.from_component = self.find_nearby_component(point)
+        
+        # If no component found, try to find a segment
+        if not self.from_component:
+            nearby_segment = self.find_nearby_segment(point)
+            if nearby_segment:
+                print(f"DEBUG: Starting segment from existing segment endpoint")
+                # Store segment connection info for later use
+                self.from_segment = nearby_segment
+        
+    def finish(self, point):
+        """Finish segment drawing - try to connect to nearby component or segment"""
+        print(f"DEBUG: SegmentTool.finish - method called, active: {self.active}")
+        if self.active:
+            print(f"DEBUG: SegmentTool.finish - tool is active, processing")
+            self.current_point = point
+            
+            # Try to find a component at the end point
+            self.to_component = self.find_nearby_component(point)
+            
+            # If no component found, try to find a segment
+            if not self.to_component:
+                nearby_segment = self.find_nearby_segment(point)
+                if nearby_segment:
+                    print(f"DEBUG: Ending segment at existing segment endpoint")
+                    # Store segment connection info for later use
+                    self.to_segment = nearby_segment
+            
+            self.active = False
+            print(f"DEBUG: SegmentTool.finish - calling get_result()")
+            result = self.get_result()
+            print(f"DEBUG: SegmentTool.finish - result: {result is not None}")
+            if result:
+                print(f"DEBUG: SegmentTool.finish - emitting finished signal")
+                self.finished.emit(result)
+            else:
+                print(f"DEBUG: SegmentTool.finish - no result to emit")
+        else:
+            print(f"DEBUG: SegmentTool.finish - tool is NOT active, skipping")
+                
     def get_result(self):
         """Get segment information"""
+        print(f"DEBUG: get_result - method called")
         if not self.start_point or not self.current_point:
+            print(f"DEBUG: get_result - no start or current point")
             return None
             
         # Calculate length
@@ -192,8 +343,21 @@ class SegmentTool(DrawingTool):
         x2, y2 = self.current_point.x(), self.current_point.y()
         length_pixels = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
         
-        if length_pixels > 20:  # Minimum segment length
-            return {
+        print(f"DEBUG: get_result - length_pixels: {length_pixels}")
+        
+        if length_pixels > 10:  # Minimum segment length (reduced for precise connections)
+            # Prevent self-connections
+            if self.from_component and self.to_component:
+                from_comp_id = f"{self.from_component.get('x', 0)}_{self.from_component.get('y', 0)}_{self.from_component.get('component_type', 'unknown')}"
+                to_comp_id = f"{self.to_component.get('x', 0)}_{self.to_component.get('y', 0)}_{self.to_component.get('component_type', 'unknown')}"
+                
+                if from_comp_id == to_comp_id:
+                    print(f"DEBUG: get_result - preventing self-connection")
+                    return None
+                else:
+                    print(f"DEBUG: get_result - components are different, allowing connection")
+            
+            result = {
                 'type': 'segment',
                 'start_x': x1,
                 'start_y': y1,
@@ -203,6 +367,17 @@ class SegmentTool(DrawingTool):
                 'from_component': self.from_component,
                 'to_component': self.to_component
             }
+            
+            print(f"DEBUG: Segment result - from_component: {self.from_component is not None}, to_component: {self.to_component is not None}")
+            if self.from_component:
+                print(f"DEBUG: From component: {self.from_component.get('component_type', 'unknown')} at ({self.from_component.get('x', 0)}, {self.from_component.get('y', 0)})")
+            if self.to_component:
+                print(f"DEBUG: To component: {self.to_component.get('component_type', 'unknown')} at ({self.to_component.get('x', 0)}, {self.to_component.get('y', 0)})")
+            
+            print(f"DEBUG: get_result - returning valid segment result")
+            return result
+        else:
+            print(f"DEBUG: get_result - segment too short ({length_pixels} pixels)")
         return None
         
     def draw_preview(self, painter):
@@ -210,6 +385,26 @@ class SegmentTool(DrawingTool):
         if self.active and self.start_point and self.current_point:
             painter.setPen(self.pen)
             painter.drawLine(self.start_point, self.current_point)
+            
+            # Draw detection radius around current point
+            painter.setPen(QPen(QColor(255, 255, 0, 100), 1, Qt.DashLine))
+            painter.setBrush(QBrush(QColor(255, 255, 0, 20)))
+            painter.drawEllipse(self.current_point.x() - 20, self.current_point.y() - 20, 40, 40)
+            
+            # Draw connection indicators
+            if self.from_component:
+                painter.setPen(QPen(QColor(0, 255, 0), 2, Qt.SolidLine))
+                painter.setBrush(QBrush(QColor(0, 255, 0, 100)))
+                comp_x = self.from_component.get('x', 0)
+                comp_y = self.from_component.get('y', 0)
+                painter.drawEllipse(comp_x - 8, comp_y - 8, 16, 16)
+            
+            if self.to_component:
+                painter.setPen(QPen(QColor(0, 255, 0), 2, Qt.SolidLine))
+                painter.setBrush(QBrush(QColor(0, 255, 0, 100)))
+                comp_x = self.to_component.get('x', 0)
+                comp_y = self.to_component.get('y', 0)
+                painter.drawEllipse(comp_x - 8, comp_y - 8, 16, 16)
             
             # Draw length label
             mid_x = (self.start_point.x() + self.current_point.x()) // 2
@@ -310,6 +505,16 @@ class DrawingToolManager(QObject):
         """Set component type for component tool"""
         if ToolType.COMPONENT in self.tools:
             self.tools[ToolType.COMPONENT].set_component_type(component_type)
+    
+    def set_available_components(self, components):
+        """Set available components for segment tool"""
+        if ToolType.SEGMENT in self.tools:
+            self.tools[ToolType.SEGMENT].set_available_components(components)
+            
+    def set_available_segments(self, segments):
+        """Set available segments for segment tool"""
+        if ToolType.SEGMENT in self.tools:
+            self.tools[ToolType.SEGMENT].set_available_segments(segments)
             
     def get_current_tool(self):
         """Get the current active tool"""
@@ -325,6 +530,7 @@ class DrawingToolManager(QObject):
         
     def finish_tool(self, point):
         """Finish current tool operation"""
+        print(f"DEBUG: finish_tool - calling current_tool.finish({point.x()}, {point.y()})")
         self.current_tool.finish(point)
         
     def cancel_tool(self):

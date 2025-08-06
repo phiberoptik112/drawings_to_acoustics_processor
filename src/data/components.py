@@ -43,6 +43,16 @@ STANDARD_COMPONENTS = {
         'name': 'Heating/Cooling Coil',
         'noise_level': 35.0,
         'description': 'Heat exchanger coil'
+    },
+    'elbow': {
+        'name': 'Duct Elbow',
+        'noise_level': 2.0,  # Low noise, mainly for direction change
+        'description': 'Ductwork elbow for direction changes'
+    },
+    'branch': {
+        'name': 'Duct Branch',
+        'noise_level': 3.0,  # Slightly higher noise due to flow splitting
+        'description': 'Ductwork branch for flow distribution'
     }
 }
 

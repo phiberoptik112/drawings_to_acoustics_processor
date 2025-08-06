@@ -49,9 +49,23 @@ class DrawingOverlay(QWidget):
         """Set the active drawing tool"""
         self.tool_manager.set_tool(tool_type)
         
+        # If switching to segment tool, update available components
+        if tool_type == ToolType.SEGMENT:
+            self.update_segment_tool_components()
+        
     def set_component_type(self, component_type):
         """Set component type for component tool"""
         self.tool_manager.set_component_type(component_type)
+    
+    def update_segment_tool_components(self):
+        """Update the segment tool with current available components and segments"""
+        print(f"DEBUG: Updating segment tool with {len(self.components)} components and {len(self.segments)} segments")
+        for i, comp in enumerate(self.components):
+            print(f"DEBUG: Component {i}: {comp.get('component_type', 'unknown')} at ({comp.get('x', 0)}, {comp.get('y', 0)})")
+        for i, seg in enumerate(self.segments):
+            print(f"DEBUG: Segment {i}: from_component={seg.get('from_component') is not None}, to_component={seg.get('to_component') is not None}")
+        self.tool_manager.set_available_components(self.components)
+        self.tool_manager.set_available_segments(self.segments)
         
     def mousePressEvent(self, event):
         """Handle mouse press events"""
@@ -76,7 +90,11 @@ class DrawingOverlay(QWidget):
         """Handle mouse release events"""
         if event.button() == Qt.LeftButton:
             point = QPoint(event.x(), event.y())
+            print(f"DEBUG: mouseReleaseEvent - pos: ({point.x()}, {point.y()})")
+            print(f"DEBUG: mouseReleaseEvent - calling finish_tool")
             self.tool_manager.finish_tool(point)
+            print(f"DEBUG: mouseReleaseEvent - calling cancel_tool")
+            self.tool_manager.cancel_tool()
             self.update()
             
     def keyPressEvent(self, event):
@@ -88,6 +106,8 @@ class DrawingOverlay(QWidget):
     def handle_element_created(self, element_data):
         """Handle new drawing element creation"""
         element_type = element_data.get('type')
+        
+        print(f"DEBUG: handle_element_created called with type: {element_type}")
         
         if element_type == 'rectangle':
             # Add real-world calculations
@@ -103,11 +123,16 @@ class DrawingOverlay(QWidget):
             })
             
             self.rectangles.append(element_data)
+            print(f"DEBUG: Added rectangle, total rectangles: {len(self.rectangles)}")
             
         elif element_type == 'component':
             self.components.append(element_data)
+            print(f"DEBUG: Added component, total components: {len(self.components)}")
+            # Update segment tool with new component
+            self.update_segment_tool_components()
             
         elif element_type == 'segment':
+            print(f"DEBUG: Processing segment with from_component={element_data.get('from_component') is not None}, to_component={element_data.get('to_component') is not None}")
             # Add real-world length calculation
             length_real = self.scale_manager.pixels_to_real(element_data['length_pixels'])
             element_data.update({
@@ -116,6 +141,10 @@ class DrawingOverlay(QWidget):
             })
             
             self.segments.append(element_data)
+            print(f"DEBUG: Added segment, total segments: {len(self.segments)}")
+            
+            # Update segment tool with new segments
+            self.update_segment_tool_components()
             
         elif element_type == 'measurement':
             # Add real-world measurement
@@ -211,23 +240,61 @@ class DrawingOverlay(QWidget):
             
     def draw_components(self, painter):
         """Draw HVAC components"""
-        pen = QPen(QColor(220, 100, 50), 2, Qt.SolidLine)
-        brush = QBrush(QColor(220, 100, 50, 100))
-        
-        painter.setPen(pen)
-        painter.setBrush(brush)
-        
         for comp_data in self.components:
             x, y = comp_data['x'], comp_data['y']
             comp_type = comp_data['component_type']
             size = 24
             
-            # Draw component shape
+            # Draw component shape based on type
             if comp_type in ['ahu', 'coil']:
                 # Rectangle for equipment
+                pen = QPen(QColor(220, 100, 50), 2, Qt.SolidLine)
+                brush = QBrush(QColor(220, 100, 50, 100))
+                painter.setPen(pen)
+                painter.setBrush(brush)
                 painter.drawRect(x - size//2, y - size//2, size, size)
+            elif comp_type == 'elbow':
+                # L-shaped elbow for direction changes
+                pen = QPen(QColor(100, 100, 100), 3, Qt.SolidLine)
+                brush = QBrush(QColor(100, 100, 100, 50))
+                painter.setPen(pen)
+                painter.setBrush(brush)
+                
+                # Draw L-shape
+                half_size = size // 2
+                painter.drawLine(x - half_size, y, x + half_size, y)  # Horizontal line
+                painter.drawLine(x, y - half_size, x, y + half_size)  # Vertical line
+                
+                # Draw connection points
+                painter.setBrush(QBrush(QColor(255, 255, 0, 150)))
+                painter.drawEllipse(x - half_size - 3, y - 3, 6, 6)  # Left connection
+                painter.drawEllipse(x - 3, y - half_size - 3, 6, 6)  # Top connection
+                painter.drawEllipse(x + half_size - 3, y - 3, 6, 6)  # Right connection
+                painter.drawEllipse(x - 3, y + half_size - 3, 6, 6)  # Bottom connection
+            elif comp_type == 'branch':
+                # T-shaped branch for flow distribution
+                pen = QPen(QColor(150, 75, 0), 3, Qt.SolidLine)
+                brush = QBrush(QColor(150, 75, 0, 50))
+                painter.setPen(pen)
+                painter.setBrush(brush)
+                
+                # Draw T-shape
+                half_size = size // 2
+                painter.drawLine(x - half_size, y, x + half_size, y)  # Horizontal line (main duct)
+                painter.drawLine(x, y - half_size, x, y + half_size)  # Vertical line (branch)
+                
+                # Draw connection points
+                painter.setBrush(QBrush(QColor(255, 255, 0, 150)))
+                painter.drawEllipse(x - half_size - 3, y - 3, 6, 6)  # Left connection (main)
+                painter.drawEllipse(x + half_size - 3, y - 3, 6, 6)  # Right connection (main)
+                painter.drawEllipse(x - 3, y - half_size - 3, 6, 6)  # Top connection (branch)
+                painter.drawEllipse(x - 3, y + half_size - 3, 6, 6)  # Bottom connection (branch)
             else:
                 # Circle for terminals
+                pen = QPen(QColor(220, 100, 50), 2, Qt.SolidLine)
+                brush = QBrush(QColor(220, 100, 50, 100))
+                painter.setPen(pen)
+                painter.setBrush(brush)
                 painter.drawEllipse(x - size//2, y - size//2, size, size)
                 
             # Draw label
@@ -339,14 +406,24 @@ class DrawingOverlay(QWidget):
             'total_area': sum(rect.get('area_real', 0) for rect in self.rectangles),
             'total_duct_length': sum(seg.get('length_real', 0) for seg in self.segments)
         }
-        
+    
     def get_elements_data(self):
-        """Get all element data for saving"""
+        """Get all elements data with proper structure"""
+        print(f"DEBUG: get_elements_data - Returning {len(self.components)} components and {len(self.segments)} segments")
+        
+        # Debug: Print segment details
+        for i, seg in enumerate(self.segments):
+            print(f"DEBUG: Segment {i} in overlay: from_component={seg.get('from_component') is not None}, to_component={seg.get('to_component') is not None}")
+            if seg.get('from_component'):
+                print(f"DEBUG:   From: {seg['from_component'].get('component_type', 'unknown')} at ({seg['from_component'].get('x', 0)}, {seg['from_component'].get('y', 0)})")
+            if seg.get('to_component'):
+                print(f"DEBUG:   To: {seg['to_component'].get('component_type', 'unknown')} at ({seg['to_component'].get('x', 0)}, {seg['to_component'].get('y', 0)})")
+        
         return {
-            'rectangles': self.rectangles,
-            'components': self.components,
-            'segments': self.segments,
-            'measurements': self.measurements
+            'rectangles': self.rectangles.copy(),
+            'components': self.components.copy(),
+            'segments': self.segments.copy(),
+            'measurements': self.measurements.copy()
         }
         
     def load_elements_data(self, data):
