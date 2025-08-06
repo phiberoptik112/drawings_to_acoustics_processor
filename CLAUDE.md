@@ -16,6 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Phase 4**: HVAC noise calculations, NC rating analysis, Excel export
 - ✅ **Final**: Results dashboard, comprehensive testing
 - ✅ **Enhancement**: Acoustic materials database integration with 1,339+ materials
+- ✅ **Advanced Feature**: Frequency-based material search system with treatment analysis
 
 ## Development Setup
 
@@ -109,6 +110,7 @@ materials/                 # External acoustic materials database
 - **Database Persistence**: All elements saved with complete reconstruction
 - **Results Dashboard**: Comprehensive analysis display with real-time updates
 - **Excel Export**: Professional multi-sheet reports with formatting
+- **Advanced Material Search**: Frequency-based analysis with interactive graphs and treatment recommendations
 
 **Professional Standards:**
 - LEED acoustic certification requirements

@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from data.materials import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS, get_materials_by_category
+from .material_search_dialog import MaterialSearchDialog
 
 
 class RoomPropertiesDialog(QDialog):
@@ -33,7 +34,7 @@ class RoomPropertiesDialog(QDialog):
         """Initialize the user interface"""
         self.setWindowTitle("Room Properties")
         self.setModal(True)
-        self.setFixedSize(600, 700)
+        self.resize(600, 700)
         
         layout = QVBoxLayout()
         
@@ -164,11 +165,23 @@ class RoomPropertiesDialog(QDialog):
         widget = QWidget()
         layout = QVBoxLayout()
         
-        # Instructions
+        # Instructions and advanced search button
+        header_layout = QHBoxLayout()
+        
         instructions = QLabel("Select materials for each surface type. This affects RT60 calculations.")
         instructions.setWordWrap(True)
         instructions.setStyleSheet("color: #7f8c8d; font-style: italic; margin-bottom: 10px;")
-        layout.addWidget(instructions)
+        header_layout.addWidget(instructions)
+        
+        header_layout.addStretch()
+        
+        # Advanced Material Search button
+        self.advanced_search_btn = QPushButton("🔍 Advanced Material Search")
+        self.advanced_search_btn.setToolTip("Search materials by frequency response and treatment needs")
+        self.advanced_search_btn.clicked.connect(self.show_advanced_material_search)
+        header_layout.addWidget(self.advanced_search_btn)
+        
+        layout.addLayout(header_layout)
         
         # Ceiling materials
         ceiling_group = QGroupBox("Ceiling Material")
@@ -506,6 +519,61 @@ class RoomPropertiesDialog(QDialog):
         # Emit signal and close
         self.space_created.emit(space_data)
         self.accept()
+        
+    def show_advanced_material_search(self):
+        """Show advanced material search dialog"""
+        # Get current space data for analysis
+        space_data = self.get_space_data()
+        
+        # Add volume calculation if missing
+        if space_data['floor_area'] > 0 and space_data['ceiling_height'] > 0:
+            space_data['volume'] = space_data['floor_area'] * space_data['ceiling_height']
+            
+            # Calculate wall area
+            width_real = self.rectangle_data.get('width_real', 0)
+            height_real = self.rectangle_data.get('height_real', 0)
+            
+            if width_real > 0 and height_real > 0:
+                perimeter = 2 * (width_real + height_real)
+                space_data['wall_area'] = perimeter * space_data['ceiling_height']
+        
+        # Show material search dialog
+        search_dialog = MaterialSearchDialog(self, space_data)
+        search_dialog.material_applied.connect(self.apply_searched_material)
+        search_dialog.exec()
+        
+    def apply_searched_material(self, material, surface_type):
+        """Apply material selected from advanced search"""
+        material_key = material.get('key', '')
+        
+        if surface_type == 'ceiling':
+            # Find and select the material in ceiling combo
+            for i in range(self.ceiling_combo.count()):
+                if self.ceiling_combo.itemData(i) == material_key:
+                    self.ceiling_combo.setCurrentIndex(i)
+                    break
+        elif surface_type == 'wall':
+            # Find and select the material in wall combo
+            for i in range(self.wall_combo.count()):
+                if self.wall_combo.itemData(i) == material_key:
+                    self.wall_combo.setCurrentIndex(i)
+                    break
+        elif surface_type == 'floor':
+            # Find and select the material in floor combo
+            for i in range(self.floor_combo.count()):
+                if self.floor_combo.itemData(i) == material_key:
+                    self.floor_combo.setCurrentIndex(i)
+                    break
+        
+        # Update material info display
+        self.update_material_info(surface_type)
+        
+        # Show confirmation message
+        QMessageBox.information(
+            self, 
+            "Material Applied",
+            f"Applied {material.get('name', 'Unknown')} to {surface_type} surface."
+        )
         
     def get_space_data(self):
         """Get the current space data (for external access)"""

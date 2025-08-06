@@ -23,7 +23,7 @@ class ScaleDialog(QDialog):
         """Initialize the user interface"""
         self.setWindowTitle("Set Drawing Scale")
         self.setModal(True)
-        self.setFixedSize(500, 400)
+        self.resize(500, 400)
         
         layout = QVBoxLayout()
         

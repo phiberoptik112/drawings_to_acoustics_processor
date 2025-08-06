@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QIcon, QColor
 
-from models import get_session, Project, Drawing, Space, HVACPath
+from models import get_session, Project, Drawing, Space, HVACPath, HVACComponent
 from ui.drawing_interface import DrawingInterface
 from ui.results_widget import ResultsWidget
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
@@ -105,10 +105,16 @@ class ProjectDashboard(QMainWindow):
         drawings_menu.addAction('Open Drawing', self.open_drawing)
         drawings_menu.addAction('Remove Drawing', self.remove_drawing)
         
+        # HVAC menu
+        hvac_menu = menubar.addMenu('HVAC')
+        hvac_menu.addAction('New Path', self.new_hvac_path)
+        hvac_menu.addAction('Analyze Paths', self.analyze_hvac_paths)
+        hvac_menu.addSeparator()
+        hvac_menu.addAction('Calculate All Noise', self.calculate_all_noise)
+        
         # Calculations menu
         calc_menu = menubar.addMenu('Calculations')
         calc_menu.addAction('Calculate All RT60', self.calculate_all_rt60)
-        calc_menu.addAction('Calculate All Noise', self.calculate_all_noise)
         
         # Reports menu
         reports_menu = menubar.addMenu('Reports')
@@ -236,31 +242,21 @@ class ProjectDashboard(QMainWindow):
         return widget
         
     def create_hvac_tab(self):
-        """Create the HVAC paths tab"""
-        widget = QWidget()
-        layout = QVBoxLayout()
+        """Create the HVAC paths tab with comprehensive management"""
+        from ui.hvac_management_widget import HVACManagementWidget
         
-        # HVAC paths list
-        self.hvac_list = QListWidget()
-        layout.addWidget(self.hvac_list)
+        # Create the HVAC management widget
+        self.hvac_widget = HVACManagementWidget(self.project_id, self)
         
-        # Buttons
-        button_layout = QHBoxLayout()
+        # Connect signals for integration
+        self.hvac_widget.path_created.connect(self.on_hvac_path_created)
+        self.hvac_widget.path_updated.connect(self.on_hvac_path_updated)
+        self.hvac_widget.path_deleted.connect(self.on_hvac_path_deleted)
+        self.hvac_widget.component_created.connect(self.on_hvac_component_created)
+        self.hvac_widget.component_updated.connect(self.on_hvac_component_updated)
+        self.hvac_widget.component_deleted.connect(self.on_hvac_component_deleted)
         
-        new_path_btn = QPushButton("New Path")
-        new_path_btn.clicked.connect(self.new_hvac_path)
-        
-        edit_path_btn = QPushButton("Edit Path")
-        edit_path_btn.clicked.connect(self.edit_hvac_path)
-        
-        button_layout.addWidget(new_path_btn)
-        button_layout.addWidget(edit_path_btn)
-        button_layout.addStretch()
-        
-        layout.addLayout(button_layout)
-        widget.setLayout(layout)
-        
-        return widget
+        return self.hvac_widget
         
     def create_right_panel(self):
         """Create the right panel with details and results"""
@@ -415,21 +411,9 @@ class ProjectDashboard(QMainWindow):
             
     def refresh_hvac_paths(self):
         """Refresh the HVAC paths list"""
-        try:
-            session = get_session()
-            paths = session.query(HVACPath).filter(HVACPath.project_id == self.project_id).all()
-            
-            self.hvac_list.clear()
-            for path in paths:
-                item_text = f"🔀 {path.name} ({path.path_type})"
-                item = QListWidgetItem(item_text)
-                item.setData(Qt.UserRole, path.id)
-                self.hvac_list.addItem(item)
-                
-            session.close()
-            
-        except Exception as e:
-            QMessageBox.warning(self, "Warning", f"Could not load HVAC paths:\n{str(e)}")
+        # This is now handled by the HVAC management widget
+        if hasattr(self, 'hvac_widget'):
+            self.hvac_widget.refresh_data()
             
     def refresh_component_library(self):
         """Refresh the component library display"""
@@ -657,11 +641,13 @@ class ProjectDashboard(QMainWindow):
         
     def new_hvac_path(self):
         """Create a new HVAC path"""
-        QMessageBox.information(self, "New HVAC Path", "HVAC path creation will be implemented.")
+        from ui.dialogs.hvac_path_dialog import show_hvac_path_dialog
+        show_hvac_path_dialog(self, self.project_id)
         
     def edit_hvac_path(self):
         """Edit HVAC path properties"""
-        QMessageBox.information(self, "Edit HVAC Path", "HVAC path editing will be implemented.")
+        # This is now handled by the HVAC management widget
+        pass
         
     def save_project(self):
         """Save the current project"""
@@ -679,9 +665,54 @@ class ProjectDashboard(QMainWindow):
         """Calculate RT60 for all spaces"""
         QMessageBox.information(self, "Calculate RT60", "RT60 calculation will be implemented.")
         
+    def analyze_hvac_paths(self):
+        """Open HVAC path analysis dialog"""
+        from ui.dialogs.hvac_path_analysis_dialog import show_hvac_path_analysis_dialog
+        show_hvac_path_analysis_dialog(self, self.project_id)
+    
     def calculate_all_noise(self):
         """Calculate noise for all HVAC paths"""
-        QMessageBox.information(self, "Calculate Noise", "Noise calculation will be implemented.")
+        if hasattr(self, 'hvac_widget'):
+            self.hvac_widget.calculate_all_paths()
+        else:
+            QMessageBox.information(self, "Calculate Noise", "Please use the HVAC Paths tab to calculate noise.")
+    
+    # HVAC signal handlers
+    def on_hvac_path_created(self, path):
+        """Handle HVAC path creation"""
+        self.refresh_all_data()
+        QMessageBox.information(self, "HVAC Path Created", 
+                               f"Successfully created HVAC path: {path.name}")
+    
+    def on_hvac_path_updated(self, path):
+        """Handle HVAC path update"""
+        self.refresh_all_data()
+        QMessageBox.information(self, "HVAC Path Updated", 
+                               f"Successfully updated HVAC path: {path.name}")
+    
+    def on_hvac_path_deleted(self, path_id):
+        """Handle HVAC path deletion"""
+        self.refresh_all_data()
+        QMessageBox.information(self, "HVAC Path Deleted", 
+                               "HVAC path has been deleted.")
+    
+    def on_hvac_component_created(self, component):
+        """Handle HVAC component creation"""
+        self.refresh_all_data()
+        QMessageBox.information(self, "HVAC Component Created", 
+                               f"Successfully created HVAC component: {component.name}")
+    
+    def on_hvac_component_updated(self, component):
+        """Handle HVAC component update"""
+        self.refresh_all_data()
+        QMessageBox.information(self, "HVAC Component Updated", 
+                               f"Successfully updated HVAC component: {component.name}")
+    
+    def on_hvac_component_deleted(self, component_id):
+        """Handle HVAC component deletion"""
+        self.refresh_all_data()
+        QMessageBox.information(self, "HVAC Component Deleted", 
+                               "HVAC component has been deleted.")
         
     def show_project_summary(self):
         """Show project summary report"""

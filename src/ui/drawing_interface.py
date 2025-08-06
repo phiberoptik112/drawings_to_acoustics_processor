@@ -45,6 +45,7 @@ class DrawingInterface(QMainWindow):
         
         # Selected element for context operations
         self.selected_rectangle = None
+        self.selected_hvac_element = None
         
         # Current page tracking
         self.current_page_number = 1
@@ -275,11 +276,17 @@ class DrawingInterface(QMainWindow):
         self.create_room_btn.setEnabled(False)
         self.create_room_btn.setToolTip("Convert selected rectangle to a space with acoustic properties")
         
+        self.create_path_btn = QPushButton("🔀 New Path")
+        self.create_path_btn.clicked.connect(self.create_path_from_selected)
+        self.create_path_btn.setEnabled(False)
+        self.create_path_btn.setToolTip("Create HVAC path from selected components and segments")
+        
         self.delete_element_btn = QPushButton("Delete")
         self.delete_element_btn.clicked.connect(self.delete_selected_element)
         self.delete_element_btn.setEnabled(False)
         
         element_actions_layout.addWidget(self.create_room_btn)
+        element_actions_layout.addWidget(self.create_path_btn)
         element_actions_layout.addWidget(self.delete_element_btn)
         
         elements_layout.addLayout(element_actions_layout)
@@ -794,14 +801,19 @@ class DrawingInterface(QMainWindow):
             
             # Enable appropriate buttons
             self.create_room_btn.setEnabled(element_type == 'rectangle')
+            self.create_path_btn.setEnabled(element_type in ['component', 'segment'])
             self.delete_element_btn.setEnabled(True)
             
             if element_type == 'rectangle':
                 self.selected_rectangle = element_data
+            elif element_type in ['component', 'segment']:
+                self.selected_hvac_element = element_data
         else:
             self.create_room_btn.setEnabled(False)
+            self.create_path_btn.setEnabled(False)
             self.delete_element_btn.setEnabled(False)
             self.selected_rectangle = None
+            self.selected_hvac_element = None
             
     def show_element_context_menu(self, position):
         """Show context menu for element list"""
@@ -819,6 +831,9 @@ class DrawingInterface(QMainWindow):
         if element_type == 'rectangle':
             create_room_action = menu.addAction("🏠 Create Room/Space")
             create_room_action.triggered.connect(lambda: self.create_room_from_rectangle(element_data))
+        elif element_type in ['component', 'segment']:
+            create_path_action = menu.addAction("🔀 Create HVAC Path")
+            create_path_action.triggered.connect(lambda: self.create_path_from_element(element_data))
             
         menu.addSeparator()
         delete_action = menu.addAction("🗑️ Delete Element")
@@ -830,6 +845,243 @@ class DrawingInterface(QMainWindow):
         """Create room from selected rectangle"""
         if self.selected_rectangle:
             self.create_room_from_rectangle(self.selected_rectangle)
+    
+    def create_path_from_selected(self):
+        """Create HVAC path from selected component or segment"""
+        if self.selected_hvac_element:
+            self.create_path_from_element(self.selected_hvac_element)
+            
+    def create_path_from_element(self, element_data):
+        """Create HVAC path from a selected component or segment"""
+        if not element_data:
+            QMessageBox.warning(self, "Error", "No HVAC element data available.")
+            return
+            
+        element_type = element_data.get('type')
+        
+        if element_type == 'component':
+            self.create_path_from_component(element_data)
+        elif element_type == 'segment':
+            self.create_path_from_segment(element_data)
+        else:
+            QMessageBox.warning(self, "Error", "Selected element is not a valid HVAC component or segment.")
+            
+    def create_path_from_component(self, component_data):
+        """Create HVAC path starting from a selected component"""
+        try:
+            # Get all components and segments from drawing
+            overlay_data = self.drawing_overlay.get_elements_data() if self.drawing_overlay else {}
+            components = overlay_data.get('components', [])
+            segments = overlay_data.get('segments', [])
+            
+            if len(components) < 2:
+                QMessageBox.information(self, "Create HVAC Path", 
+                                       "Need at least 2 HVAC components to create a path.\n"
+                                       "Use the Component tool to place more HVAC equipment.")
+                return
+            
+            # Find connected components through segments
+            connected_components = self.find_connected_components(component_data, components, segments)
+            
+            if len(connected_components) < 2:
+                QMessageBox.information(self, "Create HVAC Path",
+                                       "Selected component is not connected to other components.\n"
+                                       "Use the Segment tool to connect HVAC components.")
+                return
+            
+            # Create path from connected components
+            self.create_hvac_path_from_components(connected_components, segments)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create HVAC path from component:\n{str(e)}")
+    
+    def create_path_from_segment(self, segment_data):
+        """Create HVAC path from a selected segment"""
+        try:
+            # Get all components and segments from drawing
+            overlay_data = self.drawing_overlay.get_elements_data() if self.drawing_overlay else {}
+            components = overlay_data.get('components', [])
+            segments = overlay_data.get('segments', [])
+            
+            if len(components) < 2:
+                QMessageBox.information(self, "Create HVAC Path", 
+                                       "Need at least 2 HVAC components to create a path.\n"
+                                       "Use the Component tool to place HVAC equipment.")
+                return
+            
+            # Find the path that includes this segment
+            path_components = self.find_path_from_segment(segment_data, components, segments)
+            
+            if len(path_components) < 2:
+                QMessageBox.information(self, "Create HVAC Path",
+                                       "Selected segment is not part of a complete path.\n"
+                                       "Ensure components are properly connected.")
+                return
+            
+            # Create path from found components
+            self.create_hvac_path_from_components(path_components, segments)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create HVAC path from segment:\n{str(e)}")
+    
+    def find_connected_components(self, start_component, all_components, all_segments):
+        """Find all components connected to the start component through segments"""
+        print(f"DEBUG: Finding connected components for {start_component.get('component_type', 'unknown')}")
+        print(f"DEBUG: Total segments: {len(all_segments)}")
+        
+        connected = [start_component]
+        visited_ids = set()
+        to_visit = [start_component]
+        
+        # Get unique identifier for component (use position as fallback)
+        def get_component_id(comp):
+            return comp.get('id', f"{comp.get('x', 0)}_{comp.get('y', 0)}")
+        
+        while to_visit:
+            current = to_visit.pop(0)
+            current_id = get_component_id(current)
+            
+            if current_id in visited_ids:
+                continue
+                
+            visited_ids.add(current_id)
+            
+            # Find segments connected to this component
+            for i, segment in enumerate(all_segments):
+                print(f"DEBUG: Checking segment {i}: from_component={segment.get('from_component') is not None}, to_component={segment.get('to_component') is not None}")
+                
+                # Check if segment connects to current component
+                if (segment.get('from_component') == current or 
+                    segment.get('to_component') == current):
+                    
+                    print(f"DEBUG: Found connected segment {i}")
+                    
+                    # Find the other component in this segment
+                    other_component = None
+                    if segment.get('from_component') == current:
+                        other_component = segment.get('to_component')
+                    else:
+                        other_component = segment.get('from_component')
+                    
+                    if other_component:
+                        other_id = get_component_id(other_component)
+                        if other_id not in visited_ids:
+                            print(f"DEBUG: Adding connected component: {other_component.get('component_type', 'unknown')}")
+                            connected.append(other_component)
+                            to_visit.append(other_component)
+        
+        print(f"DEBUG: Found {len(connected)} connected components")
+        return connected
+    
+    def find_path_from_segment(self, start_segment, all_components, all_segments):
+        """Find all components in the path that includes the start segment"""
+        # Start with components connected by this segment
+        path_components = []
+        
+        from_comp = start_segment.get('from_component')
+        to_comp = start_segment.get('to_component')
+        
+        if from_comp:
+            path_components.append(from_comp)
+        if to_comp:
+            path_components.append(to_comp)
+        
+        # Get unique identifier for component (use position as fallback)
+        def get_component_id(comp):
+            return comp.get('id', f"{comp.get('x', 0)}_{comp.get('y', 0)}")
+        
+        # Get unique identifier for segment (use start/end points as fallback)
+        def get_segment_id(seg):
+            from_comp = seg.get('from_component', {})
+            to_comp = seg.get('to_component', {})
+            from_id = get_component_id(from_comp) if from_comp else 'none'
+            to_id = get_component_id(to_comp) if to_comp else 'none'
+            return f"{from_id}_{to_id}"
+        
+        # Expand the path by finding connected segments
+        visited_segment_ids = {get_segment_id(start_segment)}
+        to_visit_segments = [start_segment]
+        
+        while to_visit_segments:
+            current_segment = to_visit_segments.pop(0)
+            
+            # Find segments that connect to components in this segment
+            for segment in all_segments:
+                segment_id = get_segment_id(segment)
+                if segment_id in visited_segment_ids:
+                    continue
+                    
+                # Check if this segment connects to any component in our path
+                segment_from = segment.get('from_component')
+                segment_to = segment.get('to_component')
+                
+                # Check if any component in this segment is in our path
+                path_component_ids = {get_component_id(comp) for comp in path_components}
+                segment_from_id = get_component_id(segment_from) if segment_from else None
+                segment_to_id = get_component_id(segment_to) if segment_to else None
+                
+                if (segment_from_id in path_component_ids or segment_to_id in path_component_ids):
+                    visited_segment_ids.add(segment_id)
+                    to_visit_segments.append(segment)
+                    
+                    # Add new components to path
+                    if segment_from and segment_from_id not in path_component_ids:
+                        path_components.append(segment_from)
+                    if segment_to and segment_to_id not in path_component_ids:
+                        path_components.append(segment_to)
+        
+        return path_components
+    
+    def create_hvac_path_from_components(self, components, segments):
+        """Create HVAC path from a list of connected components"""
+        try:
+            # Add drawing ID to components
+            for comp in components:
+                comp['drawing_id'] = self.drawing.id
+            
+            # Filter segments that connect the components in our path
+            path_segments = []
+            component_ids = [comp.get('id') for comp in components]
+            
+            for segment in segments:
+                from_comp = segment.get('from_component')
+                to_comp = segment.get('to_component')
+                
+                if (from_comp and from_comp in components and 
+                    to_comp and to_comp in components):
+                    path_segments.append(segment)
+            
+            drawing_data = {
+                'components': components,
+                'segments': path_segments
+            }
+            
+            # Create HVAC path in database
+            hvac_path = self.hvac_path_calculator.create_hvac_path_from_drawing(
+                self.project_id, drawing_data
+            )
+            
+            if hvac_path:
+                # Show success message with path details
+                path_info = f"Successfully created HVAC path: {hvac_path.name}\n\n"
+                path_info += f"Components: {len(components)}\n"
+                path_info += f"Segments: {len(path_segments)}\n"
+                
+                if hvac_path.calculated_noise:
+                    path_info += f"Terminal Noise: {hvac_path.calculated_noise:.1f} dB(A)\n"
+                    path_info += f"NC Rating: NC-{hvac_path.calculated_nc:.0f}"
+                else:
+                    path_info += "Noise calculation pending"
+                
+                QMessageBox.information(self, "HVAC Path Created", path_info)
+                
+                # Update status bar
+                self.status_bar.showMessage(f"Created HVAC path '{hvac_path.name}' with {len(components)} components", 5000)
+            else:
+                QMessageBox.warning(self, "Creation Failed", "Failed to create HVAC path from drawing elements.")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")
             
     def create_room_from_rectangle(self, rectangle_data):
         """Create a room/space from rectangle data"""
@@ -1034,12 +1286,26 @@ class DrawingInterface(QMainWindow):
             self.update_elements_display()
             
     def create_hvac_path_from_drawing(self):
-        """Create HVAC path from drawing elements and save to database"""
+        """Create HVAC path from drawing elements using the dialog"""
         try:
             # Get HVAC components and segments from drawing elements
             overlay_data = self.drawing_overlay.get_elements_data() if self.drawing_overlay else {}
             components = overlay_data.get('components', [])
             segments = overlay_data.get('segments', [])
+            
+            print(f"DEBUG: create_hvac_path_from_drawing - Found {len(components)} components and {len(segments)} segments")
+            
+            # Debug: Print component details
+            for i, comp in enumerate(components):
+                print(f"DEBUG: Component {i}: {comp.get('component_type', 'unknown')} at ({comp.get('x', 0)}, {comp.get('y', 0)})")
+            
+            # Debug: Print segment details
+            for i, seg in enumerate(segments):
+                print(f"DEBUG: Segment {i}: from_component={seg.get('from_component') is not None}, to_component={seg.get('to_component') is not None}")
+                if seg.get('from_component'):
+                    print(f"DEBUG:   From: {seg['from_component'].get('component_type', 'unknown')} at ({seg['from_component'].get('x', 0)}, {seg['from_component'].get('y', 0)})")
+                if seg.get('to_component'):
+                    print(f"DEBUG:   To: {seg['to_component'].get('component_type', 'unknown')} at ({seg['to_component'].get('x', 0)}, {seg['to_component'].get('y', 0)})")
             
             if len(components) < 2:
                 QMessageBox.information(self, "Create HVAC Path", 
@@ -1053,27 +1319,16 @@ class DrawingInterface(QMainWindow):
                                        "Use the Segment tool to connect HVAC components.")
                 return
             
-            # Add drawing ID to components
-            for comp in components:
-                comp['drawing_id'] = self.drawing.id
+            # Open HVAC path dialog with drawing data
+            from ui.dialogs.hvac_path_dialog import HVACPathDialog
+            dialog = HVACPathDialog(self, self.project_id)
             
-            drawing_data = {
-                'components': components,
-                'segments': segments
-            }
+            # Pass drawing data to the dialog
+            dialog.set_drawing_data(components, segments, self.drawing.id)
             
-            # Create HVAC path in database
-            hvac_path = self.hvac_path_calculator.create_hvac_path_from_drawing(
-                self.project_id, drawing_data
-            )
-            
-            if hvac_path:
+            if dialog.exec() == QDialog.Accepted:
                 QMessageBox.information(self, "HVAC Path Created", 
-                                       f"Successfully created HVAC path: {hvac_path.name}\n"
-                                       f"Terminal Noise: {hvac_path.calculated_noise:.1f} dB(A)\n"
-                                       f"NC Rating: NC-{hvac_path.calculated_nc}")
-            else:
-                QMessageBox.warning(self, "Creation Failed", "Failed to create HVAC path from drawing elements.")
+                                       f"Successfully created HVAC path: {dialog.path.name if dialog.path else 'Unknown'}")
                 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")

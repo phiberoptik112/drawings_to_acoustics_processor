@@ -34,7 +34,7 @@ class NewSpaceDialog(QDialog):
         """Initialize the user interface"""
         self.setWindowTitle("Create New Space")
         self.setModal(True)
-        self.setFixedSize(700, 800)
+        self.resize(700, 800)
         
         layout = QVBoxLayout()
         
