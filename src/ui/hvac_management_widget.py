@@ -20,6 +20,7 @@ from ui.dialogs.hvac_component_dialog import HVACComponentDialog
 from ui.dialogs.hvac_segment_dialog import HVACSegmentDialog
 from ui.dialogs.hvac_path_dialog import HVACPathDialog
 from ui.dialogs.hvac_path_analysis_dialog import HVACPathAnalysisDialog
+from sqlalchemy.orm import selectinload
 
 
 class HVACManagementWidget(QWidget):
@@ -342,10 +343,17 @@ class HVACManagementWidget(QWidget):
         try:
             session = get_session()
             
-            # Load paths
-            paths = session.query(HVACPath).filter(
-                HVACPath.project_id == self.project_id
-            ).all()
+            # Load paths with required relationships eagerly to avoid lazy-load after session close
+            paths = (
+                session.query(HVACPath)
+                .options(
+                    selectinload(HVACPath.target_space),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                )
+                .filter(HVACPath.project_id == self.project_id)
+                .all()
+            )
             
             self.paths_list.clear()
             for path in paths:

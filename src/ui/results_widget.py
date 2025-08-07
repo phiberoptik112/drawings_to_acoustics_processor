@@ -10,7 +10,8 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QPalette, QColor
 
 from models import get_session, Project, Space, Drawing
-from models.hvac import HVACPath, HVACComponent
+from models.hvac import HVACPath, HVACComponent, HVACSegment
+from sqlalchemy.orm import selectinload
 from calculations import HVACPathCalculator, NCRatingAnalyzer
 from data.excel_exporter import ExcelExporter, EXCEL_EXPORT_AVAILABLE
 
@@ -300,9 +301,18 @@ class ResultsWidget(QWidget):
         try:
             session = get_session()
             
-            # Get all project data
+            # Get all project data, eagerly loading relationships used after the session closes
             spaces = session.query(Space).filter(Space.project_id == self.project_id).all()
-            hvac_paths = session.query(HVACPath).filter(HVACPath.project_id == self.project_id).all()
+            hvac_paths = (
+                session.query(HVACPath)
+                .options(
+                    selectinload(HVACPath.target_space),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                )
+                .filter(HVACPath.project_id == self.project_id)
+                .all()
+            )
             hvac_components = session.query(HVACComponent).filter(HVACComponent.project_id == self.project_id).all()
             drawings = session.query(Drawing).filter(Drawing.project_id == self.project_id).all()
             

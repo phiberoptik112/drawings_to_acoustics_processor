@@ -11,8 +11,13 @@ current_dir = os.path.dirname(__file__)
 src_dir = os.path.join(current_dir, 'src')
 sys.path.insert(0, src_dir)
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 from PySide6.QtWidgets import QApplication, QMainWindow, QPushButton, QVBoxLayout, QWidget
 from PySide6.QtCore import Qt
+
+# Ensure a single QApplication exists for tests
+_app = QApplication.instance() or QApplication([])
 
 def test_room_properties_dialog():
     """Test Room Properties Dialog button visibility"""

@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
-Simple PyQt5 test script
+Simple Qt test script using PySide6 to match the application
 """
 
+import os
 import sys
-from PyQt5.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
-from PyQt5.QtCore import Qt
+
+# Use offscreen platform for headless test environments
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
 
 def main():
     app = QApplication(sys.argv)
@@ -25,7 +30,7 @@ def main():
     window.show()
     
     print("PyQt5 test window should appear...")
-    return app.exec_()
+    return app.exec()
 
 if __name__ == '__main__':
     sys.exit(main()) 

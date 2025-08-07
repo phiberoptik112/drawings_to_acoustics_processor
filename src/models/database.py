@@ -44,6 +44,15 @@ def initialize_database(db_path=None):
     # Create all tables
     Base.metadata.create_all(bind=engine)
     
+    # Run idempotent HVAC schema migrations for legacy DBs
+    try:
+        from .migrate_hvac_schema import ensure_hvac_schema
+        ensure_hvac_schema()
+    except Exception as e:
+        # Avoid crashing startup; downstream code may still operate on fresh DBs
+        # If migration fails, it will surface when querying; better to log minimal info here
+        print(f"Warning: HVAC schema migration failed: {e}")
+    
     return db_path
 
 
