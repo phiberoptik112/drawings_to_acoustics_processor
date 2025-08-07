@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QToolBar, QButtonGroup, QPushButton, 
                              QLabel, QComboBox, QLineEdit, QGroupBox, 
                              QListWidget, QListWidgetItem, QMessageBox, QFileDialog, QSplitter,
-                             QFrame, QSpinBox)
+                             QFrame, QSpinBox, QDialog, QCheckBox)
 from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QIcon, QFont, QAction
 
@@ -50,6 +50,9 @@ class DrawingInterface(QMainWindow):
         # Current page tracking
         self.current_page_number = 1
         
+        # Path visibility tracking
+        self.visible_paths = set()  # Set of path IDs that are currently visible
+        
         # Initialize base scale ratio for zoom adjustments
         self._base_scale_ratio = 1.0
         
@@ -59,6 +62,9 @@ class DrawingInterface(QMainWindow):
         
         if self.drawing and self.drawing.file_path:
             self.load_pdf()
+            
+        # Load saved paths
+        self.load_saved_paths()
             
     def load_drawing_data(self):
         """Load drawing and project data from database"""
@@ -292,6 +298,70 @@ class DrawingInterface(QMainWindow):
         elements_layout.addLayout(element_actions_layout)
         elements_group.setLayout(elements_layout)
         layout.addWidget(elements_group)
+        
+        # Saved Paths section
+        paths_group = QGroupBox("Saved Paths")
+        paths_layout = QVBoxLayout()
+        
+        # Paths summary
+        self.paths_summary_label = QLabel("No paths saved")
+        paths_layout.addWidget(self.paths_summary_label)
+        
+        # Paths list with checkboxes
+        self.paths_list = QListWidget()
+        self.paths_list.setMaximumHeight(120)  # Limit height to save space
+        self.paths_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.paths_list.customContextMenuRequested.connect(self.show_path_context_menu)
+        paths_layout.addWidget(self.paths_list)
+        
+        # Path mode toggle
+        self.path_only_mode = QCheckBox("Show only visible paths")
+        self.path_only_mode.setToolTip("Hide all drawing elements except those belonging to visible paths")
+        self.path_only_mode.stateChanged.connect(self.toggle_path_only_mode)
+        paths_layout.addWidget(self.path_only_mode)
+        
+        # Path actions
+        path_actions_layout = QHBoxLayout()
+        
+        self.refresh_paths_btn = QPushButton("🔄 Refresh")
+        self.refresh_paths_btn.clicked.connect(self.load_saved_paths)
+        self.refresh_paths_btn.setToolTip("Refresh saved paths list")
+        
+        self.show_all_paths_btn = QPushButton("👁️ Show All")
+        self.show_all_paths_btn.clicked.connect(self.show_all_paths)
+        self.show_all_paths_btn.setToolTip("Show all paths on drawing")
+        
+        self.hide_all_paths_btn = QPushButton("👁️‍🗨️ Hide All")
+        self.hide_all_paths_btn.clicked.connect(self.hide_all_paths)
+        self.hide_all_paths_btn.setToolTip("Hide all paths from drawing")
+        
+        path_actions_layout.addWidget(self.refresh_paths_btn)
+        path_actions_layout.addWidget(self.show_all_paths_btn)
+        path_actions_layout.addWidget(self.hide_all_paths_btn)
+        
+        # Advanced path actions
+        path_actions_layout2 = QHBoxLayout()
+        
+        self.register_all_btn = QPushButton("🔗 Register All to Path 1")
+        self.register_all_btn.clicked.connect(lambda: self.register_all_elements_to_path(1))
+        self.register_all_btn.setToolTip("Register all drawing elements to Path 1 for complete hide/show control")
+        
+        self.force_show_btn = QPushButton("👁️ Force Show Path 1")
+        self.force_show_btn.clicked.connect(lambda: self.force_show_path(1))
+        self.force_show_btn.setToolTip("Force show Path 1 (debug button)")
+        
+        # Debug checkbox test
+        self.debug_checkbox = QCheckBox("Debug Test Toggle")
+        self.debug_checkbox.stateChanged.connect(lambda state: print(f"DEBUG: Debug checkbox state: {state} (checked={state == Qt.Checked})"))
+        
+        path_actions_layout2.addWidget(self.register_all_btn)
+        path_actions_layout2.addWidget(self.force_show_btn)
+        path_actions_layout2.addWidget(self.debug_checkbox)
+        
+        paths_layout.addLayout(path_actions_layout)
+        paths_layout.addLayout(path_actions_layout2)
+        paths_group.setLayout(paths_layout)
+        layout.addWidget(paths_group)
         
         layout.addStretch()
         panel.setLayout(layout)
@@ -1062,6 +1132,10 @@ class DrawingInterface(QMainWindow):
             )
             
             if hvac_path:
+                # Register path elements in drawing overlay for show/hide functionality
+                if self.drawing_overlay:
+                    self.drawing_overlay.register_path_elements(hvac_path.id, components, path_segments)
+                
                 # Show success message with path details
                 path_info = f"Successfully created HVAC path: {hvac_path.name}\n\n"
                 path_info += f"Components: {len(components)}\n"
@@ -1077,6 +1151,9 @@ class DrawingInterface(QMainWindow):
                 
                 # Update status bar
                 self.status_bar.showMessage(f"Created HVAC path '{hvac_path.name}' with {len(components)} components", 5000)
+                
+                # Refresh paths list to show new path
+                self.load_saved_paths()
             else:
                 QMessageBox.warning(self, "Creation Failed", "Failed to create HVAC path from drawing elements.")
                 
@@ -1100,6 +1177,7 @@ class DrawingInterface(QMainWindow):
             
     def handle_space_created(self, space_data):
         """Handle space creation from room properties dialog"""
+        session = None
         try:
             session = get_session()
             
@@ -1190,6 +1268,9 @@ class DrawingInterface(QMainWindow):
             self.update_elements_after_space_creation(space_data['name'])
             
         except Exception as e:
+            if session is not None:
+                session.rollback()
+                session.close()
             QMessageBox.critical(self, "Error", f"Failed to create space:\n{str(e)}")
             
     def update_elements_after_space_creation(self, space_name):
@@ -1329,6 +1410,9 @@ class DrawingInterface(QMainWindow):
             if dialog.exec() == QDialog.Accepted:
                 QMessageBox.information(self, "HVAC Path Created", 
                                        f"Successfully created HVAC path: {dialog.path.name if dialog.path else 'Unknown'}")
+                
+                # Refresh paths list to show new path
+                self.load_saved_paths()
                 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")
@@ -1901,6 +1985,367 @@ class DrawingInterface(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Options Error", f"Error getting export options:\n{str(e)}")
             return ExportOptions()  # Default options
+
+    # Path visibility methods
+    def load_saved_paths(self):
+        """Load saved HVAC paths from database and populate the paths list"""
+        session = None
+        try:
+            session = get_session()
+            
+            # Import HVACPath model
+            from models.hvac import HVACPath
+            
+            # Query HVAC paths for this project
+            hvac_paths = session.query(HVACPath).filter(
+                HVACPath.project_id == self.project_id
+            ).all()
+            
+            # Clear the current list
+            self.paths_list.clear()
+            self.visible_paths.clear()
+            
+            if not hvac_paths:
+                self.paths_summary_label.setText("No paths saved")
+                session.close()
+                return
+                
+            # Update summary
+            path_count = len(hvac_paths)
+            calculated_count = sum(1 for p in hvac_paths if p.calculated_noise)
+            self.paths_summary_label.setText(f"{path_count} paths ({calculated_count} calculated)")
+            
+            # Add paths to list with checkboxes
+            for hvac_path in hvac_paths:
+                # Register path elements for show/hide functionality
+                if self.drawing_overlay:
+                    self.register_existing_path_elements(hvac_path)
+                
+                # Create list item with checkbox
+                item = QListWidgetItem()
+                
+                # Create checkbox widget
+                checkbox = QCheckBox()
+                checkbox.setChecked(False)  # Default to hidden
+                checkbox.setText(self.format_path_display_name(hvac_path))
+                checkbox.setToolTip(self.format_path_tooltip(hvac_path))
+                
+                # Connect checkbox to visibility handler
+                def make_handler(pid):
+                    def handler(state):
+                        print(f"DEBUG: Checkbox state changed for path {pid}: {state} (checked={state == Qt.Checked})")
+                        self.handle_path_visibility_changed(pid, state == Qt.Checked)
+                    return handler
+                
+                checkbox.stateChanged.connect(make_handler(hvac_path.id))
+                print(f"DEBUG: Connected checkbox signal for path {hvac_path.id}")
+                
+                # Store path data in the item
+                item.setData(Qt.UserRole, hvac_path)
+                
+                # Set the checkbox as the item widget
+                self.paths_list.addItem(item)
+                self.paths_list.setItemWidget(item, checkbox)
+            
+            session.close()
+            
+        except Exception as e:
+            if session is not None:
+                session.close()
+            QMessageBox.warning(self, "Error", f"Failed to load saved paths:\n{str(e)}")
+    
+    def format_path_display_name(self, hvac_path):
+        """Format the display name for a path in the list"""
+        path_type = hvac_path.path_type or "supply"
+        space_name = hvac_path.target_space.name if hvac_path.target_space else "No Space"
+        
+        # Add noise info if available
+        noise_info = ""
+        if hvac_path.calculated_noise:
+            noise_info = f" [{hvac_path.calculated_noise:.1f} dB(A)]"
+            
+        return f"{hvac_path.name} ({path_type}) → {space_name}{noise_info}"
+    
+    def format_path_tooltip(self, hvac_path):
+        """Format tooltip information for a path"""
+        tooltip = f"Path: {hvac_path.name}\n"
+        tooltip += f"Type: {hvac_path.path_type or 'supply'}\n"
+        tooltip += f"Target Space: {hvac_path.target_space.name if hvac_path.target_space else 'None'}\n"
+        tooltip += f"Components: {len(hvac_path.segments) + 1 if hvac_path.segments else 0}\n"
+        
+        if hvac_path.calculated_noise:
+            tooltip += f"Noise Level: {hvac_path.calculated_noise:.1f} dB(A)\n"
+            tooltip += f"NC Rating: NC-{hvac_path.calculated_nc:.0f}" if hvac_path.calculated_nc else "NC Rating: Not calculated"
+        else:
+            tooltip += "Noise: Not calculated"
+            
+        return tooltip
+    
+    def handle_path_visibility_changed(self, path_id: int, visible: bool):
+        """Handle path visibility checkbox change"""
+        print(f"DEBUG: Path {path_id} visibility changed to {visible}")
+        if visible:
+            self.visible_paths.add(path_id)
+            self.show_path_on_drawing(path_id)
+        else:
+            self.visible_paths.discard(path_id)
+            self.hide_path_on_drawing(path_id)
+        print(f"DEBUG: Drawing overlay visible_paths after change: {list(self.drawing_overlay.visible_paths.keys()) if self.drawing_overlay else 'No overlay'}")
+    
+    def show_path_on_drawing(self, path_id: int):
+        """Show a specific path on the drawing overlay"""
+        if self.drawing_overlay:
+            # Add path to visible paths (this will make path elements visible)
+            self.drawing_overlay.visible_paths[path_id] = True
+            self.drawing_overlay.update()
+            print(f"DEBUG: Showing path {path_id}, visible paths: {list(self.drawing_overlay.visible_paths.keys())}")
+        
+    def hide_path_on_drawing(self, path_id: int):
+        """Hide a specific path from the drawing overlay"""
+        if self.drawing_overlay:
+            # Remove path from visible paths (this will hide path elements)
+            self.drawing_overlay.visible_paths.pop(path_id, None)
+            self.drawing_overlay.update()
+            print(f"DEBUG: Hiding path {path_id}, visible paths: {list(self.drawing_overlay.visible_paths.keys())}")
+    
+    def show_all_paths(self):
+        """Show all paths on the drawing"""
+        for i in range(self.paths_list.count()):
+            item = self.paths_list.item(i)
+            checkbox = self.paths_list.itemWidget(item)
+            if checkbox and not checkbox.isChecked():
+                checkbox.setChecked(True)
+    
+    def hide_all_paths(self):
+        """Hide all paths from the drawing"""
+        for i in range(self.paths_list.count()):
+            item = self.paths_list.item(i)
+            checkbox = self.paths_list.itemWidget(item)
+            if checkbox and checkbox.isChecked():
+                checkbox.setChecked(False)
+    
+    def show_path_context_menu(self, position):
+        """Show context menu for paths list"""
+        item = self.paths_list.itemAt(position)
+        if not item:
+            return
+            
+        hvac_path = item.data(Qt.UserRole)
+        if not hvac_path:
+            return
+        
+        from PySide6.QtWidgets import QMenu
+        
+        menu = QMenu(self)
+        
+        # Toggle visibility action
+        checkbox = self.paths_list.itemWidget(item)
+        if checkbox:
+            if checkbox.isChecked():
+                hide_action = menu.addAction("👁️‍🗨️ Hide Path")
+                hide_action.triggered.connect(lambda: checkbox.setChecked(False))
+            else:
+                show_action = menu.addAction("👁️ Show Path")
+                show_action.triggered.connect(lambda: checkbox.setChecked(True))
+        
+        menu.addSeparator()
+        
+        # Path information action
+        info_action = menu.addAction("ℹ️ Path Information")
+        info_action.triggered.connect(lambda: self.show_path_information(hvac_path))
+        
+        # Register all elements action
+        register_all_action = menu.addAction("🔗 Register All Drawing Elements")
+        register_all_action.triggered.connect(lambda: self.register_all_elements_to_path(hvac_path.id))
+        register_all_action.setToolTip("Register all currently drawn components and segments to this path")
+        
+        # Calculate noise action (if not calculated)
+        if not hvac_path.calculated_noise:
+            calc_action = menu.addAction("🔊 Calculate Noise")
+            calc_action.triggered.connect(lambda: self.calculate_path_noise(hvac_path.id))
+        
+        menu.exec_(self.paths_list.mapToGlobal(position))
+    
+    def show_path_information(self, hvac_path):
+        """Show detailed information about a path"""
+        info = f"HVAC Path Information\n"
+        info += f"{'=' * 30}\n\n"
+        info += f"Name: {hvac_path.name}\n"
+        info += f"Type: {hvac_path.path_type or 'supply'}\n"
+        info += f"Description: {hvac_path.description or 'None'}\n"
+        info += f"Target Space: {hvac_path.target_space.name if hvac_path.target_space else 'None'}\n"
+        info += f"Components: {len(hvac_path.segments) + 1 if hvac_path.segments else 0}\n"
+        info += f"Segments: {len(hvac_path.segments) if hvac_path.segments else 0}\n\n"
+        
+        if hvac_path.calculated_noise:
+            info += f"Calculated Noise: {hvac_path.calculated_noise:.1f} dB(A)\n"
+            info += f"NC Rating: NC-{hvac_path.calculated_nc:.0f}" if hvac_path.calculated_nc else "NC Rating: Not calculated"
+        else:
+            info += "Noise: Not calculated"
+        
+        QMessageBox.information(self, "Path Information", info)
+    
+    def calculate_path_noise(self, path_id: int):
+        """Calculate noise for a specific path"""
+        try:
+            # Use the existing HVAC path calculator
+            result = self.hvac_path_calculator.analyze_hvac_path(path_id)
+            
+            if result and result.calculation_valid:
+                QMessageBox.information(self, "Calculation Complete", 
+                                      f"Path '{result.path_name}' calculated:\n"
+                                      f"Terminal Noise: {result.terminal_noise:.1f} dB(A)\n"
+                                      f"NC Rating: NC-{result.nc_rating:.0f}")
+                
+                # Refresh the paths list to show updated values
+                self.load_saved_paths()
+            else:
+                QMessageBox.warning(self, "Calculation Failed", 
+                                  "Unable to calculate noise for this path.\n"
+                                  "Check that all components and segments are properly defined.")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to calculate path noise:\n{str(e)}")
+    
+    def register_existing_path_elements(self, hvac_path):
+        """Register existing path elements in the drawing overlay for show/hide functionality"""
+        if not self.drawing_overlay:
+            return
+            
+        try:
+            path_components = []
+            path_segments = []
+            
+            # Find drawing elements that match the path's components and segments
+            overlay_data = self.drawing_overlay.get_elements_data()
+            drawing_components = overlay_data.get('components', [])
+            drawing_segments = overlay_data.get('segments', [])
+            
+            # print(f"DEBUG: Registering path {hvac_path.id} with {len(hvac_path.segments)} database segments")
+            # print(f"DEBUG: Available drawing elements: {len(drawing_components)} components, {len(drawing_segments)} segments")
+            
+            # Match path components to drawing components
+            for i, segment in enumerate(hvac_path.segments):
+                print(f"DEBUG: Processing segment {i}")
+                
+                if segment.from_component:
+                    db_comp = segment.from_component
+                    print(f"DEBUG: Looking for from_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                    
+                    # Look for matching component in drawing elements
+                    found = False
+                    for comp in drawing_components:
+                        if (comp.get('x') == db_comp.x_position and
+                            comp.get('y') == db_comp.y_position and
+                            comp.get('component_type') == db_comp.component_type):
+                            if comp not in path_components:
+                                path_components.append(comp)
+                                print(f"DEBUG: Found matching from_component: {comp}")
+                            found = True
+                            break
+                    if not found:
+                        print(f"DEBUG: No match found for from_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                
+                if segment.to_component:
+                    db_comp = segment.to_component
+                    print(f"DEBUG: Looking for to_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                    
+                    # Look for matching component in drawing elements
+                    found = False
+                    for comp in drawing_components:
+                        if (comp.get('x') == db_comp.x_position and
+                            comp.get('y') == db_comp.y_position and
+                            comp.get('component_type') == db_comp.component_type):
+                            if comp not in path_components:
+                                path_components.append(comp)
+                                print(f"DEBUG: Found matching to_component: {comp}")
+                            found = True
+                            break
+                    if not found:
+                        print(f"DEBUG: No match found for to_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                
+                # Match segments (this is more complex as we need to find segments between matching components)
+                if segment.from_component and segment.to_component:
+                    print(f"DEBUG: Looking for segment from {segment.from_component.component_type} to {segment.to_component.component_type}")
+                    found = False
+                    for seg in drawing_segments:
+                        # Check if this segment connects the same components
+                        from_comp = seg.get('from_component')
+                        to_comp = seg.get('to_component')
+                        
+                        if (from_comp and to_comp and
+                            from_comp.get('x') == segment.from_component.x_position and
+                            from_comp.get('y') == segment.from_component.y_position and
+                            to_comp.get('x') == segment.to_component.x_position and
+                            to_comp.get('y') == segment.to_component.y_position):
+                            if seg not in path_segments:
+                                path_segments.append(seg)
+                                print(f"DEBUG: Found matching segment: {from_comp.get('component_type')} -> {to_comp.get('component_type')}")
+                            found = True
+                            break
+                    if not found:
+                        print(f"DEBUG: No matching segment found for {segment.from_component.component_type} -> {segment.to_component.component_type}")
+            
+            # Register the found elements
+            if path_components or path_segments:
+                self.drawing_overlay.register_path_elements(hvac_path.id, path_components, path_segments)
+                print(f"DEBUG: Registered path {hvac_path.id} with {len(path_components)} components and {len(path_segments)} segments")
+            else:
+                print(f"DEBUG: No elements found to register for path {hvac_path.id}")
+            
+        except Exception as e:
+            print(f"Error registering path elements for path {hvac_path.id}: {e}")
+    
+    def register_all_elements_to_path(self, path_id: int):
+        """Register all currently drawn elements to the specified path"""
+        if not self.drawing_overlay:
+            return
+            
+        try:
+            # Get all current drawing elements
+            overlay_data = self.drawing_overlay.get_elements_data()
+            all_components = overlay_data.get('components', [])
+            all_segments = overlay_data.get('segments', [])
+            
+            # Register all elements to this path
+            self.drawing_overlay.register_path_elements(path_id, all_components, all_segments)
+            
+            # Show confirmation
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Elements Registered", 
+                                  f"Registered {len(all_components)} components and {len(all_segments)} segments to path {path_id}.\n\n"
+                                  "Now when you hide this path, all drawing elements will be hidden.")
+            
+        except Exception as e:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Registration Error", f"Failed to register elements:\n{str(e)}")
+    
+    def force_show_path(self, path_id: int):
+        """Force show a path (debug method)"""
+        print(f"DEBUG: Force showing path {path_id}")
+        
+        # Directly call the handler to bypass checkbox issues
+        self.handle_path_visibility_changed(path_id, True)
+        
+        # Also check the checkbox
+        for i in range(self.paths_list.count()):
+            item = self.paths_list.item(i)
+            hvac_path = item.data(Qt.UserRole)
+            if hvac_path and hvac_path.id == path_id:
+                checkbox = self.paths_list.itemWidget(item)
+                if checkbox and not checkbox.isChecked():
+                    checkbox.blockSignals(True)  # Prevent recursive calls
+                    checkbox.setChecked(True)
+                    checkbox.blockSignals(False)
+                    print(f"DEBUG: Force-checked checkbox for path {path_id}")
+                break
+    
+    def toggle_path_only_mode(self, checked: bool):
+        """Toggle path-only display mode"""
+        if self.drawing_overlay:
+            self.drawing_overlay.path_only_mode = checked
+            self.drawing_overlay.update()
+            print(f"DEBUG: Path-only mode set to {checked}")
 
     def closeEvent(self, event):
         """Handle window close event"""

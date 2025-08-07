@@ -24,7 +24,7 @@ class TreatmentAnalyzer:
     def __init__(self):
         self.rt60_calculator = RT60Calculator()
         self.search_engine = MaterialSearchEngine()
-        self.frequencies = [125, 250, 500, 1000, 2000, 4000]
+        self.frequencies = [125, 250, 500, 1000, 2000, 4000, 8000]
         
     def analyze_treatment_gaps(self, space_data: Dict) -> Dict[str, Any]:
         """

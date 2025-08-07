@@ -155,7 +155,7 @@ class SplashScreen(QWidget):
     def create_new_project(self):
         """Create a new project"""
         dialog = ProjectDialog(self)
-        if dialog.exec() == dialog.Accepted:
+        if dialog.exec() == dialog.accepted:
             project_data = dialog.get_project_data()
             
             try:

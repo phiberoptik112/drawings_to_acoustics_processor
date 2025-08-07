@@ -33,10 +33,13 @@ class DrawingOverlay(QWidget):
         self.components = []  # HVAC components
         self.segments = []    # Duct segments
         self.measurements = []  # Measurement lines
+        self.visible_paths = {}  # Visible HVAC paths {path_id: path_data}
+        self.path_element_mapping = {}  # Maps path_id to {components: [], segments: []}
         
         # UI state
         self.show_measurements = True
         self.show_grid = False
+        self.path_only_mode = False  # Show only elements belonging to visible paths
         
         # Connect signals
         self.tool_manager.element_created.connect(self.handle_element_created)
@@ -241,6 +244,16 @@ class DrawingOverlay(QWidget):
     def draw_components(self, painter):
         """Draw HVAC components"""
         for comp_data in self.components:
+            # Check if this component belongs to a hidden path
+            if self.is_component_hidden_by_path(comp_data):
+                continue
+            
+            # In path-only mode, only draw components that belong to visible paths
+            if self.path_only_mode and not self.is_component_part_of_visible_path(comp_data):
+                print(f"DEBUG: Skipping component {comp_data.get('component_type')} at ({comp_data.get('x')}, {comp_data.get('y')}) - not in visible path (path-only mode)")
+                continue
+                
+            # print(f"DEBUG: Drawing component {comp_data.get('component_type')} at ({comp_data.get('x')}, {comp_data.get('y')})")
             x, y = comp_data['x'], comp_data['y']
             comp_type = comp_data['component_type']
             size = 24
@@ -308,6 +321,16 @@ class DrawingOverlay(QWidget):
         painter.setPen(pen)
         
         for seg_data in self.segments:
+            # Check if this segment belongs to a hidden path
+            if self.is_segment_hidden_by_path(seg_data):
+                continue
+            
+            # In path-only mode, only draw segments that belong to visible paths
+            if self.path_only_mode and not self.is_segment_part_of_visible_path(seg_data):
+                print(f"DEBUG: Skipping segment from ({seg_data.get('start_x')}, {seg_data.get('start_y')}) to ({seg_data.get('end_x')}, {seg_data.get('end_y')}) - not in visible path (path-only mode)")
+                continue
+                
+            # print(f"DEBUG: Drawing segment from ({seg_data.get('start_x')}, {seg_data.get('start_y')}) to ({seg_data.get('end_x')}, {seg_data.get('end_y')})")
             start_x, start_y = seg_data['start_x'], seg_data['start_y']
             end_x, end_y = seg_data['end_x'], seg_data['end_y']
             
@@ -369,6 +392,110 @@ class DrawingOverlay(QWidget):
         # Horizontal lines
         for y in range(0, height, grid_size):
             painter.drawLine(0, y, width, y)
+    
+    def draw_paths(self, painter):
+        """Draw visible HVAC paths"""
+        if not self.visible_paths:
+            return
+            
+        for path_id, path_data in self.visible_paths.items():
+            self.draw_single_path(painter, path_id, path_data)
+    
+    def draw_single_path(self, painter, path_id: int, path_data: dict):
+        """Draw a single HVAC path with its components and connections"""
+        try:
+            path_name = path_data.get('name', f'Path {path_id}')
+            segments = path_data.get('segments', [])
+            
+            if not segments:
+                return
+            
+            # Use distinctive colors for paths
+            path_colors = [
+                QColor(255, 100, 100),  # Red
+                QColor(100, 255, 100),  # Green  
+                QColor(100, 100, 255),  # Blue
+                QColor(255, 255, 100),  # Yellow
+                QColor(255, 100, 255),  # Magenta
+                QColor(100, 255, 255),  # Cyan
+            ]
+            
+            color = path_colors[path_id % len(path_colors)]
+            pen = QPen(color, 4, Qt.SolidLine)
+            painter.setPen(pen)
+            
+            # Draw path segments as thick lines
+            for segment in segments:
+                from_component = segment.get('from_component')
+                to_component = segment.get('to_component')
+                
+                if from_component and to_component:
+                    from_x = from_component.get('x_position', from_component.get('x', 0))
+                    from_y = from_component.get('y_position', from_component.get('y', 0))
+                    to_x = to_component.get('x_position', to_component.get('x', 0))
+                    to_y = to_component.get('y_position', to_component.get('y', 0))
+                    
+                    painter.drawLine(from_x, from_y, to_x, to_y)
+                    
+                    # Draw arrows to show direction
+                    self.draw_arrow(painter, from_x, from_y, to_x, to_y, color)
+            
+            # Draw path label at the first component
+            if segments:
+                first_segment = segments[0]
+                from_component = first_segment.get('from_component')
+                if from_component:
+                    label_x = from_component.get('x_position', from_component.get('x', 0))
+                    label_y = from_component.get('y_position', from_component.get('y', 0))
+                    
+                    # Draw path name with background
+                    font = QFont("Arial", 10, QFont.Bold)
+                    painter.setFont(font)
+                    
+                    # Semi-transparent background for readability
+                    text_rect = painter.fontMetrics().boundingRect(path_name)
+                    bg_rect = text_rect.adjusted(-4, -2, 4, 2)
+                    bg_rect.moveTopLeft(QPoint(label_x + 20, label_y - 25))
+                    
+                    painter.fillRect(bg_rect, QColor(255, 255, 255, 200))
+                    painter.setPen(QPen(Qt.black))
+                    painter.drawText(label_x + 20, label_y - 10, path_name)
+                    
+        except Exception as e:
+            print(f"Error drawing path {path_id}: {e}")
+    
+    def draw_arrow(self, painter, from_x: int, from_y: int, to_x: int, to_y: int, color: QColor):
+        """Draw a directional arrow on a line segment"""
+        import math
+        
+        # Calculate line length and angle
+        dx = to_x - from_x
+        dy = to_y - from_y
+        length = math.sqrt(dx*dx + dy*dy)
+        
+        if length < 20:  # Don't draw arrows on very short segments
+            return
+            
+        # Calculate arrow position (at 70% along the line)
+        arrow_pos_x = from_x + int(0.7 * dx)
+        arrow_pos_y = from_y + int(0.7 * dy)
+        
+        # Calculate arrow head
+        angle = math.atan2(dy, dx)
+        arrow_length = 12
+        arrow_angle = math.pi / 6  # 30 degrees
+        
+        # Arrow head points
+        ax1 = arrow_pos_x - arrow_length * math.cos(angle - arrow_angle)
+        ay1 = arrow_pos_y - arrow_length * math.sin(angle - arrow_angle)
+        ax2 = arrow_pos_x - arrow_length * math.cos(angle + arrow_angle)
+        ay2 = arrow_pos_y - arrow_length * math.sin(angle + arrow_angle)
+        
+        # Draw arrow head
+        pen = QPen(color, 2, Qt.SolidLine)
+        painter.setPen(pen)
+        painter.drawLine(arrow_pos_x, arrow_pos_y, int(ax1), int(ay1))
+        painter.drawLine(arrow_pos_x, arrow_pos_y, int(ax2), int(ay2))
             
     def clear_all_elements(self):
         """Clear all drawn elements"""
@@ -441,3 +568,92 @@ class DrawingOverlay(QWidget):
         self.segments = data.get('segments', [])
         self.measurements = data.get('measurements', [])
         self.update()
+    
+    # Path visualization methods
+    def show_path(self, path_id: int, path_data: dict):
+        """Show a specific HVAC path on the drawing overlay"""
+        self.visible_paths[path_id] = path_data
+        self.update()
+    
+    def hide_path(self, path_id: int):
+        """Hide a specific HVAC path from the drawing overlay"""
+        self.visible_paths.pop(path_id, None)
+        self.update()
+    
+    def clear_all_paths(self):
+        """Clear all visible paths"""
+        self.visible_paths.clear()
+        self.update()
+    
+    def register_path_elements(self, path_id: int, components: list, segments: list):
+        """Register which components and segments belong to a path"""
+        self.path_element_mapping[path_id] = {
+            'components': components.copy(),
+            'segments': segments.copy()
+        }
+        print(f"DEBUG: Path {path_id} registered with {len(components)} components and {len(segments)} segments")
+        print(f"DEBUG: Current path mappings: {list(self.path_element_mapping.keys())}")
+    
+    def unregister_path_elements(self, path_id: int):
+        """Remove path element mapping"""
+        self.path_element_mapping.pop(path_id, None)
+    
+    def is_component_hidden_by_path(self, comp_data: dict) -> bool:
+        """Check if a component should be hidden because its path is hidden"""
+        # Check if this component belongs to any registered path
+        for path_id, mapping in self.path_element_mapping.items():
+            for path_comp in mapping['components']:
+                # Compare by position since components might not have unique IDs
+                if (comp_data.get('x') == path_comp.get('x') and 
+                    comp_data.get('y') == path_comp.get('y') and
+                    comp_data.get('component_type') == path_comp.get('component_type')):
+                    # This component belongs to a path, check if path is hidden
+                    is_hidden = path_id not in self.visible_paths
+                    if is_hidden:
+                        print(f"DEBUG: Hiding component {comp_data.get('component_type')} at ({comp_data.get('x')}, {comp_data.get('y')}) - path {path_id} not in visible_paths {list(self.visible_paths.keys())}")
+                    else:
+                        print(f"DEBUG: Showing component {comp_data.get('component_type')} at ({comp_data.get('x')}, {comp_data.get('y')}) - path {path_id} is in visible_paths {list(self.visible_paths.keys())}")
+                    return is_hidden
+        return False
+    
+    def is_segment_hidden_by_path(self, seg_data: dict) -> bool:
+        """Check if a segment should be hidden because its path is hidden"""
+        # Check if this segment belongs to any registered path
+        for path_id, mapping in self.path_element_mapping.items():
+            for path_seg in mapping['segments']:
+                # Compare by start/end positions since segments might not have unique IDs
+                if (seg_data.get('start_x') == path_seg.get('start_x') and 
+                    seg_data.get('start_y') == path_seg.get('start_y') and
+                    seg_data.get('end_x') == path_seg.get('end_x') and
+                    seg_data.get('end_y') == path_seg.get('end_y')):
+                    # This segment belongs to a path, check if path is hidden
+                    is_hidden = path_id not in self.visible_paths
+                    if is_hidden:
+                        print(f"DEBUG: Hiding segment from ({seg_data.get('start_x')}, {seg_data.get('start_y')}) to ({seg_data.get('end_x')}, {seg_data.get('end_y')}) - path {path_id} not in visible_paths {list(self.visible_paths.keys())}")
+                    else:
+                        print(f"DEBUG: Showing segment from ({seg_data.get('start_x')}, {seg_data.get('start_y')}) to ({seg_data.get('end_x')}, {seg_data.get('end_y')}) - path {path_id} is in visible_paths {list(self.visible_paths.keys())}")
+                    return is_hidden
+        return False
+    
+    def is_component_part_of_visible_path(self, comp_data: dict) -> bool:
+        """Check if a component belongs to any visible path"""
+        for path_id, mapping in self.path_element_mapping.items():
+            if path_id in self.visible_paths:  # Only check visible paths
+                for path_comp in mapping['components']:
+                    if (comp_data.get('x') == path_comp.get('x') and 
+                        comp_data.get('y') == path_comp.get('y') and
+                        comp_data.get('component_type') == path_comp.get('component_type')):
+                        return True
+        return False
+    
+    def is_segment_part_of_visible_path(self, seg_data: dict) -> bool:
+        """Check if a segment belongs to any visible path"""
+        for path_id, mapping in self.path_element_mapping.items():
+            if path_id in self.visible_paths:  # Only check visible paths
+                for path_seg in mapping['segments']:
+                    if (seg_data.get('start_x') == path_seg.get('start_x') and 
+                        seg_data.get('start_y') == path_seg.get('start_y') and
+                        seg_data.get('end_x') == path_seg.get('end_x') and
+                        seg_data.get('end_y') == path_seg.get('end_y')):
+                        return True
+        return False
