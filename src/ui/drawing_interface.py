@@ -2024,28 +2024,49 @@ class DrawingInterface(QMainWindow):
                 # Create list item with checkbox
                 item = QListWidgetItem()
                 
-                # Create checkbox widget
-                checkbox = QCheckBox()
-                checkbox.setChecked(False)  # Default to hidden
-                checkbox.setText(self.format_path_display_name(hvac_path))
-                checkbox.setToolTip(self.format_path_tooltip(hvac_path))
+                # Create a widget container for path controls
+                widget = QWidget()
+                layout = QHBoxLayout(widget)
+                layout.setContentsMargins(5, 2, 5, 2)
                 
-                # Connect checkbox to visibility handler
-                def make_handler(pid):
-                    def handler(state):
-                        print(f"DEBUG: Checkbox state changed for path {pid}: {state} (checked={state == Qt.Checked})")
-                        self.handle_path_visibility_changed(pid, state == Qt.Checked)
-                    return handler
+                # Path name label
+                path_label = QLabel(self.format_path_display_name(hvac_path))
+                path_label.setToolTip(self.format_path_tooltip(hvac_path))
                 
-                checkbox.stateChanged.connect(make_handler(hvac_path.id))
-                print(f"DEBUG: Connected checkbox signal for path {hvac_path.id}")
+                # Toggle button for show/hide
+                toggle_btn = QPushButton("👁️‍🗨️")  # Hidden eye initially
+                toggle_btn.setMaximumWidth(35)
+                toggle_btn.setMaximumHeight(25)
+                toggle_btn.setToolTip("Click to show/hide this path on drawing")
+                toggle_btn.setCheckable(True)  # Make it a toggle button
+                toggle_btn.setChecked(False)  # Default to hidden
+                
+                # Style the toggle button
+                toggle_btn.setStyleSheet("""
+                    QPushButton {
+                        border: 1px solid #888;
+                        border-radius: 3px;
+                        padding: 2px;
+                    }
+                    QPushButton:checked {
+                        background-color: #4CAF50;
+                        border: 1px solid #45a049;
+                    }
+                """)
+                
+                # Connect toggle button
+                toggle_btn.clicked.connect(lambda checked, pid=hvac_path.id, btn=toggle_btn: self.toggle_path_visibility(pid, checked, btn))
+                
+                layout.addWidget(path_label)
+                layout.addStretch()  # Push toggle button to the right
+                layout.addWidget(toggle_btn)
                 
                 # Store path data in the item
                 item.setData(Qt.UserRole, hvac_path)
                 
-                # Set the checkbox as the item widget
+                # Set the widget as the item widget
                 self.paths_list.addItem(item)
-                self.paths_list.setItemWidget(item, checkbox)
+                self.paths_list.setItemWidget(item, widget)
             
             session.close()
             
@@ -2112,17 +2133,23 @@ class DrawingInterface(QMainWindow):
         """Show all paths on the drawing"""
         for i in range(self.paths_list.count()):
             item = self.paths_list.item(i)
-            checkbox = self.paths_list.itemWidget(item)
-            if checkbox and not checkbox.isChecked():
-                checkbox.setChecked(True)
+            widget = self.paths_list.itemWidget(item)
+            if widget:
+                toggle_btn = widget.findChild(QPushButton)
+                if toggle_btn and not toggle_btn.isChecked():
+                    toggle_btn.setChecked(True)
+                    toggle_btn.clicked.emit(True)  # Trigger the click handler
     
     def hide_all_paths(self):
         """Hide all paths from the drawing"""
         for i in range(self.paths_list.count()):
             item = self.paths_list.item(i)
-            checkbox = self.paths_list.itemWidget(item)
-            if checkbox and checkbox.isChecked():
-                checkbox.setChecked(False)
+            widget = self.paths_list.itemWidget(item)
+            if widget:
+                toggle_btn = widget.findChild(QPushButton)
+                if toggle_btn and toggle_btn.isChecked():
+                    toggle_btn.setChecked(False)
+                    toggle_btn.clicked.emit(False)  # Trigger the click handler
     
     def show_path_context_menu(self, position):
         """Show context menu for paths list"""
@@ -2320,24 +2347,35 @@ class DrawingInterface(QMainWindow):
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Registration Error", f"Failed to register elements:\n{str(e)}")
     
+    def toggle_path_visibility(self, path_id: int, visible: bool, button: QPushButton):
+        """Toggle a path's visibility using the eye button"""
+        print(f"DEBUG: Toggle path {path_id} visibility: {visible}")
+        
+        # Update button appearance
+        if visible:
+            button.setText("👁️")  # Open eye for visible
+        else:
+            button.setText("👁️‍🗨️")  # Closed eye for hidden
+            
+        # Call visibility handler
+        self.handle_path_visibility_changed(path_id, visible)
+    
     def force_show_path(self, path_id: int):
         """Force show a path (debug method)"""
         print(f"DEBUG: Force showing path {path_id}")
         
-        # Directly call the handler to bypass checkbox issues
-        self.handle_path_visibility_changed(path_id, True)
-        
-        # Also check the checkbox
+        # Find and activate the toggle button
         for i in range(self.paths_list.count()):
             item = self.paths_list.item(i)
             hvac_path = item.data(Qt.UserRole)
             if hvac_path and hvac_path.id == path_id:
-                checkbox = self.paths_list.itemWidget(item)
-                if checkbox and not checkbox.isChecked():
-                    checkbox.blockSignals(True)  # Prevent recursive calls
-                    checkbox.setChecked(True)
-                    checkbox.blockSignals(False)
-                    print(f"DEBUG: Force-checked checkbox for path {path_id}")
+                widget = self.paths_list.itemWidget(item)
+                if widget:
+                    toggle_btn = widget.findChild(QPushButton)
+                    if toggle_btn and not toggle_btn.isChecked():
+                        toggle_btn.setChecked(True)
+                        toggle_btn.clicked.emit(True)
+                        print(f"DEBUG: Force-activated toggle button for path {path_id}")
                 break
     
     def toggle_path_only_mode(self, checked: bool):
