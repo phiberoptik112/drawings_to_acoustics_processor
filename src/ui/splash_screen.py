@@ -12,6 +12,7 @@ from PySide6.QtGui import QFont, QPixmap
 from models import initialize_database, get_session, Project
 from ui.dialogs.project_dialog import ProjectDialog
 from ui.project_dashboard import ProjectDashboard
+from data.silencer_database import populate_silencer_database
 
 
 class SplashScreen(QWidget):
@@ -28,6 +29,14 @@ class SplashScreen(QWidget):
         """Initialize the database connection"""
         try:
             self.db_path = initialize_database()
+            
+            # Populate silencer database if it's empty
+            try:
+                populate_silencer_database()
+            except Exception as e:
+                # Silencer database population is not critical, just log the error
+                print(f"Warning: Failed to populate silencer database: {e}")
+                
         except Exception as e:
             QMessageBox.critical(self, "Database Error", 
                                f"Failed to initialize database:\n{str(e)}")

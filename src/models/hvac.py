@@ -2,7 +2,7 @@
 HVAC models - components, paths, and segments for mechanical noise analysis
 """
 
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Float
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Float, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
@@ -25,6 +25,14 @@ class HVACComponent(Base):
     # Acoustic properties
     noise_level = Column(Float)  # Base noise level in dB(A)
     
+    # Silencer-specific fields
+    is_silencer = Column(Boolean, default=False)
+    silencer_type = Column(String(50))  # 'reactive', 'dissipative', 'hybrid'
+    target_noise_reduction = Column(Float)  # dB reduction target
+    frequency_requirements = Column(Text)   # JSON frequency band requirements
+    space_constraints = Column(Text)        # JSON space limitations
+    selected_product_id = Column(Integer, ForeignKey('silencer_products.id'))
+    
     created_date = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -32,6 +40,7 @@ class HVACComponent(Base):
     drawing = relationship("Drawing", back_populates="hvac_components")
     segments_from = relationship("HVACSegment", foreign_keys="HVACSegment.from_component_id", back_populates="from_component")
     segments_to = relationship("HVACSegment", foreign_keys="HVACSegment.to_component_id", back_populates="to_component")
+    selected_product = relationship("SilencerProduct", back_populates="components")
     
     def __repr__(self):
         return f"<HVACComponent(id={self.id}, name='{self.name}', type='{self.component_type}')>"
@@ -61,6 +70,7 @@ class HVACPath(Base):
     project = relationship("Project", back_populates="hvac_paths")
     target_space = relationship("Space", back_populates="hvac_paths")
     segments = relationship("HVACSegment", back_populates="hvac_path", cascade="all, delete-orphan", order_by="HVACSegment.segment_order")
+    placement_analyses = relationship("SilencerPlacementAnalysis", back_populates="hvac_path", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<HVACPath(id={self.id}, name='{self.name}', type='{self.path_type}')>"
@@ -118,3 +128,67 @@ class SegmentFitting(Base):
     
     def __repr__(self):
         return f"<SegmentFitting(id={self.id}, type='{self.fitting_type}', adjustment={self.noise_adjustment})>"
+
+
+class SilencerProduct(Base):
+    """Model for silencer product database"""
+    __tablename__ = 'silencer_products'
+    
+    id = Column(Integer, primary_key=True)
+    manufacturer = Column(String(100), nullable=False)
+    model_number = Column(String(100), nullable=False)
+    silencer_type = Column(String(50), nullable=False)  # 'reactive', 'dissipative', 'hybrid'
+    
+    # Physical specifications
+    length = Column(Float)  # inches
+    width = Column(Float)   # inches
+    height = Column(Float)  # inches
+    weight = Column(Float)  # lbs
+    
+    # Performance specifications
+    flow_rate_min = Column(Float)  # CFM
+    flow_rate_max = Column(Float)  # CFM
+    velocity_max = Column(Float)   # FPM
+    
+    # Insertion loss by frequency band (8-band)
+    insertion_loss_63 = Column(Float)
+    insertion_loss_125 = Column(Float)
+    insertion_loss_250 = Column(Float)
+    insertion_loss_500 = Column(Float)
+    insertion_loss_1000 = Column(Float)
+    insertion_loss_2000 = Column(Float)
+    insertion_loss_4000 = Column(Float)
+    insertion_loss_8000 = Column(Float)
+    
+    # Cost information
+    cost_estimate = Column(Float)  # USD
+    availability = Column(String(50))  # 'in_stock', 'lead_time', 'discontinued'
+    
+    created_date = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    components = relationship("HVACComponent", back_populates="selected_product")
+    
+    def __repr__(self):
+        return f"<SilencerProduct(id={self.id}, manufacturer='{self.manufacturer}', model='{self.model_number}')>"
+
+
+class SilencerPlacementAnalysis(Base):
+    """Model for storing silencer placement analysis results"""
+    __tablename__ = 'silencer_placement_analyses'
+    
+    id = Column(Integer, primary_key=True)
+    path_id = Column(Integer, ForeignKey('hvac_paths.id'), nullable=False)
+    
+    # Analysis results
+    critical_points = Column(Text)  # JSON critical noise points
+    recommendations = Column(Text)  # JSON silencer recommendations
+    frequency_analysis = Column(Text) # JSON frequency band analysis
+    
+    created_date = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    hvac_path = relationship("HVACPath", back_populates="placement_analyses")
+    
+    def __repr__(self):
+        return f"<SilencerPlacementAnalysis(id={self.id}, path_id={self.path_id})>"
