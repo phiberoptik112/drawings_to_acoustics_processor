@@ -133,6 +133,11 @@ class DrawingOverlay(QWidget):
             print(f"DEBUG: Added component, total components: {len(self.components)}")
             # Update segment tool with new component
             self.update_segment_tool_components()
+            # Attempt to connect this component to any nearby segment endpoints
+            try:
+                self.attach_component_to_nearby_segments(element_data, threshold_px=20)
+            except Exception as e:
+                print(f"DEBUG: attach_component_to_nearby_segments error: {e}")
             
         elif element_type == 'segment':
             print(f"DEBUG: Processing segment with from_component={element_data.get('from_component') is not None}, to_component={element_data.get('to_component') is not None}")
@@ -148,6 +153,11 @@ class DrawingOverlay(QWidget):
             
             # Update segment tool with new segments
             self.update_segment_tool_components()
+            # If this segment is near any components at endpoints but lacks a component link, attach it
+            try:
+                self.attach_endpoints_to_components(element_data, threshold_px=20)
+            except Exception as e:
+                print(f"DEBUG: attach_endpoints_to_components error: {e}")
             
         elif element_type == 'measurement':
             # Add real-world measurement
@@ -552,6 +562,103 @@ class DrawingOverlay(QWidget):
             'segments': self.segments.copy(),
             'measurements': self.measurements.copy()
         }
+
+    def _distance(self, x1: int, y1: int, x2: int, y2: int) -> float:
+        dx = x2 - x1
+        dy = y2 - y1
+        return (dx * dx + dy * dy) ** 0.5
+
+    def attach_component_to_nearby_segments(self, component: dict, threshold_px: int = 20) -> None:
+        """Attach a newly placed component to any segment endpoints that are within
+        threshold distance. This ensures segments get a concrete component reference,
+        which is required for downstream path creation.
+        """
+        comp_x = int(component.get('x', 0))
+        comp_y = int(component.get('y', 0))
+        attached_any = False
+        for i, seg in enumerate(self.segments):
+            start_x, start_y = int(seg.get('start_x', 0)), int(seg.get('start_y', 0))
+            end_x, end_y = int(seg.get('end_x', 0)), int(seg.get('end_y', 0))
+
+            # Start endpoint
+            d_start = self._distance(comp_x, comp_y, start_x, start_y)
+            if d_start <= threshold_px and not seg.get('from_component'):
+                seg['from_component'] = component
+                attached_any = True
+                print(f"DEBUG: Attached component {component.get('component_type')} to segment[{i}] start (d={d_start:.1f}px)")
+
+            # End endpoint
+            d_end = self._distance(comp_x, comp_y, end_x, end_y)
+            if d_end <= threshold_px and not seg.get('to_component'):
+                seg['to_component'] = component
+                attached_any = True
+                print(f"DEBUG: Attached component {component.get('component_type')} to segment[{i}] end (d={d_end:.1f}px)")
+
+        if attached_any:
+            # Propagate updated segments to tools
+            self.update_segment_tool_components()
+
+    def attach_endpoints_to_components(self, segment: dict, threshold_px: int = 20) -> None:
+        """Given a newly created segment, attach its endpoints to nearby components
+        if the segment lacks a component reference on that endpoint. Also
+        propagate any endpoint component across other segments that share the
+        same junction coordinate (within threshold)."""
+        start_x, start_y = int(segment.get('start_x', 0)), int(segment.get('start_y', 0))
+        end_x, end_y = int(segment.get('end_x', 0)), int(segment.get('end_y', 0))
+
+        # Start endpoint
+        if not segment.get('from_component'):
+            nearest = None
+            nearest_d = 10 ** 9
+            for comp in self.components:
+                d = self._distance(start_x, start_y, int(comp.get('x', 0)), int(comp.get('y', 0)))
+                if d < nearest_d:
+                    nearest = comp
+                    nearest_d = d
+            if nearest and nearest_d <= threshold_px:
+                segment['from_component'] = nearest
+                print(f"DEBUG: Segment endpoint-start auto-attached to component {nearest.get('component_type')} (d={nearest_d:.1f}px)")
+        # After potential attach, propagate to any other segments sharing this junction
+        self._propagate_component_to_shared_junctions(start_x, start_y, segment.get('from_component'), threshold_px)
+
+        # End endpoint
+        if not segment.get('to_component'):
+            nearest = None
+            nearest_d = 10 ** 9
+            for comp in self.components:
+                d = self._distance(end_x, end_y, int(comp.get('x', 0)), int(comp.get('y', 0)))
+                if d < nearest_d:
+                    nearest = comp
+                    nearest_d = d
+            if nearest and nearest_d <= threshold_px:
+                segment['to_component'] = nearest
+                print(f"DEBUG: Segment endpoint-end auto-attached to component {nearest.get('component_type')} (d={nearest_d:.1f}px)")
+        # After potential attach, propagate to any other segments sharing this junction
+        self._propagate_component_to_shared_junctions(end_x, end_y, segment.get('to_component'), threshold_px)
+
+        # Update consumers if anything changed
+        self.update_segment_tool_components()
+
+    def _propagate_component_to_shared_junctions(self, jx: int, jy: int, component: dict, threshold_px: int) -> None:
+        """Ensure all segments that meet at the same endpoint carry the same
+        component reference at that endpoint. This allows a chain of segments to
+        be treated as connected through a component or a junction with that
+        component attached once.
+        """
+        if component is None:
+            # Nothing to propagate
+            return
+        for idx, seg in enumerate(self.segments):
+            sx, sy = int(seg.get('start_x', 0)), int(seg.get('start_y', 0))
+            ex, ey = int(seg.get('end_x', 0)), int(seg.get('end_y', 0))
+            # Start endpoint matches
+            if self._distance(jx, jy, sx, sy) <= threshold_px and not seg.get('from_component'):
+                seg['from_component'] = component
+                print(f"DEBUG: Propagated component to segment[{idx}] start at shared junction")
+            # End endpoint matches
+            if self._distance(jx, jy, ex, ey) <= threshold_px and not seg.get('to_component'):
+                seg['to_component'] = component
+                print(f"DEBUG: Propagated component to segment[{idx}] end at shared junction")
         
     def load_elements_data(self, data):
         """Load element data from saved state"""

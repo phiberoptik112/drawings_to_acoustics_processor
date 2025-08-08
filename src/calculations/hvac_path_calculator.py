@@ -44,6 +44,7 @@ class HVACPathCalculator:
         Returns:
             Created HVACPath or None if creation failed
         """
+        session = None
         try:
             components = drawing_data.get('components', [])
             segments = drawing_data.get('segments', [])
@@ -123,8 +124,35 @@ class HVACPathCalculator:
                         duct_height=8,
                     duct_shape='rectangular',
                     duct_type='sheet_metal'
-                )
-                session.add(hvac_segment)
+                    )
+                    session.add(hvac_segment)
+                else:
+                    # Fallback: if neither endpoint matched by exact equality, try position/type match
+                    # to be resilient to dict identity differences between overlay and calculator
+                    fc = seg_data.get('from_component') or {}
+                    tc = seg_data.get('to_component') or {}
+                    def match_id_by_pos(cdict):
+                        for _, db_comp in db_components.items():
+                            if (db_comp.x_position == cdict.get('x', 0) and
+                                db_comp.y_position == cdict.get('y', 0) and
+                                db_comp.component_type == cdict.get('component_type', 'unknown')):
+                                return db_comp.id
+                        return None
+                    from_comp_id = match_id_by_pos(fc)
+                    to_comp_id = match_id_by_pos(tc)
+                    if from_comp_id or to_comp_id:
+                        hvac_segment = HVACSegment(
+                            hvac_path_id=hvac_path.id,
+                            from_component_id=from_comp_id,
+                            to_component_id=to_comp_id,
+                            length=seg_data.get('length_real', 0),
+                            segment_order=i+1,
+                            duct_width=12,
+                            duct_height=8,
+                            duct_shape='rectangular',
+                            duct_type='sheet_metal'
+                        )
+                        session.add(hvac_segment)
             
             session.commit()
             
@@ -135,8 +163,15 @@ class HVACPathCalculator:
             return hvac_path
             
         except Exception as e:
-            session.rollback()
-            session.close()
+            if session is not None:
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+                try:
+                    session.close()
+                except Exception:
+                    pass
             print(f"Error creating HVAC path: {e}")
             return None
     
@@ -150,6 +185,7 @@ class HVACPathCalculator:
         Returns:
             PathAnalysisResult with calculation details
         """
+        session = None
         try:
             session = get_session()
             hvac_path = session.query(HVACPath).filter(HVACPath.id == path_id).first()
@@ -190,7 +226,11 @@ class HVACPathCalculator:
             return result
             
         except Exception as e:
-            session.close()
+            if session is not None:
+                try:
+                    session.close()
+                except Exception:
+                    pass
             return PathAnalysisResult(
                 path_id=path_id,
                 path_name=f"Path {path_id}",
@@ -216,6 +256,7 @@ class HVACPathCalculator:
         """
         results = []
         
+        session = None
         try:
             session = get_session()
             hvac_paths = session.query(HVACPath).filter(
@@ -334,6 +375,7 @@ class HVACPathCalculator:
         Returns:
             True if successful
         """
+        session = None
         try:
             session = get_session()
             segment = session.query(HVACSegment).filter(HVACSegment.id == segment_id).first()
@@ -356,8 +398,15 @@ class HVACPathCalculator:
             return True
             
         except Exception as e:
-            session.rollback()
-            session.close()
+            if session is not None:
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+                try:
+                    session.close()
+                except Exception:
+                    pass
             print(f"Error updating segment properties: {e}")
             return False
     
@@ -373,6 +422,7 @@ class HVACPathCalculator:
         Returns:
             True if successful
         """
+        session = None
         try:
             session = get_session()
             
@@ -395,8 +445,15 @@ class HVACPathCalculator:
             return True
             
         except Exception as e:
-            session.rollback()
-            session.close()
+            if session is not None:
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+                try:
+                    session.close()
+                except Exception:
+                    pass
             print(f"Error adding segment fitting: {e}")
             return False
     
@@ -410,6 +467,7 @@ class HVACPathCalculator:
         Returns:
             Summary dictionary
         """
+        session = None
         try:
             session = get_session()
             
@@ -451,6 +509,11 @@ class HVACPathCalculator:
             return summary
             
         except Exception as e:
+            try:
+                if session is not None:
+                    session.close()
+            except Exception:
+                pass
             print(f"Error getting path summary: {e}")
             return {
                 'total_paths': 0,
@@ -473,6 +536,7 @@ class HVACPathCalculator:
         """
         results = []
         
+        session = None
         try:
             session = get_session()
             
@@ -496,6 +560,11 @@ class HVACPathCalculator:
             session.close()
             
         except Exception as e:
+            try:
+                if session is not None:
+                    session.close()
+            except Exception:
+                pass
             print(f"Error exporting path results: {e}")
         
         return results

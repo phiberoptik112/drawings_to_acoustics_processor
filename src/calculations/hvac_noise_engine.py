@@ -156,6 +156,9 @@ class HVACNoiseEngine:
                 element_result['element_id'] = element.element_id
                 element_result['element_type'] = element.element_type
                 element_result['element_order'] = i
+                # Maintain legacy compatibility: some UI expects 'segment_number'
+                # Use 1-based index for human-readable ordering
+                element_result['segment_number'] = i + 1
                 
                 # Apply the effect
                 if element_result.get('attenuation_spectrum'):

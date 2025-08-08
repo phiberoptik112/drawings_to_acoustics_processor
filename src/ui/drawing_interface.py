@@ -1109,17 +1109,38 @@ class DrawingInterface(QMainWindow):
             for comp in components:
                 comp['drawing_id'] = self.drawing.id
             
-            # Filter segments that connect the components in our path
+            # Filter segments that connect to any components in our path
+            # Be permissive: include a segment if EITHER endpoint is in the path's component set.
+            # The calculator later validates and creates DB segments only when at least one
+            # endpoint is resolvable, so over-including here is safe and avoids false negatives
+            # due to identity/equality nuances in dicts.
             path_segments = []
-            component_ids = [comp.get('id') for comp in components]
-            
-            for segment in segments:
+            print(f"DEBUG: Preparing path from {len(components)} components and {len(segments)} segments (pre-filter)")
+            for i, segment in enumerate(segments):
                 from_comp = segment.get('from_component')
                 to_comp = segment.get('to_component')
-                
-                if (from_comp and from_comp in components and 
-                    to_comp and to_comp in components):
+                include = False
+                if from_comp and from_comp in components:
+                    include = True
+                if to_comp and to_comp in components:
+                    include = True
+                if include:
                     path_segments.append(segment)
+                else:
+                    # Extra permissive fallback: include if either endpoint matches by position/type
+                    def comp_matches(c):
+                        if not c:
+                            return False
+                        for cmp in components:
+                            if (cmp.get('x') == c.get('x') and cmp.get('y') == c.get('y') and 
+                                cmp.get('component_type') == c.get('component_type')):
+                                return True
+                        return False
+                    if comp_matches(from_comp) or comp_matches(to_comp):
+                        path_segments.append(segment)
+                        include = True
+                print(f"DEBUG: Segment {i} filter include={include}")
+            print(f"DEBUG: path_segments after filter: {len(path_segments)}")
             
             drawing_data = {
                 'components': components,

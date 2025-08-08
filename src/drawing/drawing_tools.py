@@ -253,83 +253,149 @@ class SegmentTool(DrawingTool):
         return None
         
     def find_nearby_segment(self, point, max_distance=20):
-        """Find a segment near the given point"""
+        """Find a segment near the given point and infer any component at the endpoint.
+
+        Returns a dictionary with:
+        - 'segment': the segment dict
+        - 'endpoint': 'start' | 'end'
+        - 'distance': float
+        - 'component': component dict at that endpoint if known
+        - 'snap_x'/'snap_y': coordinates to snap the cursor to the endpoint
+        """
         if not self.available_segments:
-            print(f"DEBUG: No available segments to connect to")
+            print("DEBUG: No available segments to connect to")
             return None
-            
+
         print(f"DEBUG: Looking for segment near point ({point.x()}, {point.y()})")
         print(f"DEBUG: Available segments: {len(self.available_segments)}")
-        
+
         for i, segment in enumerate(self.available_segments):
             # Check distance to segment endpoints
             start_x = segment.get('start_x', 0)
             start_y = segment.get('start_y', 0)
             end_x = segment.get('end_x', 0)
             end_y = segment.get('end_y', 0)
-            
+
             # Distance to start point
-            start_distance = math.sqrt((point.x() - start_x)**2 + (point.y() - start_y)**2)
+            start_distance = math.sqrt((point.x() - start_x) ** 2 + (point.y() - start_y) ** 2)
             # Distance to end point
-            end_distance = math.sqrt((point.x() - end_x)**2 + (point.y() - end_y)**2)
-            
+            end_distance = math.sqrt((point.x() - end_x) ** 2 + (point.y() - end_y) ** 2)
+
             print(f"DEBUG: Segment {i}: start=({start_x}, {start_y}) end=({end_x}, {end_y})")
             print(f"DEBUG:   Start distance: {start_distance:.1f}, End distance: {end_distance:.1f}")
-            
+
             if start_distance <= max_distance:
-                print(f"DEBUG: Found segment at start point, distance {start_distance:.1f}")
-                return {'segment': segment, 'endpoint': 'start', 'distance': start_distance}
-            elif end_distance <= max_distance:
-                print(f"DEBUG: Found segment at end point, distance {end_distance:.1f}")
-                return {'segment': segment, 'endpoint': 'end', 'distance': end_distance}
-                
+                component_at_endpoint = segment.get('from_component')
+                print(
+                    "DEBUG: Found segment at start point, distance "
+                    f"{start_distance:.1f}; has_component={component_at_endpoint is not None}"
+                )
+                return {
+                    'segment': segment,
+                    'endpoint': 'start',
+                    'distance': start_distance,
+                    'component': component_at_endpoint,
+                    'snap_x': start_x,
+                    'snap_y': start_y,
+                }
+            if end_distance <= max_distance:
+                component_at_endpoint = segment.get('to_component')
+                print(
+                    "DEBUG: Found segment at end point, distance "
+                    f"{end_distance:.1f}; has_component={component_at_endpoint is not None}"
+                )
+                return {
+                    'segment': segment,
+                    'endpoint': 'end',
+                    'distance': end_distance,
+                    'component': component_at_endpoint,
+                    'snap_x': end_x,
+                    'snap_y': end_y,
+                }
+
         print(f"DEBUG: No segment found within {max_distance} pixels")
         return None
         
     def start(self, point):
         """Start segment drawing - try to connect to nearby component or segment"""
         super().start(point)
-        
+
         # Try to find a component at the start point
         self.from_component = self.find_nearby_component(point)
-        
-        # If no component found, try to find a segment
+
+        # If no component found, try to find a segment endpoint; snap and infer component
         if not self.from_component:
             nearby_segment = self.find_nearby_segment(point)
             if nearby_segment:
-                print(f"DEBUG: Starting segment from existing segment endpoint")
-                # Store segment connection info for later use
+                print("DEBUG: Starting segment from existing segment endpoint")
                 self.from_segment = nearby_segment
+                # Snap start point for clean geometry
+                try:
+                    self.start_point.setX(int(nearby_segment['snap_x']))
+                    self.start_point.setY(int(nearby_segment['snap_y']))
+                except Exception:
+                    pass
+                # If that endpoint is attached to a component, use it
+                if nearby_segment.get('component') is not None:
+                    self.from_component = nearby_segment['component']
+                else:
+                    # Re-check for a component at the snapped point
+                    try:
+                        snapped = QPoint(int(nearby_segment['snap_x']), int(nearby_segment['snap_y']))
+                        alt_component = self.find_nearby_component(snapped)
+                        if alt_component is not None:
+                            print("DEBUG: Found component at snapped start point; using as from_component")
+                            self.from_component = alt_component
+                    except Exception:
+                        pass
         
     def finish(self, point):
         """Finish segment drawing - try to connect to nearby component or segment"""
         print(f"DEBUG: SegmentTool.finish - method called, active: {self.active}")
         if self.active:
-            print(f"DEBUG: SegmentTool.finish - tool is active, processing")
+            print("DEBUG: SegmentTool.finish - tool is active, processing")
             self.current_point = point
-            
+
             # Try to find a component at the end point
             self.to_component = self.find_nearby_component(point)
-            
-            # If no component found, try to find a segment
+
+            # If no component found, try to find a segment endpoint; snap and infer component
             if not self.to_component:
                 nearby_segment = self.find_nearby_segment(point)
                 if nearby_segment:
-                    print(f"DEBUG: Ending segment at existing segment endpoint")
-                    # Store segment connection info for later use
+                    print("DEBUG: Ending segment at existing segment endpoint")
                     self.to_segment = nearby_segment
-            
+                    # Snap end point for clean geometry
+                    try:
+                        self.current_point.setX(int(nearby_segment['snap_x']))
+                        self.current_point.setY(int(nearby_segment['snap_y']))
+                    except Exception:
+                        pass
+                    # If that endpoint is attached to a component, use it
+                    if nearby_segment.get('component') is not None:
+                        self.to_component = nearby_segment['component']
+                    else:
+                        # Re-check for a component at the snapped point
+                        try:
+                            snapped = QPoint(int(nearby_segment['snap_x']), int(nearby_segment['snap_y']))
+                            alt_component = self.find_nearby_component(snapped)
+                            if alt_component is not None:
+                                print("DEBUG: Found component at snapped end point; using as to_component")
+                                self.to_component = alt_component
+                        except Exception:
+                            pass
+
             self.active = False
-            print(f"DEBUG: SegmentTool.finish - calling get_result()")
+            print("DEBUG: SegmentTool.finish - calling get_result()")
             result = self.get_result()
             print(f"DEBUG: SegmentTool.finish - result: {result is not None}")
             if result:
-                print(f"DEBUG: SegmentTool.finish - emitting finished signal")
+                print("DEBUG: SegmentTool.finish - emitting finished signal")
                 self.finished.emit(result)
             else:
-                print(f"DEBUG: SegmentTool.finish - no result to emit")
+                print("DEBUG: SegmentTool.finish - no result to emit")
         else:
-            print(f"DEBUG: SegmentTool.finish - tool is NOT active, skipping")
+            print("DEBUG: SegmentTool.finish - tool is NOT active, skipping")
                 
     def get_result(self):
         """Get segment information"""
