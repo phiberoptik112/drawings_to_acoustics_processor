@@ -96,6 +96,8 @@ class DrawingElement(Base):
         )
         
         # Type-specific properties
+        saved_zoom = element_data.get('saved_zoom')
+
         if element_type == 'rectangle':
             element.element_name = f"Rectangle {element_data.get('area_formatted', '')}"
             element.properties = {
@@ -107,7 +109,8 @@ class DrawingElement(Base):
                 },
                 'area_formatted': element_data.get('area_formatted'),
                 'width_real': element_data.get('width_real'),
-                'height_real': element_data.get('height_real')
+                'height_real': element_data.get('height_real'),
+                'saved_zoom': saved_zoom
             }
             
         elif element_type == 'component':
@@ -118,7 +121,8 @@ class DrawingElement(Base):
                 'position': {
                     'x': element_data.get('x'),
                     'y': element_data.get('y')
-                }
+                },
+                'saved_zoom': saved_zoom
             }
             
         elif element_type == 'segment':
@@ -133,7 +137,8 @@ class DrawingElement(Base):
                 'length_pixels': element_data.get('length_pixels'),
                 'length_formatted': element_data.get('length_formatted'),
                 'from_component': element_data.get('from_component'),
-                'to_component': element_data.get('to_component')
+                'to_component': element_data.get('to_component'),
+                'saved_zoom': saved_zoom
             }
             
         elif element_type == 'measurement':
@@ -146,7 +151,8 @@ class DrawingElement(Base):
                 'end_x': element_data.get('end_x'),
                 'end_y': element_data.get('end_y'),
                 'length_pixels': element_data.get('length_pixels'),
-                'length_formatted': element_data.get('length_formatted')
+                'length_formatted': element_data.get('length_formatted'),
+                'saved_zoom': saved_zoom
             }
             
         return element

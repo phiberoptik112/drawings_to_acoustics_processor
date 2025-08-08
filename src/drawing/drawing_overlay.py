@@ -695,6 +695,11 @@ class DrawingOverlay(QWidget):
             if seg.get('to_component'):
                 print(f"DEBUG:   To: {seg['to_component'].get('component_type', 'unknown')} at ({seg['to_component'].get('x', 0)}, {seg['to_component'].get('y', 0)})")
         
+        # Include current zoom so persistence can normalize back to base
+        for lst in (self.rectangles, self.components, self.segments, self.measurements):
+            for item in lst:
+                item['saved_zoom'] = self._current_zoom_factor
+
         return {
             'rectangles': self.rectangles.copy(),
             'components': self.components.copy(),
@@ -801,6 +806,12 @@ class DrawingOverlay(QWidget):
         
     def load_elements_data(self, data):
         """Load element data from saved state"""
+        # Reset base caches when loading persisted elements
+        self._base_rectangles = []
+        self._base_components = []
+        self._base_segments = []
+        self._base_measurements = []
+
         # Load rectangles and reconstruct QRect objects
         rectangles = data.get('rectangles', [])
         for rect_data in rectangles:
@@ -808,11 +819,57 @@ class DrawingOverlay(QWidget):
             if isinstance(bounds, dict):
                 # Reconstruct QRect from dictionary
                 rect_data['bounds'] = QRect(bounds['x'], bounds['y'], bounds['width'], bounds['height'])
+
+            # Normalize into base geometry using any saved zoom factor
+            try:
+                z = rect_data.get('saved_zoom') or 1.0
+                self._base_rectangles.append({
+                    **rect_data,
+                    'x': int(rect_data.get('x', 0) / z),
+                    'y': int(rect_data.get('y', 0) / z),
+                    'width': int(rect_data.get('width', 0) / z),
+                    'height': int(rect_data.get('height', 0) / z)
+                })
+            except Exception:
+                pass
         
         self.rectangles = rectangles
         self.components = data.get('components', [])
         self.segments = data.get('segments', [])
         self.measurements = data.get('measurements', [])
+
+        # Build base caches for components/segments/measurements
+        try:
+            for comp in self.components:
+                z = comp.get('saved_zoom') or 1.0
+                bc = comp.copy()
+                bc['x'] = int(comp.get('x', 0) / z)
+                bc['y'] = int(comp.get('y', 0) / z)
+                self._base_components.append(bc)
+            for seg in self.segments:
+                z = seg.get('saved_zoom') or 1.0
+                bs = seg.copy()
+                bs['start_x'] = int(seg.get('start_x', seg.get('x', 0)) / z)
+                bs['start_y'] = int(seg.get('start_y', seg.get('y', 0)) / z)
+                bs['end_x'] = int(seg.get('end_x', seg.get('end_x', 0)) / z)
+                bs['end_y'] = int(seg.get('end_y', seg.get('end_y', 0)) / z)
+                self._base_segments.append(bs)
+            for meas in self.measurements:
+                z = meas.get('saved_zoom') or 1.0
+                bm = meas.copy()
+                bm['start_x'] = int(meas.get('start_x', 0) / z)
+                bm['start_y'] = int(meas.get('start_y', 0) / z)
+                bm['end_x'] = int(meas.get('end_x', 0) / z)
+                bm['end_y'] = int(meas.get('end_y', 0) / z)
+                self._base_measurements.append(bm)
+        except Exception:
+            pass
+
+        # After loading, project to current zoom factor so display matches
+        try:
+            self.set_zoom_factor(self._current_zoom_factor)
+        except Exception:
+            pass
         self.update()
     
     # Path visualization methods
