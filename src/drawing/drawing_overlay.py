@@ -27,6 +27,12 @@ class DrawingOverlay(QWidget):
         # Initialize managers
         self.tool_manager = DrawingToolManager()
         self.scale_manager = ScaleManager()
+        self._current_zoom_factor = 1.0  # Tracks last applied zoom for coordinate scaling
+        # Base (100% zoom) geometry to avoid cumulative scaling drift
+        self._base_rectangles = []
+        self._base_components = []
+        self._base_segments = []
+        self._base_measurements = []
         
         # Drawing elements storage
         self.rectangles = []  # Room boundaries
@@ -69,6 +75,139 @@ class DrawingOverlay(QWidget):
             print(f"DEBUG: Segment {i}: from_component={seg.get('from_component') is not None}, to_component={seg.get('to_component') is not None}")
         self.tool_manager.set_available_components(self.components)
         self.tool_manager.set_available_segments(self.segments)
+
+    def set_zoom_factor(self, zoom_factor: float):
+        """Project stored base geometry to the new zoom factor.
+
+        We keep base coordinates normalized to 100% zoom. When zoom changes,
+        we recompute all on-screen coordinates from the base to avoid drift.
+        """
+        try:
+            if zoom_factor <= 0:
+                return
+            z = zoom_factor
+
+            # Initialize base geometry lazily if not already set
+            if not (self._base_rectangles or self._base_components or self._base_segments or self._base_measurements):
+                cur_z = self._current_zoom_factor or 1.0
+                # Rectangles
+                for r in self.rectangles:
+                    base_bounds = None
+                    b = r.get('bounds')
+                    if isinstance(b, dict):
+                        base_bounds = {
+                            'x': int(b.get('x', 0) / cur_z),
+                            'y': int(b.get('y', 0) / cur_z),
+                            'width': int(b.get('width', 0) / cur_z),
+                            'height': int(b.get('height', 0) / cur_z),
+                        }
+                    self._base_rectangles.append({
+                        **r,
+                        'x': int(r.get('x', 0) / cur_z),
+                        'y': int(r.get('y', 0) / cur_z),
+                        'width': int(r.get('width', 0) / cur_z),
+                        'height': int(r.get('height', 0) / cur_z),
+                        'bounds': base_bounds or r.get('bounds')
+                    })
+                # Components
+                for c in self.components:
+                    bc = c.copy()
+                    bc['x'] = int(c.get('x', 0) / cur_z)
+                    bc['y'] = int(c.get('y', 0) / cur_z)
+                    if isinstance(c.get('position'), dict):
+                        bc['position'] = {
+                            'x': int(c['position'].get('x', 0) / cur_z),
+                            'y': int(c['position'].get('y', 0) / cur_z),
+                        }
+                    self._base_components.append(bc)
+                # Segments
+                for s in self.segments:
+                    bs = s.copy()
+                    bs['start_x'] = int(s.get('start_x', 0) / cur_z)
+                    bs['start_y'] = int(s.get('start_y', 0) / cur_z)
+                    bs['end_x'] = int(s.get('end_x', 0) / cur_z)
+                    bs['end_y'] = int(s.get('end_y', 0) / cur_z)
+                    bs['length_pixels'] = (s.get('length_pixels', 0) or 0) / cur_z
+                    self._base_segments.append(bs)
+                # Measurements
+                for m in self.measurements:
+                    bm = m.copy()
+                    bm['start_x'] = int(m.get('start_x', 0) / cur_z)
+                    bm['start_y'] = int(m.get('start_y', 0) / cur_z)
+                    bm['end_x'] = int(m.get('end_x', 0) / cur_z)
+                    bm['end_y'] = int(m.get('end_y', 0) / cur_z)
+                    bm['length_pixels'] = (m.get('length_pixels', 0) or 0) / cur_z
+                    self._base_measurements.append(bm)
+
+            # Helper distance
+            def _len_px(x1, y1, x2, y2) -> float:
+                dx, dy = x2 - x1, y2 - y1
+                return (dx * dx + dy * dy) ** 0.5
+
+            # Project base → current
+            for i, br in enumerate(self._base_rectangles):
+                if i < len(self.rectangles):
+                    r = self.rectangles[i]
+                    r['x'] = int(br.get('x', 0) * z)
+                    r['y'] = int(br.get('y', 0) * z)
+                    r['width'] = int(br.get('width', 0) * z)
+                    r['height'] = int(br.get('height', 0) * z)
+                    b = br.get('bounds')
+                    if isinstance(b, dict):
+                        from PySide6.QtCore import QRect as _QRect
+                        r['bounds'] = _QRect(
+                            int(b.get('x', 0) * z),
+                            int(b.get('y', 0) * z),
+                            int(b.get('width', 0) * z),
+                            int(b.get('height', 0) * z),
+                        )
+
+            for i, bc in enumerate(self._base_components):
+                if i < len(self.components):
+                    c = self.components[i]
+                    c['x'] = int(bc.get('x', 0) * z)
+                    c['y'] = int(bc.get('y', 0) * z)
+                    if isinstance(c.get('position'), dict) and isinstance(bc.get('position'), dict):
+                        c['position']['x'] = int(bc['position'].get('x', 0) * z)
+                        c['position']['y'] = int(bc['position'].get('y', 0) * z)
+
+            for i, bs in enumerate(self._base_segments):
+                if i < len(self.segments):
+                    s = self.segments[i]
+                    s['start_x'] = int(bs.get('start_x', 0) * z)
+                    s['start_y'] = int(bs.get('start_y', 0) * z)
+                    s['end_x'] = int(bs.get('end_x', 0) * z)
+                    s['end_y'] = int(bs.get('end_y', 0) * z)
+                    lp = _len_px(s['start_x'], s['start_y'], s['end_x'], s['end_y'])
+                    s['length_pixels'] = lp
+                    try:
+                        lr = self.scale_manager.pixels_to_real(lp)
+                        s['length_real'] = lr
+                        s['length_formatted'] = self.scale_manager.format_distance(lr)
+                    except Exception:
+                        pass
+
+            for i, bm in enumerate(self._base_measurements):
+                if i < len(self.measurements):
+                    m = self.measurements[i]
+                    m['start_x'] = int(bm.get('start_x', 0) * z)
+                    m['start_y'] = int(bm.get('start_y', 0) * z)
+                    m['end_x'] = int(bm.get('end_x', 0) * z)
+                    m['end_y'] = int(bm.get('end_y', 0) * z)
+                    lp = _len_px(m['start_x'], m['start_y'], m['end_x'], m['end_y'])
+                    m['length_pixels'] = lp
+                    try:
+                        lr = self.scale_manager.pixels_to_real(lp)
+                        m['length_real'] = lr
+                        m['length_formatted'] = self.scale_manager.format_distance(lr)
+                    except Exception:
+                        pass
+
+            self._current_zoom_factor = zoom_factor
+            self.update_segment_tool_components()
+            self.update()
+        except Exception as e:
+            print(f"DEBUG: set_zoom_factor error: {e}")
         
     def mousePressEvent(self, event):
         """Handle mouse press events"""

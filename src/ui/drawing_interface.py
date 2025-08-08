@@ -432,6 +432,8 @@ class DrawingInterface(QMainWindow):
             # Get PDF display size
             pdf_size = self.pdf_viewer.pixmap.size()
             self.drawing_overlay.resize(pdf_size)
+            # Keep overlay top-left aligned with label to avoid translation drift
+            self.drawing_overlay.move(0, 0)
             
             # Update scale manager with page dimensions
             pdf_width, pdf_height = self.pdf_viewer.get_page_dimensions()
@@ -494,6 +496,13 @@ class DrawingInterface(QMainWindow):
             self.scale_manager.scale_ratio = self._base_scale_ratio * zoom_factor
             # Emit the scale change to update the UI
             self.scale_manager.scale_changed.emit(self.scale_manager.scale_ratio, self.scale_manager.scale_string)
+
+        # Re-scale overlay geometry so items remain anchored while background zooms
+        if self.drawing_overlay:
+            try:
+                self.drawing_overlay.set_zoom_factor(zoom_factor)
+            except Exception as e:
+                print(f"DEBUG: overlay zoom update failed: {e}")
         
     def page_changed(self, page_number):
         """Handle PDF page change - save current page elements and load new page elements"""

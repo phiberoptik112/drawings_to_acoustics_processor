@@ -60,6 +60,8 @@ def ensure_hvac_schema():
                 ("calculated_noise", "REAL"),
                 ("calculated_nc", "REAL"),
                 ("modified_date", "DATETIME"),
+                # New association columns (idempotent)
+                ("primary_source_id", "INTEGER"),
             ],
         )
 

@@ -152,6 +152,8 @@ class HVACNoiseEngine:
                 if element.element_type == 'source':
                     continue  # Already processed
                 
+                # Capture noise before this element for legacy UI
+                noise_before_dba = current_dba
                 element_result = self._calculate_element_effect(element, current_spectrum, current_dba)
                 element_result['element_id'] = element.element_id
                 element_result['element_type'] = element.element_type
@@ -182,6 +184,9 @@ class HVACNoiseEngine:
                 # Update A-weighted level
                 current_dba = self._calculate_dba_from_spectrum(current_spectrum)
                 
+                # Provide legacy keys expected by UI
+                element_result['noise_before'] = noise_before_dba
+                element_result['noise_after'] = current_dba
                 element_result['noise_after_dba'] = current_dba
                 element_result['noise_after_spectrum'] = current_spectrum.copy()
                 

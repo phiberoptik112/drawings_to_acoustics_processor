@@ -156,7 +156,7 @@ class HVACPathCalculator:
             
             session.commit()
             
-            # Calculate noise for the new path
+            # Calculate noise for the new path (uses any saved source/receiver if available later)
             self.calculate_path_noise(hvac_path.id)
             
             session.close()

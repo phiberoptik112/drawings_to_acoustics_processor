@@ -53,6 +53,7 @@ class HVACPath(Base):
     id = Column(Integer, primary_key=True)
     project_id = Column(Integer, ForeignKey('projects.id'), nullable=False)
     target_space_id = Column(Integer, ForeignKey('spaces.id'))
+    primary_source_id = Column(Integer, ForeignKey('hvac_components.id'))  # Optional selection of source component
     name = Column(String(255), nullable=False)
     description = Column(Text)
     
@@ -69,6 +70,7 @@ class HVACPath(Base):
     # Relationships
     project = relationship("Project", back_populates="hvac_paths")
     target_space = relationship("Space", back_populates="hvac_paths")
+    primary_source = relationship("HVACComponent")
     segments = relationship("HVACSegment", back_populates="hvac_path", cascade="all, delete-orphan", order_by="HVACSegment.segment_order")
     placement_analyses = relationship("SilencerPlacementAnalysis", back_populates="hvac_path", cascade="all, delete-orphan")
     
