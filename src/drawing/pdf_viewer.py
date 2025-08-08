@@ -50,7 +50,8 @@ class PDFViewer(QWidget):
         # PDF display label
         self.pdf_label = QLabel()
         self.pdf_label.setAlignment(Qt.AlignCenter)
-        self.pdf_label.setStyleSheet("border: 1px solid #ccc; background-color: white;")
+        # Dark-friendly canvas border; keep PDF rendering neutral
+        self.pdf_label.setStyleSheet("border: 1px solid #3a3a3a; background-color: #1e1e1e;")
         self.pdf_label.mousePressEvent = self.mouse_press_event
         self.pdf_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         
@@ -67,7 +68,8 @@ class PDFViewer(QWidget):
     def create_toolbar(self):
         """Create the PDF viewer toolbar"""
         toolbar = QWidget()
-        toolbar.setStyleSheet("background-color: #ecf0f1; padding: 5px;")
+        # Dark mode toolbar background
+        toolbar.setStyleSheet("background-color: #2a2a2a; padding: 5px; border: 1px solid #3a3a3a;")
         layout = QHBoxLayout()
         
         # Page navigation
@@ -80,9 +82,11 @@ class PDFViewer(QWidget):
         self.next_btn.setEnabled(False)
         
         self.page_label = QLabel("Page: 0/0")
+        self.page_label.setStyleSheet("color: #e0e0e0;")
         
         # Zoom controls
         zoom_label = QLabel("Zoom:")
+        zoom_label.setStyleSheet("color: #e0e0e0;")
         self.zoom_slider = QSlider(Qt.Horizontal)
         self.zoom_slider.setRange(25, 400)  # 25% to 400%
         self.zoom_slider.setValue(100)

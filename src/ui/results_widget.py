@@ -96,13 +96,17 @@ class ResultsWidget(QWidget):
         """Create results header with key metrics"""
         header = QFrame()
         header.setFrameStyle(QFrame.Box)
-        header.setStyleSheet("QFrame { background-color: #f0f0f0; border: 1px solid #ccc; }")
+        # Dark-mode header styling
+        header.setStyleSheet(
+            "QFrame { background-color: #2a2a2a; border: 1px solid #3a3a3a; }"
+        )
         
         layout = QHBoxLayout()
         
         # Project info
         self.project_name_label = QLabel("Project: Loading...")
         self.project_name_label.setFont(QFont("Arial", 12, QFont.Bold))
+        self.project_name_label.setStyleSheet("color: #e0e0e0; background: transparent;")
         layout.addWidget(self.project_name_label)
         
         layout.addStretch()
@@ -116,6 +120,7 @@ class ResultsWidget(QWidget):
         for label in [self.spaces_count_label, self.hvac_paths_label, 
                       self.avg_rt60_label, self.avg_nc_label]:
             label.setFont(QFont("Arial", 10, QFont.Bold))
+            label.setStyleSheet("color: #e0e0e0; background: transparent;")
             layout.addWidget(label)
         
         header.setLayout(layout)
@@ -178,6 +183,9 @@ class ResultsWidget(QWidget):
         
         # Spaces table
         self.spaces_table = QTableWidget()
+        self.spaces_table.setStyleSheet(
+            "QTableWidget { background-color: #1e1e1e; color: #e0e0e0; gridline-color: #3a3a3a; }"
+        )
         self.spaces_table.setColumnCount(8)
         self.spaces_table.setHorizontalHeaderLabels([
             "Space Name", "Area (sf)", "Volume (cf)", "Target RT60", 
@@ -197,6 +205,9 @@ class ResultsWidget(QWidget):
         
         # HVAC paths table
         self.hvac_table = QTableWidget()
+        self.hvac_table.setStyleSheet(
+            "QTableWidget { background-color: #1e1e1e; color: #e0e0e0; gridline-color: #3a3a3a; }"
+        )
         self.hvac_table.setColumnCount(7)
         self.hvac_table.setHorizontalHeaderLabels([
             "Path Name", "Type", "Target Space", "Noise Level (dB)", 
@@ -228,6 +239,9 @@ class ResultsWidget(QWidget):
         
         # NC compliance table
         self.nc_table = QTableWidget()
+        self.nc_table.setStyleSheet(
+            "QTableWidget { background-color: #1e1e1e; color: #e0e0e0; gridline-color: #3a3a3a; }"
+        )
         self.nc_table.setColumnCount(6)
         self.nc_table.setHorizontalHeaderLabels([
             "Space/Path", "Measured NC", "Required NC", "Status", 
