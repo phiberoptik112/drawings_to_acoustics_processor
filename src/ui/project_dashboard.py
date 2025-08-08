@@ -11,8 +11,11 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QIcon, QColor
 
 from models import get_session, Project, Drawing, Space, HVACPath
+from models.hvac import HVACSegment
+from sqlalchemy.orm import selectinload
 from ui.drawing_interface import DrawingInterface
 from ui.results_widget import ResultsWidget
+from ui.dialogs.hvac_path_dialog import HVACPathDialog
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 
 
@@ -262,6 +265,7 @@ class ProjectDashboard(QMainWindow):
         # HVAC paths list
         self.hvac_list = QListWidget()
         self.apply_dark_list_style(self.hvac_list)
+        self.hvac_list.itemDoubleClicked.connect(self.edit_hvac_path)
         layout.addWidget(self.hvac_list)
         
         # Buttons
@@ -439,18 +443,18 @@ class ProjectDashboard(QMainWindow):
         try:
             session = get_session()
             paths = session.query(HVACPath).filter(HVACPath.project_id == self.project_id).all()
-            
             self.hvac_list.clear()
             for path in paths:
                 item_text = f"🔀 {path.name} ({path.path_type})"
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, path.id)
                 self.hvac_list.addItem(item)
-                
             session.close()
-            
         except Exception as e:
             QMessageBox.warning(self, "Warning", f"Could not load HVAC paths:\n{str(e)}")
+        finally:
+            # Keep list in sync after operations
+            self.update_analysis_status()
             
     def refresh_component_library(self):
         """Refresh the component library display"""
@@ -677,12 +681,51 @@ class ProjectDashboard(QMainWindow):
         QMessageBox.information(self, "Duplicate Space", "Space duplication will be implemented.")
         
     def new_hvac_path(self):
-        """Create a new HVAC path"""
-        QMessageBox.information(self, "New HVAC Path", "HVAC path creation will be implemented.")
+        """Create a new HVAC path using the HVACPathDialog"""
+        try:
+            dialog = HVACPathDialog(self, project_id=self.project_id)
+            if dialog.exec() == QDialog.Accepted:
+                # Dialog emits saved path internally; just refresh
+                self.refresh_hvac_paths()
+                self.update_analysis_status()
+        except Exception as e:
+            QMessageBox.critical(self, "New HVAC Path", f"Failed to create HVAC path:\n{str(e)}")
         
-    def edit_hvac_path(self):
-        """Edit HVAC path properties"""
-        QMessageBox.information(self, "Edit HVAC Path", "HVAC path editing will be implemented.")
+    def edit_hvac_path(self, item=None):
+        """Edit HVAC path properties with dialog"""
+        try:
+            # Determine selected path id
+            # Handle connections from both double-click (item passed) and button click (bool passed)
+            if isinstance(item, bool) or item is None or not hasattr(item, 'data'):
+                item = self.hvac_list.currentItem()
+            if not item:
+                QMessageBox.information(self, "Edit HVAC Path", "Select a path to edit.")
+                return
+            path_id = item.data(Qt.UserRole)
+            if path_id is None:
+                QMessageBox.information(self, "Edit HVAC Path", "Select a path to edit.")
+                return
+            session = get_session()
+            path = (
+                session.query(HVACPath)
+                .options(
+                    selectinload(HVACPath.target_space),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                )
+                .filter(HVACPath.id == path_id)
+                .first()
+            )
+            session.close()
+            if not path:
+                QMessageBox.warning(self, "Edit HVAC Path", "Selected path not found.")
+                return
+            dialog = HVACPathDialog(self, project_id=self.project_id, path=path)
+            if dialog.exec() == QDialog.Accepted:
+                self.refresh_hvac_paths()
+                self.update_analysis_status()
+        except Exception as e:
+            QMessageBox.critical(self, "Edit HVAC Path", f"Failed to edit HVAC path:\n{str(e)}")
         
     def save_project(self):
         """Save the current project"""
