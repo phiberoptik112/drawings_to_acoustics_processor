@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QMessageBox, QSpinBox, QCheckBox, QTableWidget,
                              QTableWidgetItem, QHeaderView, QListWidget,
-                             QListWidgetItem, QSplitter)
+                             QListWidgetItem, QSplitter, QWidget)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
@@ -203,6 +203,11 @@ class HVACSegmentDialog(QDialog):
         duct_group = QGroupBox("Duct Properties")
         duct_layout = QFormLayout()
         
+        # Segment Type (drives engine element type)
+        self.segment_type_combo = QComboBox()
+        self.segment_type_combo.addItems(["duct", "elbow", "junction", "flex_duct"])  # terminal/source handled by components
+        duct_layout.addRow("Segment Type:", self.segment_type_combo)
+
         # Duct shape
         self.shape_combo = QComboBox()
         self.shape_combo.addItems(["rectangular", "round"])
@@ -333,6 +338,21 @@ class HVACSegmentDialog(QDialog):
         self.order_spin.setValue(self.segment.segment_order or 1)
         
         # Duct properties
+        # Best-effort infer segment type from existing fittings or duct type
+        inferred_type = "duct"
+        for fitting in self.segment.fittings:
+            ft = (fitting.fitting_type or '').lower()
+            if ft.startswith('elbow'):
+                inferred_type = 'elbow'
+                break
+            if 'tee' in ft or 'junction' in ft:
+                inferred_type = 'junction'
+        if (self.segment.duct_type or '').lower() == 'flexible':
+            inferred_type = 'flex_duct'
+        idx = self.segment_type_combo.findText(inferred_type)
+        if idx >= 0:
+            self.segment_type_combo.setCurrentIndex(idx)
+
         if self.segment.duct_shape:
             index = self.shape_combo.findText(self.segment.duct_shape)
             if index >= 0:
@@ -405,6 +425,19 @@ class HVACSegmentDialog(QDialog):
                 
                 # Add fittings
                 self.update_segment_fittings(segment, session)
+                # If user selected a segment type that implies a fitting, ensure at least one fitting exists
+                selected_type = self.segment_type_combo.currentText()
+                if selected_type in ("elbow", "junction") and len(segment.fittings) == 0:
+                    # Create a minimal representative fitting so engine inference works
+                    default_ft = "elbow_90" if selected_type == "elbow" else "tee_branch"
+                    from models.hvac import SegmentFitting as _SF
+                    session.add(_SF(
+                        segment_id=segment.id,
+                        fitting_type=default_ft,
+                        quantity=1,
+                        noise_adjustment=STANDARD_FITTINGS.get(default_ft, {}).get('noise_adjustment', 0.0)
+                    ))
+                    session.flush()
                 session.commit()
             
             session.close()

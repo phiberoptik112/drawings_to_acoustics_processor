@@ -291,6 +291,21 @@ class HVACPathCalculator:
                         'noise_adjustment': fitting.noise_adjustment or self.get_fitting_noise_adjustment(fitting.fitting_type)
                     }
                     segment_data['fittings'].append(fitting_data)
+
+                # Derive a high-level fitting_type for engine element inference
+                # Map any elbow_* fitting to 'elbow', any tee_* to 'junction'
+                fitting_types = [f.get('fitting_type', '') for f in segment_data['fittings']]
+                inferred_type = None
+                for ft in fitting_types:
+                    lower_ft = (ft or '').lower()
+                    if lower_ft.startswith('elbow'):
+                        inferred_type = 'elbow'
+                        break
+                    if 'tee' in lower_ft or 'junction' in lower_ft:
+                        inferred_type = 'junction'
+                        # keep searching for elbow only if needed; junction is acceptable
+                if inferred_type:
+                    segment_data['fitting_type'] = inferred_type
                 
                 path_data['segments'].append(segment_data)
             

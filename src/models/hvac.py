@@ -120,6 +120,7 @@ class SegmentFitting(Base):
     id = Column(Integer, primary_key=True)
     segment_id = Column(Integer, ForeignKey('hvac_segments.id'), nullable=False)
     fitting_type = Column(String(50), nullable=False)  # 'elbow', 'tee', 'reducer', etc.
+    quantity = Column(Integer, default=1)
     position_on_segment = Column(Float)  # Distance from start of segment (feet)
     noise_adjustment = Column(Float)     # +/- dB contribution
     

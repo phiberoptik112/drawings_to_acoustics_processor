@@ -79,6 +79,15 @@ def ensure_hvac_schema():
             ],
         )
 
+        # segment_fittings additions
+        _ensure_columns(
+            session,
+            "segment_fittings",
+            [
+                ("quantity", "INTEGER DEFAULT 1"),
+            ],
+        )
+
         session.commit()
     except Exception:
         session.rollback()
