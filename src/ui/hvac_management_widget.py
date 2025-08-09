@@ -370,6 +370,8 @@ class HVACManagementWidget(QWidget):
                     selectinload(HVACPath.primary_source),
                     selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
                     selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                    # Eagerly load fittings to avoid detached lazy-load errors in dialogs
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.fittings),
                 )
                 .filter(HVACPath.project_id == self.project_id)
                 .all()
@@ -742,7 +744,7 @@ class HVACManagementWidget(QWidget):
             if result.calculation_valid:
                 html += f"<p><b>Source Noise:</b> {result.source_noise:.1f} dB(A)<br>"
                 html += f"<b>Terminal Noise:</b> {result.terminal_noise:.1f} dB(A)<br>"
-                html += f"<b>Total Attenuation:</b> {result.total_attenuation:.1f} dB<br>"
+                html += f"<b>Total Attenuation:</b> {float(getattr(result, 'total_attenuation', 0) or 0):.1f} dB<br>"
                 html += f"<b>NC Rating:</b> NC-{result.nc_rating:.0f}</p>"
                 
                 # Segment breakdown

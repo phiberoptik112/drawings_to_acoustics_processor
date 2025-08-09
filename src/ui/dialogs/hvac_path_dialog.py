@@ -720,7 +720,10 @@ class HVACPathDialog(QDialog):
         if results['calculation_valid']:
             html += f"<p><b>Source Noise:</b> {results['source_noise']:.1f} dB(A)<br>"
             html += f"<b>Terminal Noise:</b> {results['terminal_noise']:.1f} dB(A)<br>"
-            html += f"<b>Total Attenuation:</b> {results['total_attenuation']:.1f} dB<br>"
+            total_att = results.get('total_attenuation')
+            if total_att is None:
+                total_att = results.get('total_attenuation_dba', 0)
+            html += f"<b>Total Attenuation:</b> {float(total_att or 0):.1f} dB<br>"
             html += f"<b>NC Rating:</b> NC-{results['nc_rating']:.0f}</p>"
             
             # Segment breakdown
@@ -729,11 +732,17 @@ class HVACPathDialog(QDialog):
             html += "<tr><th>Segment</th><th>Length</th><th>Noise Before</th><th>Noise After</th><th>Attenuation</th></tr>"
             
             for segment_result in results['path_segments']:
-                html += f"<tr><td>{segment_result['segment_number']}</td>"
+                html += f"<tr><td>{segment_result.get('segment_number', '')}</td>"
                 html += f"<td>{segment_result.get('length', 0):.1f} ft</td>"
-                html += f"<td>{segment_result['noise_before']:.1f} dB</td>"
-                html += f"<td>{segment_result['noise_after']:.1f} dB</td>"
-                html += f"<td>{segment_result['total_attenuation']:.1f} dB</td></tr>"
+                html += f"<td>{segment_result.get('noise_before', 0):.1f} dB</td>"
+                html += f"<td>{segment_result.get('noise_after', 0):.1f} dB</td>"
+                # New engine returns 'attenuation_dba'; older code expected 'total_attenuation'
+                seg_att = segment_result.get('total_attenuation')
+                if seg_att is None:
+                    seg_att = segment_result.get('attenuation_dba')
+                if seg_att is None:
+                    seg_att = segment_result.get('noise_before', 0) - segment_result.get('noise_after', 0)
+                html += f"<td>{seg_att:.1f} dB</td></tr>"
             
             html += "</table>"
             

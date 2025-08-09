@@ -468,7 +468,7 @@ class HVACPathAnalysisDialog(QDialog):
             self.results_table.setItem(row, 4, QTableWidgetItem(f"{terminal_noise:.1f} dB(A)"))
             
             # Attenuation
-            attenuation = result.total_attenuation if result.calculation_valid else 0
+            attenuation = (getattr(result, 'total_attenuation', None) if result.calculation_valid else 0) or 0
             self.results_table.setItem(row, 5, QTableWidgetItem(f"{attenuation:.1f} dB"))
             
             # NC rating
@@ -544,7 +544,7 @@ class HVACPathAnalysisDialog(QDialog):
         # Calculate statistics
         nc_ratings = [r.nc_rating for r in valid_results]
         terminal_noises = [r.terminal_noise for r in valid_results]
-        attenuations = [r.total_attenuation for r in valid_results]
+        attenuations = [getattr(r, 'total_attenuation', 0) for r in valid_results]
         
         html = "<h4>Performance Summary</h4>"
         html += f"<p><b>Paths Analyzed:</b> {len(valid_results)}</p>"
@@ -600,7 +600,7 @@ class HVACPathAnalysisDialog(QDialog):
             ax.legend()
             
         elif chart_type == "Attenuation":
-            attenuations = [r.total_attenuation for _, r in valid_results]
+            attenuations = [getattr(r, 'total_attenuation', 0) for _, r in valid_results]
             
             ax.bar(paths, attenuations, alpha=0.8)
             ax.set_ylabel('Attenuation (dB)')
@@ -659,7 +659,7 @@ class HVACPathAnalysisDialog(QDialog):
                     'Target Space': path.target_space.name if path.target_space else 'None',
                     'Source Noise (dB(A))': result.source_noise if result.calculation_valid else 0,
                     'Terminal Noise (dB(A))': result.terminal_noise if result.calculation_valid else 0,
-                    'Total Attenuation (dB)': result.total_attenuation if result.calculation_valid else 0,
+                    'Total Attenuation (dB)': (getattr(result, 'total_attenuation', None) if result.calculation_valid else 0) or 0,
                     'NC Rating': result.nc_rating if result.calculation_valid else 0,
                     'Calculation Valid': result.calculation_valid,
                     'Warnings': '; '.join(result.warnings) if result.warnings else ''

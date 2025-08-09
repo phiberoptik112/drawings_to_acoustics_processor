@@ -26,6 +26,7 @@ class DrawingInterface(QMainWindow):
     
     # Signals
     finished = Signal()
+    paths_updated = Signal()
     
     def __init__(self, drawing_id, project_id):
         super().__init__()
@@ -1184,6 +1185,11 @@ class DrawingInterface(QMainWindow):
                 
                 # Refresh paths list to show new path
                 self.load_saved_paths()
+                # Notify listeners (e.g., project dashboard HVAC tab)
+                try:
+                    self.paths_updated.emit()
+                except Exception:
+                    pass
             else:
                 QMessageBox.warning(self, "Creation Failed", "Failed to create HVAC path from drawing elements.")
                 
@@ -1443,6 +1449,7 @@ class DrawingInterface(QMainWindow):
                 
                 # Refresh paths list to show new path
                 self.load_saved_paths()
+                self.paths_updated.emit()
                 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")
@@ -1573,7 +1580,22 @@ class DrawingInterface(QMainWindow):
         message += f"Path: {source_type} → {terminal_type}\n\n"
         message += f"Source Noise Level: {results['source_noise']:.1f} dB(A)\n"
         message += f"Terminal Noise Level: {results['terminal_noise']:.1f} dB(A)\n"
-        message += f"Total Attenuation: {results['total_attenuation']:.1f} dB\n"
+        # Be tolerant of key name differences
+        total_att = results.get('total_attenuation')
+        if total_att is None:
+            total_att = results.get('total_attenuation_dba')
+        if total_att is None:
+            # Fallback: derive from last segment if present
+            try:
+                segs = results.get('path_segments', [])
+                if segs:
+                    last = segs[-1]
+                    total_att = last.get('total_attenuation')
+                    if total_att is None:
+                        total_att = last.get('attenuation_dba')
+            except Exception:
+                total_att = 0.0
+        message += f"Total Attenuation: {float(total_att or 0):.1f} dB\n"
         message += f"NC Rating: NC-{results['nc_rating']}\n\n"
         
         # Add NC criteria description

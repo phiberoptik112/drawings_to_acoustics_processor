@@ -233,6 +233,8 @@ class ProjectDashboard(QMainWindow):
         # Spaces list
         self.spaces_list = QListWidget()
         self.apply_dark_list_style(self.spaces_list)
+        # Enable double-click to edit space properties
+        self.spaces_list.itemDoubleClicked.connect(self.edit_space)
         layout.addWidget(self.spaces_list)
         
         # Buttons
@@ -564,6 +566,11 @@ class ProjectDashboard(QMainWindow):
             drawing_id = item.data(Qt.UserRole)
             try:
                 self.drawing_interface = DrawingInterface(drawing_id, self.project_id)
+                # Keep HVAC Paths tab in sync with drawing-created paths
+                try:
+                    self.drawing_interface.paths_updated.connect(self.refresh_hvac_paths)
+                except Exception:
+                    pass
                 self.drawing_interface.show()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Could not open drawing:\n{str(e)}")
@@ -642,9 +649,10 @@ class ProjectDashboard(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create space:\n{str(e)}")
         
-    def edit_space(self):
-        """Edit space properties"""
-        current_item = self.spaces_list.currentItem()
+    def edit_space(self, item=None):
+        """Edit space properties. Can be triggered by button or double-click on a list item."""
+        # Support both double-click (passes QListWidgetItem) and button click
+        current_item = item if (item is not None and hasattr(item, 'data')) else self.spaces_list.currentItem()
         if not current_item:
             QMessageBox.warning(self, "No Selection", "Please select a space to edit.")
             return
@@ -712,6 +720,8 @@ class ProjectDashboard(QMainWindow):
                     selectinload(HVACPath.target_space),
                     selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
                     selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                    # Ensure fittings are eagerly loaded to avoid lazy-load after session close
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.fittings),
                 )
                 .filter(HVACPath.id == path_id)
                 .first()
