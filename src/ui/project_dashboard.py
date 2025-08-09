@@ -6,7 +6,8 @@ import os
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QPushButton, QListWidget, QListWidgetItem,
                              QTabWidget, QMenuBar, QStatusBar, QMessageBox,
-                             QFileDialog, QSplitter, QTextEdit, QGroupBox, QDialog)
+                             QFileDialog, QSplitter, QTextEdit, QGroupBox, QDialog,
+                             QTableWidget, QTableWidgetItem, QHeaderView)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QIcon, QColor
 
@@ -235,6 +236,11 @@ class ProjectDashboard(QMainWindow):
         self.apply_dark_list_style(self.spaces_list)
         # Enable double-click to edit space properties
         self.spaces_list.itemDoubleClicked.connect(self.edit_space)
+        # Update HVAC pathing table on selection change
+        try:
+            self.spaces_list.currentItemChanged.connect(self.on_spaces_selection_changed)
+        except Exception:
+            pass
         layout.addWidget(self.spaces_list)
         
         # Buttons
@@ -305,6 +311,27 @@ class ProjectDashboard(QMainWindow):
         status_group.setLayout(status_layout)
         right_layout.addWidget(status_group)
         
+        # HVAC Pathing per Space group
+        self.space_hvac_group = QGroupBox("HVAC Pathing per Space")
+        space_hvac_layout = QVBoxLayout()
+        
+        self.space_hvac_table = QTableWidget(0, 5)
+        self.space_hvac_table.setHorizontalHeaderLabels([
+            "Path Name", "Type", "Segments", "Noise dB(A)", "NC"
+        ])
+        self.space_hvac_table.setSelectionBehavior(self.space_hvac_table.SelectionBehavior.SelectRows)
+        self.space_hvac_table.setEditTriggers(self.space_hvac_table.EditTrigger.NoEditTriggers)
+        self.space_hvac_table.cellDoubleClicked.connect(self.open_space_path_from_table)
+        
+        header = self.space_hvac_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in range(1, 5):
+            header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        
+        space_hvac_layout.addWidget(self.space_hvac_table)
+        self.space_hvac_group.setLayout(space_hvac_layout)
+        right_layout.addWidget(self.space_hvac_group)
+
         # Component library group
         library_group = QGroupBox("Component Library")
         library_layout = QVBoxLayout()
@@ -436,6 +463,8 @@ class ProjectDashboard(QMainWindow):
                 self.spaces_list.addItem(item)
                 
             session.close()
+            # Keep the HVAC pathing table synchronized with current selection
+            self.update_space_hvac_paths_table()
             
         except Exception as e:
             QMessageBox.warning(self, "Warning", f"Could not load spaces:\n{str(e)}")
@@ -457,6 +486,7 @@ class ProjectDashboard(QMainWindow):
         finally:
             # Keep list in sync after operations
             self.update_analysis_status()
+            self.update_space_hvac_paths_table()
             
     def refresh_component_library(self):
         """Refresh the component library display"""
@@ -734,6 +764,7 @@ class ProjectDashboard(QMainWindow):
             if dialog.exec() == QDialog.Accepted:
                 self.refresh_hvac_paths()
                 self.update_analysis_status()
+                self.update_space_hvac_paths_table()
         except Exception as e:
             QMessageBox.critical(self, "Edit HVAC Path", f"Failed to edit HVAC path:\n{str(e)}")
         
@@ -838,6 +869,90 @@ class ProjectDashboard(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export to Excel:\n{str(e)}")
     
+    def on_spaces_selection_changed(self, current, _previous):
+        """When the selection in the Spaces tab changes, refresh the HVAC table."""
+        try:
+            self.update_space_hvac_paths_table()
+        except Exception:
+            pass
+
+    def update_space_hvac_paths_table(self):
+        """Populate the 'HVAC Pathing per Space' table for the selected space."""
+        if not hasattr(self, 'space_hvac_table'):
+            return
+        current_item = self.spaces_list.currentItem() if hasattr(self, 'spaces_list') else None
+        if not current_item:
+            self.space_hvac_table.setRowCount(0)
+            return
+        space_id = current_item.data(Qt.UserRole)
+        try:
+            session = get_session()
+            paths = (
+                session.query(HVACPath)
+                .options(selectinload(HVACPath.segments))
+                .filter(HVACPath.project_id == self.project_id)
+                .filter(HVACPath.target_space_id == space_id)
+                .all()
+            )
+            self.space_hvac_table.setRowCount(len(paths))
+            for row, path in enumerate(paths):
+                name_item = QTableWidgetItem(path.name or "")
+                name_item.setData(Qt.UserRole, path.id)
+                type_item = QTableWidgetItem(path.path_type or "")
+                seg_count = len(path.segments) if getattr(path, 'segments', None) is not None else 0
+                seg_item = QTableWidgetItem(str(seg_count))
+                noise_item = QTableWidgetItem(
+                    f"{float(path.calculated_noise):.1f}" if path.calculated_noise is not None else "—"
+                )
+                nc_item = QTableWidgetItem(
+                    f"NC-{float(path.calculated_nc):.0f}" if path.calculated_nc is not None else "—"
+                )
+                self.space_hvac_table.setItem(row, 0, name_item)
+                self.space_hvac_table.setItem(row, 1, type_item)
+                self.space_hvac_table.setItem(row, 2, seg_item)
+                self.space_hvac_table.setItem(row, 3, noise_item)
+                self.space_hvac_table.setItem(row, 4, nc_item)
+            session.close()
+        except Exception as e:
+            # Show a single-row error
+            self.space_hvac_table.setRowCount(1)
+            self.space_hvac_table.setItem(0, 0, QTableWidgetItem(f"Error: {e}"))
+            for col in range(1, 5):
+                self.space_hvac_table.setItem(0, col, QTableWidgetItem(""))
+
+    def open_space_path_from_table(self, row, _column):
+        """Open the double-clicked HVAC path from the table for editing."""
+        try:
+            item = self.space_hvac_table.item(row, 0)
+            if not item:
+                return
+            path_id = item.data(Qt.UserRole)
+            if path_id is None:
+                return
+            session = get_session()
+            path = (
+                session.query(HVACPath)
+                .options(
+                    selectinload(HVACPath.target_space),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.fittings),
+                )
+                .filter(HVACPath.id == path_id)
+                .first()
+            )
+            session.close()
+            if not path:
+                QMessageBox.warning(self, "Edit HVAC Path", "Selected path not found.")
+                return
+            dialog = HVACPathDialog(self, project_id=self.project_id, path=path)
+            if dialog.exec() == QDialog.Accepted:
+                self.refresh_hvac_paths()
+                self.update_analysis_status()
+                self.update_space_hvac_paths_table()
+        except Exception as e:
+            QMessageBox.critical(self, "Edit HVAC Path", f"Failed to open HVAC path:\n{str(e)}")
+
     def get_export_options(self):
         """Get export options from user"""
         try:
