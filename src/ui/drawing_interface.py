@@ -433,8 +433,20 @@ class DrawingInterface(QMainWindow):
             # Get PDF display size
             pdf_size = self.pdf_viewer.pixmap.size()
             self.drawing_overlay.resize(pdf_size)
-            # Keep overlay top-left aligned with label to avoid translation drift
-            self.drawing_overlay.move(0, 0)
+
+            # Align overlay origin with the pixmap content origin inside the centered QLabel
+            try:
+                label = self.pdf_viewer.pdf_label
+                pixmap = self.pdf_viewer.pixmap
+                if label and pixmap:
+                    offset_x = max((label.width() - pixmap.width()) // 2, 0)
+                    offset_y = max((label.height() - pixmap.height()) // 2, 0)
+                    self.drawing_overlay.move(offset_x, offset_y)
+                else:
+                    self.drawing_overlay.move(0, 0)
+            except Exception:
+                # Fallback to (0,0) if anything unexpected
+                self.drawing_overlay.move(0, 0)
             
             # Update scale manager with page dimensions
             pdf_width, pdf_height = self.pdf_viewer.get_page_dimensions()

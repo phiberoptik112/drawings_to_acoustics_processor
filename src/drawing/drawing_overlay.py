@@ -33,6 +33,8 @@ class DrawingOverlay(QWidget):
         self._base_components = []
         self._base_segments = []
         self._base_measurements = []
+        # Track whether base caches must be rebuilt from live geometry
+        self._base_dirty = True
         
         # Drawing elements storage
         self.rectangles = []  # Room boundaries
@@ -87,13 +89,19 @@ class DrawingOverlay(QWidget):
                 return
             z = zoom_factor
 
-            # Initialize base geometry lazily if not already set
-            if not (self._base_rectangles or self._base_components or self._base_segments or self._base_measurements):
+            # Build or refresh base geometry from current elements when caches are empty or marked dirty
+            if self._base_dirty or not (self._base_rectangles or self._base_components or self._base_segments or self._base_measurements):
                 cur_z = self._current_zoom_factor or 1.0
+                # Reset caches
+                self._base_rectangles = []
+                self._base_components = []
+                self._base_segments = []
+                self._base_measurements = []
+
                 # Rectangles
                 for r in self.rectangles:
-                    base_bounds = None
                     b = r.get('bounds')
+                    # Normalize bounds into dict form at base scale
                     if isinstance(b, dict):
                         base_bounds = {
                             'x': int(b.get('x', 0) / cur_z),
@@ -101,6 +109,16 @@ class DrawingOverlay(QWidget):
                             'width': int(b.get('width', 0) / cur_z),
                             'height': int(b.get('height', 0) / cur_z),
                         }
+                    elif isinstance(b, QRect):
+                        base_bounds = {
+                            'x': int(b.x() / cur_z),
+                            'y': int(b.y() / cur_z),
+                            'width': int(b.width() / cur_z),
+                            'height': int(b.height() / cur_z),
+                        }
+                    else:
+                        base_bounds = None
+
                     self._base_rectangles.append({
                         **r,
                         'x': int(r.get('x', 0) / cur_z),
@@ -109,6 +127,7 @@ class DrawingOverlay(QWidget):
                         'height': int(r.get('height', 0) / cur_z),
                         'bounds': base_bounds or r.get('bounds')
                     })
+
                 # Components
                 for c in self.components:
                     bc = c.copy()
@@ -120,6 +139,7 @@ class DrawingOverlay(QWidget):
                             'y': int(c['position'].get('y', 0) / cur_z),
                         }
                     self._base_components.append(bc)
+
                 # Segments
                 for s in self.segments:
                     bs = s.copy()
@@ -127,8 +147,10 @@ class DrawingOverlay(QWidget):
                     bs['start_y'] = int(s.get('start_y', 0) / cur_z)
                     bs['end_x'] = int(s.get('end_x', 0) / cur_z)
                     bs['end_y'] = int(s.get('end_y', 0) / cur_z)
-                    bs['length_pixels'] = (s.get('length_pixels', 0) or 0) / cur_z
+                    lp = s.get('length_pixels', None)
+                    bs['length_pixels'] = (lp if lp is not None else 0) / cur_z
                     self._base_segments.append(bs)
+
                 # Measurements
                 for m in self.measurements:
                     bm = m.copy()
@@ -136,8 +158,11 @@ class DrawingOverlay(QWidget):
                     bm['start_y'] = int(m.get('start_y', 0) / cur_z)
                     bm['end_x'] = int(m.get('end_x', 0) / cur_z)
                     bm['end_y'] = int(m.get('end_y', 0) / cur_z)
-                    bm['length_pixels'] = (m.get('length_pixels', 0) or 0) / cur_z
+                    lp = m.get('length_pixels', None)
+                    bm['length_pixels'] = (lp if lp is not None else 0) / cur_z
                     self._base_measurements.append(bm)
+
+                self._base_dirty = False
 
             # Helper distance
             def _len_px(x1, y1, x2, y2) -> float:
@@ -266,6 +291,7 @@ class DrawingOverlay(QWidget):
             
             self.rectangles.append(element_data)
             print(f"DEBUG: Added rectangle, total rectangles: {len(self.rectangles)}")
+            self._base_dirty = True
             
         elif element_type == 'component':
             self.components.append(element_data)
@@ -277,6 +303,7 @@ class DrawingOverlay(QWidget):
                 self.attach_component_to_nearby_segments(element_data, threshold_px=20)
             except Exception as e:
                 print(f"DEBUG: attach_component_to_nearby_segments error: {e}")
+            self._base_dirty = True
             
         elif element_type == 'segment':
             print(f"DEBUG: Processing segment with from_component={element_data.get('from_component') is not None}, to_component={element_data.get('to_component') is not None}")
@@ -297,6 +324,7 @@ class DrawingOverlay(QWidget):
                 self.attach_endpoints_to_components(element_data, threshold_px=20)
             except Exception as e:
                 print(f"DEBUG: attach_endpoints_to_components error: {e}")
+            self._base_dirty = True
             
         elif element_type == 'measurement':
             # Add real-world measurement
@@ -392,13 +420,14 @@ class DrawingOverlay(QWidget):
             
     def draw_components(self, painter):
         """Draw HVAC components"""
+        effective_path_only = self.path_only_mode and bool(self.visible_paths)
         for comp_data in self.components:
             # Check if this component belongs to a hidden path
             if self.is_component_hidden_by_path(comp_data):
                 continue
             
             # In path-only mode, only draw components that belong to visible paths
-            if self.path_only_mode and not self.is_component_part_of_visible_path(comp_data):
+            if effective_path_only and not self.is_component_part_of_visible_path(comp_data):
                 print(f"DEBUG: Skipping component {comp_data.get('component_type')} at ({comp_data.get('x')}, {comp_data.get('y')}) - not in visible path (path-only mode)")
                 continue
                 
@@ -468,14 +497,14 @@ class DrawingOverlay(QWidget):
         """Draw duct segments"""
         pen = QPen(QColor(50, 150, 50), 3, Qt.SolidLine)
         painter.setPen(pen)
-        
+        effective_path_only = self.path_only_mode and bool(self.visible_paths)
         for seg_data in self.segments:
             # Check if this segment belongs to a hidden path
             if self.is_segment_hidden_by_path(seg_data):
                 continue
             
             # In path-only mode, only draw segments that belong to visible paths
-            if self.path_only_mode and not self.is_segment_part_of_visible_path(seg_data):
+            if effective_path_only and not self.is_segment_part_of_visible_path(seg_data):
                 print(f"DEBUG: Skipping segment from ({seg_data.get('start_x')}, {seg_data.get('start_y')}) to ({seg_data.get('end_x')}, {seg_data.get('end_y')}) - not in visible path (path-only mode)")
                 continue
                 
@@ -655,6 +684,12 @@ class DrawingOverlay(QWidget):
         self.components.clear()
         self.segments.clear()
         self.measurements.clear()
+        # Also clear base caches and mark dirty so next zoom rebuilds from scratch
+        self._base_rectangles = []
+        self._base_components = []
+        self._base_segments = []
+        self._base_measurements = []
+        self._base_dirty = True
         self.update()
         
     def clear_measurements(self):
@@ -849,10 +884,10 @@ class DrawingOverlay(QWidget):
             for seg in self.segments:
                 z = seg.get('saved_zoom') or 1.0
                 bs = seg.copy()
-                bs['start_x'] = int(seg.get('start_x', seg.get('x', 0)) / z)
-                bs['start_y'] = int(seg.get('start_y', seg.get('y', 0)) / z)
-                bs['end_x'] = int(seg.get('end_x', seg.get('end_x', 0)) / z)
-                bs['end_y'] = int(seg.get('end_y', seg.get('end_y', 0)) / z)
+                bs['start_x'] = int(seg.get('start_x', 0) / z)
+                bs['start_y'] = int(seg.get('start_y', 0) / z)
+                bs['end_x'] = int(seg.get('end_x', 0) / z)
+                bs['end_y'] = int(seg.get('end_y', 0) / z)
                 self._base_segments.append(bs)
             for meas in self.measurements:
                 z = meas.get('saved_zoom') or 1.0
@@ -867,6 +902,8 @@ class DrawingOverlay(QWidget):
 
         # After loading, project to current zoom factor so display matches
         try:
+            # Base was rebuilt from saved data; mark clean and project to current
+            self._base_dirty = False
             self.set_zoom_factor(self._current_zoom_factor)
         except Exception:
             pass

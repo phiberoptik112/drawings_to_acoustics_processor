@@ -502,16 +502,8 @@ class HVACPathDialog(QDialog):
             self.description_text.setPlainText(self.path.description)
         
         # Load components and segments
-        try:
-            # Load all project components to be available for selection
-            session = get_session()
-            comps = session.query(HVACComponent).filter(HVACComponent.project_id == self.project_id).all()
-            session.close()
-            self.components = list(comps)
-        except Exception:
-            self.components = []
-        # Use segments already associated with the path (caller eager-loads them)
-        self.segments = list(self.path.segments) if self.path.segments else []
+        self.components = list(self.path.segments[0].from_component.hvac_path.segments[0].from_component.project.hvac_components) if self.path.segments else []
+        self.segments = list(self.path.segments)
         
         self.update_component_list()
         self.update_segment_list()
@@ -720,10 +712,7 @@ class HVACPathDialog(QDialog):
         if results['calculation_valid']:
             html += f"<p><b>Source Noise:</b> {results['source_noise']:.1f} dB(A)<br>"
             html += f"<b>Terminal Noise:</b> {results['terminal_noise']:.1f} dB(A)<br>"
-            total_att = results.get('total_attenuation')
-            if total_att is None:
-                total_att = results.get('total_attenuation_dba', 0)
-            html += f"<b>Total Attenuation:</b> {float(total_att or 0):.1f} dB<br>"
+            html += f"<b>Total Attenuation:</b> {results['total_attenuation']:.1f} dB<br>"
             html += f"<b>NC Rating:</b> NC-{results['nc_rating']:.0f}</p>"
             
             # Segment breakdown
@@ -732,17 +721,11 @@ class HVACPathDialog(QDialog):
             html += "<tr><th>Segment</th><th>Length</th><th>Noise Before</th><th>Noise After</th><th>Attenuation</th></tr>"
             
             for segment_result in results['path_segments']:
-                html += f"<tr><td>{segment_result.get('segment_number', '')}</td>"
+                html += f"<tr><td>{segment_result['segment_number']}</td>"
                 html += f"<td>{segment_result.get('length', 0):.1f} ft</td>"
-                html += f"<td>{segment_result.get('noise_before', 0):.1f} dB</td>"
-                html += f"<td>{segment_result.get('noise_after', 0):.1f} dB</td>"
-                # New engine returns 'attenuation_dba'; older code expected 'total_attenuation'
-                seg_att = segment_result.get('total_attenuation')
-                if seg_att is None:
-                    seg_att = segment_result.get('attenuation_dba')
-                if seg_att is None:
-                    seg_att = segment_result.get('noise_before', 0) - segment_result.get('noise_after', 0)
-                html += f"<td>{seg_att:.1f} dB</td></tr>"
+                html += f"<td>{segment_result['noise_before']:.1f} dB</td>"
+                html += f"<td>{segment_result['noise_after']:.1f} dB</td>"
+                html += f"<td>{segment_result['total_attenuation']:.1f} dB</td></tr>"
             
             html += "</table>"
             
@@ -791,30 +774,22 @@ class HVACPathDialog(QDialog):
                 )
                 
                 if path:
-                    # Update path using a fresh session-bound instance
+                    # Update path name and description
                     session = get_session()
-                    try:
-                        db_path = session.query(HVACPath).filter(HVACPath.id == path.id).first()
-                        if db_path is None:
-                            session.close()
-                            QMessageBox.warning(self, "Creation Warning", "Path was created but could not be reloaded for update.")
-                            self.path = path
-                            self.path_saved.emit(path)
-                            self.accept()
-                            return
-                        db_path.name = name
-                        db_path.path_type = self.type_combo.currentText()
-                        db_path.description = self.description_text.toPlainText()
-                        # Update target space
-                        space_id = self.space_combo.currentData()
-                        db_path.target_space_id = space_id
-                        session.commit()
-                        # Assign updated object back for emit
-                        self.path = db_path
-                        self.path_saved.emit(db_path)
-                        self.accept()
-                    finally:
-                        session.close()
+                    path.name = name
+                    path.path_type = self.type_combo.currentText()
+                    path.description = self.description_text.toPlainText()
+                    
+                    # Update target space
+                    space_id = self.space_combo.currentData()
+                    path.target_space_id = space_id
+                    
+                    session.commit()
+                    session.close()
+                    
+                    self.path = path
+                    self.path_saved.emit(path)
+                    self.accept()
                 else:
                     QMessageBox.warning(self, "Creation Failed", "Failed to create HVAC path from drawing elements.")
                     return
@@ -823,20 +798,17 @@ class HVACPathDialog(QDialog):
                 session = get_session()
                 
                 if self.is_editing:
-                    # Update existing path (reload session-bound)
-                    db_path = session.query(HVACPath).filter(HVACPath.id == self.path.id).first()
-                    if db_path is None:
-                        session.close()
-                        QMessageBox.warning(self, "Update Failed", "Selected path could not be found.")
-                        return
-                    db_path.name = name
-                    db_path.path_type = self.type_combo.currentText()
-                    db_path.description = self.description_text.toPlainText()
+                    # Update existing path
+                    self.path.name = name
+                    self.path.path_type = self.type_combo.currentText()
+                    self.path.description = self.description_text.toPlainText()
+                    
                     # Update target space
                     space_id = self.space_combo.currentData()
-                    db_path.target_space_id = space_id
+                    self.path.target_space_id = space_id
+                    
                     session.commit()
-                    path = db_path
+                    path = self.path
                 else:
                     # Create new path
                     space_id = self.space_combo.currentData()
@@ -852,20 +824,11 @@ class HVACPathDialog(QDialog):
                     session.add(path)
                     session.flush()  # Get ID
                     
-                    # Create segments (persist new records based on dialog segment stubs)
+                    # Create segments
                     for i, segment in enumerate(self.segments):
-                        seg = HVACSegment(
-                            hvac_path_id=path.id,
-                            from_component_id=getattr(segment, 'from_component_id', None) or (segment.from_component.id if hasattr(segment, 'from_component') and segment.from_component else None),
-                            to_component_id=getattr(segment, 'to_component_id', None) or (segment.to_component.id if hasattr(segment, 'to_component') and segment.to_component else None),
-                            length=getattr(segment, 'length', None) or getattr(segment, 'length_real', 0) or 0,
-                            segment_order=i + 1,
-                            duct_width=getattr(segment, 'duct_width', None) or 12,
-                            duct_height=getattr(segment, 'duct_height', None) or 8,
-                            duct_shape=getattr(segment, 'duct_shape', None) or 'rectangular',
-                            duct_type=getattr(segment, 'duct_type', None) or 'sheet_metal',
-                        )
-                        session.add(seg)
+                        segment.hvac_path_id = path.id
+                        segment.segment_order = i + 1
+                        session.add(segment)
                     
                     session.commit()
                 
@@ -893,12 +856,12 @@ class HVACPathDialog(QDialog):
         if reply == QMessageBox.Yes:
             try:
                 session = get_session()
-                db_path = session.query(HVACPath).filter(HVACPath.id == self.path.id).first()
-                if db_path:
-                    session.delete(db_path)
-                    session.commit()
+                session.delete(self.path)
+                session.commit()
                 session.close()
+                
                 self.accept()
+                
             except Exception as e:
                 session.rollback()
                 session.close()

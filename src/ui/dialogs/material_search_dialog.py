@@ -10,9 +10,9 @@ from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont
 
 try:
-    from ui.widgets.material_graph_overlay import MaterialGraphOverlay
-    from calculations.treatment_analyzer import TreatmentAnalyzer
-    from data.material_search import MaterialSearchEngine
+    from ..widgets.material_graph_overlay import MaterialGraphOverlay
+    from ...calculations.treatment_analyzer import TreatmentAnalyzer
+    from ...data.material_search import MaterialSearchEngine
 except ImportError:
     import sys
     import os
