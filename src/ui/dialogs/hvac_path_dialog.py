@@ -13,6 +13,7 @@ from PySide6.QtGui import QFont
 
 from models import get_session
 from models.hvac import HVACPath, HVACComponent, HVACSegment
+from sqlalchemy.orm import selectinload
 from models.space import Space
 from calculations.hvac_path_calculator import HVACPathCalculator
 from .hvac_component_dialog import HVACComponentDialog
@@ -502,8 +503,61 @@ class HVACPathDialog(QDialog):
             self.description_text.setPlainText(self.path.description)
         
         # Load components and segments
-        self.components = list(self.path.segments[0].from_component.hvac_path.segments[0].from_component.project.hvac_components) if self.path.segments else []
-        self.segments = list(self.path.segments)
+        # Segments: prefer a fresh DB read to avoid stale or partially loaded relationships
+        try:
+            session = get_session()
+            segs = (
+                session.query(HVACSegment)
+                .options(
+                    selectinload(HVACSegment.from_component),
+                    selectinload(HVACSegment.to_component),
+                    selectinload(HVACSegment.fittings),
+                )
+                .filter(HVACSegment.hvac_path_id == self.path.id)
+                .order_by(HVACSegment.segment_order)
+                .all()
+            )
+            # Build an ordered, de-duplicated component list from segments
+            ordered_components = []
+            seen_ids = set()
+            for seg in segs:
+                for comp in [seg.from_component, seg.to_component]:
+                    if comp is None:
+                        continue
+                    if comp.id not in seen_ids:
+                        ordered_components.append(comp)
+                        seen_ids.add(comp.id)
+            self.segments = list(segs)
+            # Components used by this path, in traversal order
+            self.components = ordered_components
+            # Also populate "Available Components" from the project for adding to the path
+            try:
+                comps = session.query(HVACComponent).filter(HVACComponent.project_id == self.project_id).all()
+            except Exception:
+                comps = []
+            finally:
+                session.close()
+            # Fill the available list widget
+            self.available_list.clear()
+            for component in comps:
+                item = QListWidgetItem(f"{component.name} ({component.component_type})")
+                item.setData(Qt.UserRole, component)
+                self.available_list.addItem(item)
+        except Exception:
+            # Fallback to any segments present on the provided object
+            self.segments = list(self.path.segments) if getattr(self.path, 'segments', None) else []
+            # Derive components from those segments as best-effort
+            ordered_components = []
+            seen_ids = set()
+            for seg in self.segments:
+                for comp in [getattr(seg, 'from_component', None), getattr(seg, 'to_component', None)]:
+                    if comp is None:
+                        continue
+                    cid = getattr(comp, 'id', None)
+                    if cid is not None and cid not in seen_ids:
+                        ordered_components.append(comp)
+                        seen_ids.add(cid)
+            self.components = ordered_components
         
         self.update_component_list()
         self.update_segment_list()
@@ -769,46 +823,57 @@ class HVACPathDialog(QDialog):
                 }
                 
                 # Create HVAC path using the calculator
-                path = self.path_calculator.create_hvac_path_from_drawing(
+                created_path = self.path_calculator.create_hvac_path_from_drawing(
                     self.project_id, drawing_data
                 )
                 
-                if path:
-                    # Update path name and description
+                if created_path:
+                    # Update path using a fresh session-bound instance
                     session = get_session()
-                    path.name = name
-                    path.path_type = self.type_combo.currentText()
-                    path.description = self.description_text.toPlainText()
-                    
-                    # Update target space
-                    space_id = self.space_combo.currentData()
-                    path.target_space_id = space_id
-                    
-                    session.commit()
-                    session.close()
-                    
-                    self.path = path
-                    self.path_saved.emit(path)
-                    self.accept()
+                    try:
+                        db_path = session.query(HVACPath).filter(HVACPath.id == created_path.id).first()
+                        if db_path is None:
+                            session.close()
+                            QMessageBox.warning(self, "Creation Warning", "Path was created but could not be reloaded for update.")
+                            self.path = created_path
+                            self.path_saved.emit(created_path)
+                            self.accept()
+                            return
+                        db_path.name = name
+                        db_path.path_type = self.type_combo.currentText()
+                        db_path.description = self.description_text.toPlainText()
+                        # Update target space
+                        space_id = self.space_combo.currentData()
+                        db_path.target_space_id = space_id
+                        session.commit()
+                        # Assign updated object back for emit
+                        self.path = db_path
+                        self.path_saved.emit(db_path)
+                        self.accept()
+                    finally:
+                        session.close()
                 else:
                     QMessageBox.warning(self, "Creation Failed", "Failed to create HVAC path from drawing elements.")
                     return
             else:
-                # Standard database path creation
+                # Standard database path creation / update
                 session = get_session()
                 
                 if self.is_editing:
-                    # Update existing path
-                    self.path.name = name
-                    self.path.path_type = self.type_combo.currentText()
-                    self.path.description = self.description_text.toPlainText()
-                    
+                    # Update existing path (reload session-bound)
+                    db_path = session.query(HVACPath).filter(HVACPath.id == self.path.id).first()
+                    if db_path is None:
+                        session.close()
+                        QMessageBox.warning(self, "Update Failed", "Selected path could not be found.")
+                        return
+                    db_path.name = name
+                    db_path.path_type = self.type_combo.currentText()
+                    db_path.description = self.description_text.toPlainText()
                     # Update target space
                     space_id = self.space_combo.currentData()
-                    self.path.target_space_id = space_id
-                    
+                    db_path.target_space_id = space_id
                     session.commit()
-                    path = self.path
+                    path = db_path
                 else:
                     # Create new path
                     space_id = self.space_combo.currentData()
@@ -820,16 +885,23 @@ class HVACPathDialog(QDialog):
                         description=self.description_text.toPlainText(),
                         target_space_id=space_id
                     )
-                    
                     session.add(path)
                     session.flush()  # Get ID
                     
-                    # Create segments
+                    # Create segments (persist new records based on dialog segment stubs)
                     for i, segment in enumerate(self.segments):
-                        segment.hvac_path_id = path.id
-                        segment.segment_order = i + 1
-                        session.add(segment)
-                    
+                        seg = HVACSegment(
+                            hvac_path_id=path.id,
+                            from_component_id=getattr(segment, 'from_component_id', None) or (segment.from_component.id if hasattr(segment, 'from_component') and segment.from_component else None),
+                            to_component_id=getattr(segment, 'to_component_id', None) or (segment.to_component.id if hasattr(segment, 'to_component') and segment.to_component else None),
+                            length=getattr(segment, 'length', None) or getattr(segment, 'length_real', 0) or 0,
+                            segment_order=i + 1,
+                            duct_width=getattr(segment, 'duct_width', None) or 12,
+                            duct_height=getattr(segment, 'duct_height', None) or 8,
+                            duct_shape=getattr(segment, 'duct_shape', None) or 'rectangular',
+                            duct_type=getattr(segment, 'duct_type', None) or 'sheet_metal',
+                        )
+                        session.add(seg)
                     session.commit()
                 
                 session.close()

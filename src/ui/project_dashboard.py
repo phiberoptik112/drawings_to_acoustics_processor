@@ -726,6 +726,7 @@ class ProjectDashboard(QMainWindow):
                 # Dialog emits saved path internally; just refresh
                 self.refresh_hvac_paths()
                 self.update_analysis_status()
+                self.update_space_hvac_paths_table()
         except Exception as e:
             QMessageBox.critical(self, "New HVAC Path", f"Failed to create HVAC path:\n{str(e)}")
         
@@ -764,6 +765,7 @@ class ProjectDashboard(QMainWindow):
             if dialog.exec() == QDialog.Accepted:
                 self.refresh_hvac_paths()
                 self.update_analysis_status()
+                self.update_space_hvac_paths_table()
                 self.update_space_hvac_paths_table()
         except Exception as e:
             QMessageBox.critical(self, "Edit HVAC Path", f"Failed to edit HVAC path:\n{str(e)}")

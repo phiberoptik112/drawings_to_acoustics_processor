@@ -14,6 +14,15 @@ from ui.dialogs.project_dialog import ProjectDialog
 from ui.project_dashboard import ProjectDashboard
 from data.silencer_database import populate_silencer_database
 
+# Import version utilities with fallback
+try:
+    from utils import get_application_title, get_version_info
+except ImportError:
+    def get_application_title():
+        return "Acoustic Analysis Tool v1.0.0"
+    def get_version_info():
+        return {'version': '1.0.0', 'build_number': 'dev'}
+
 
 class SplashScreen(QWidget):
     """Splash screen for project selection and creation"""
@@ -43,7 +52,8 @@ class SplashScreen(QWidget):
             
     def init_ui(self):
         """Initialize the user interface"""
-        self.setWindowTitle("Acoustic Analysis Tool")
+        app_title = get_application_title()
+        self.setWindowTitle(app_title)
         self.setGeometry(300, 300, 600, 400)
         self.setStyleSheet("""
             QWidget {
@@ -93,8 +103,13 @@ class SplashScreen(QWidget):
         # Main layout
         main_layout = QVBoxLayout()
         
-        # Title section
-        title_label = QLabel("Acoustic Analysis Tool")
+        # Title section with version info
+        version_info = get_version_info()
+        title_text = f"Acoustic Analysis Tool v{version_info['version']}"
+        if version_info['build_number'] != 'dev':
+            title_text += f" (Build {version_info['build_number']})"
+        
+        title_label = QLabel(title_text)
         title_label.setObjectName("title")
         title_label.setAlignment(Qt.AlignCenter)
         
