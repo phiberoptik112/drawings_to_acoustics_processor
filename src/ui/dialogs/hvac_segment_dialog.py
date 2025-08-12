@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QMessageBox, QSpinBox, QCheckBox, QTableWidget,
                              QTableWidgetItem, QHeaderView, QListWidget,
-                             QListWidgetItem, QSplitter)
+                             QListWidgetItem, QSplitter, QWidget)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
@@ -205,7 +205,7 @@ class HVACSegmentDialog(QDialog):
         
         # Duct shape
         self.shape_combo = QComboBox()
-        self.shape_combo.addItems(["rectangular", "round"])
+        self.shape_combo.addItems(["rectangular", "circular"])  # use 'circular' to match engine
         self.shape_combo.currentTextChanged.connect(self.on_duct_shape_changed)
         duct_layout.addRow("Duct Shape:", self.shape_combo)
         
@@ -221,16 +221,29 @@ class HVACSegmentDialog(QDialog):
         self.height_spin.setSuffix(" in")
         self.height_spin.setDecimals(1)
         duct_layout.addRow("Height:", self.height_spin)
+
+        # Diameter for circular ducts
+        self.diameter_spin = QDoubleSpinBox()
+        self.diameter_spin.setRange(1, 120)
+        self.diameter_spin.setSuffix(" in")
+        self.diameter_spin.setDecimals(1)
+        duct_layout.addRow("Diameter:", self.diameter_spin)
         
         # Duct type
         self.duct_type_combo = QComboBox()
         self.duct_type_combo.addItems(["sheet_metal", "fiberglass", "flexible"])
         duct_layout.addRow("Duct Type:", self.duct_type_combo)
         
-        # Insulation
+        # Lining material and thickness
         self.insulation_combo = QComboBox()
         self.insulation_combo.addItems(["none", "fiberglass", "foam", "mineral_wool"])
-        duct_layout.addRow("Insulation:", self.insulation_combo)
+        duct_layout.addRow("Lining Material:", self.insulation_combo)
+
+        self.lining_thickness_spin = QDoubleSpinBox()
+        self.lining_thickness_spin.setRange(0, 6)
+        self.lining_thickness_spin.setDecimals(1)
+        self.lining_thickness_spin.setSuffix(" in")
+        duct_layout.addRow("Lining Thickness:", self.lining_thickness_spin)
         
         duct_group.setLayout(duct_layout)
         layout.addWidget(duct_group)
@@ -308,11 +321,14 @@ class HVACSegmentDialog(QDialog):
         
     def on_duct_shape_changed(self, shape):
         """Handle duct shape change"""
-        if shape == "round":
-            # For round ducts, height = width (diameter)
-            self.height_spin.setValue(self.width_spin.value())
+        if shape == "circular":
+            # Show diameter; hide rectangular dims
+            self.diameter_spin.setEnabled(True)
+            self.width_spin.setEnabled(False)
             self.height_spin.setEnabled(False)
         else:
+            self.diameter_spin.setEnabled(False)
+            self.width_spin.setEnabled(True)
             self.height_spin.setEnabled(True)
     
     def add_fitting(self):
@@ -340,6 +356,7 @@ class HVACSegmentDialog(QDialog):
         
         self.width_spin.setValue(self.segment.duct_width or 12)
         self.height_spin.setValue(self.segment.duct_height or 8)
+        self.diameter_spin.setValue(getattr(self.segment, 'diameter', 0) or 0)
         
         if self.segment.duct_type:
             index = self.duct_type_combo.findText(self.segment.duct_type)
@@ -350,6 +367,8 @@ class HVACSegmentDialog(QDialog):
             index = self.insulation_combo.findText(self.segment.insulation)
             if index >= 0:
                 self.insulation_combo.setCurrentIndex(index)
+        if getattr(self.segment, 'lining_thickness', None) is not None:
+            self.lining_thickness_spin.setValue(self.segment.lining_thickness or 0)
         
         # Acoustic properties
         self.distance_loss_spin.setValue(self.segment.distance_loss or 0)
@@ -392,9 +411,11 @@ class HVACSegmentDialog(QDialog):
                     segment_order=self.order_spin.value(),
                     duct_width=self.width_spin.value(),
                     duct_height=self.height_spin.value(),
+                    diameter=self.diameter_spin.value(),
                     duct_shape=self.shape_combo.currentText(),
                     duct_type=self.duct_type_combo.currentText(),
                     insulation=self.insulation_combo.currentText(),
+                    lining_thickness=self.lining_thickness_spin.value(),
                     distance_loss=self.distance_loss_spin.value(),
                     duct_loss=self.duct_loss_spin.value(),
                     fitting_additions=self.fitting_additions_spin.value()
@@ -423,9 +444,11 @@ class HVACSegmentDialog(QDialog):
         segment.segment_order = self.order_spin.value()
         segment.duct_width = self.width_spin.value()
         segment.duct_height = self.height_spin.value()
+        segment.diameter = self.diameter_spin.value()
         segment.duct_shape = self.shape_combo.currentText()
         segment.duct_type = self.duct_type_combo.currentText()
         segment.insulation = self.insulation_combo.currentText()
+        segment.lining_thickness = self.lining_thickness_spin.value()
         segment.distance_loss = self.distance_loss_spin.value()
         segment.duct_loss = self.duct_loss_spin.value()
         segment.fitting_additions = self.fitting_additions_spin.value()

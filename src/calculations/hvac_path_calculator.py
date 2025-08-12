@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from models import get_session
 from models.hvac import HVACPath, HVACSegment, HVACComponent, SegmentFitting
+from models.mechanical import MechanicalUnit
 from data.components import STANDARD_COMPONENTS, STANDARD_FITTINGS
 from .noise_calculator import NoiseCalculator
 
@@ -295,14 +296,42 @@ class HVACPathCalculator:
             if not segments:
                 return None
             
-            # Get source component (from first segment)
-            first_segment = segments[0]
-            if first_segment.from_component:
-                comp = first_segment.from_component
+            # Get source: prefer selected MechanicalUnit (primary_source), otherwise first segment's from_component
+            if hvac_path.primary_source:
+                unit: MechanicalUnit = hvac_path.primary_source
+                # Parse outlet spectrum if available
+                octave_bands = None
+                try:
+                    import json
+                    ob = getattr(unit, 'outlet_levels_json', None)
+                    if ob:
+                        data = json.loads(ob)
+                        order = ["63","125","250","500","1000","2000","4000","8000"]
+                        # convert to float where possible
+                        octave_bands = [float(data.get(k, 0) or 0) for k in order]
+                except Exception:
+                    octave_bands = None
+                # Derive A-weighted level from spectrum if present
+                noise_level = None
+                if octave_bands:
+                    try:
+                        noise_level = self.noise_calculator.hvac_engine._calculate_dba_from_spectrum(octave_bands)
+                    except Exception:
+                        pass
+                noise_level = noise_level or getattr(unit, 'base_noise_dba', None) or 50.0
                 path_data['source_component'] = {
-                    'component_type': comp.component_type,
-                    'noise_level': comp.noise_level or self.get_component_noise_level(comp.component_type)
+                    'component_type': (unit.unit_type or 'unit'),
+                    'noise_level': noise_level,
+                    'octave_band_levels': octave_bands,
                 }
+            else:
+                first_segment = segments[0]
+                if first_segment.from_component:
+                    comp = first_segment.from_component
+                    path_data['source_component'] = {
+                        'component_type': comp.component_type,
+                        'noise_level': comp.noise_level or self.get_component_noise_level(comp.component_type)
+                    }
             
             # Get terminal component (to last segment)
             last_segment = segments[-1]
@@ -319,9 +348,11 @@ class HVACPathCalculator:
                     'length': segment.length or 0,
                     'duct_width': segment.duct_width or 12,
                     'duct_height': segment.duct_height or 8,
+                    'diameter': getattr(segment, 'diameter', 0) or 0,
                     'duct_shape': segment.duct_shape or 'rectangular',
                     'duct_type': segment.duct_type or 'sheet_metal',
                     'insulation': segment.insulation,
+                    'lining_thickness': getattr(segment, 'lining_thickness', 0) or 0,
                     'fittings': []
                 }
                 

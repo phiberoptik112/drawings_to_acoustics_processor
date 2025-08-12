@@ -92,11 +92,13 @@ class HVACSegment(Base):
     segment_order = Column(Integer, nullable=False)  # Order in path (1, 2, 3...)
     
     # Duct properties
-    duct_width = Column(Float)    # inches
-    duct_height = Column(Float)   # inches
+    duct_width = Column(Float)    # inches (rectangular width or circular diameter fallback)
+    duct_height = Column(Float)   # inches (rectangular height)
+    diameter = Column(Float)      # inches (circular)
     duct_shape = Column(String(20), default='rectangular')  # 'rectangular', 'round'
     duct_type = Column(String(50), default='sheet_metal')   # Material type
-    insulation = Column(String(50))  # Insulation type
+    insulation = Column(String(50))  # Lining material type
+    lining_thickness = Column(Float) # Lining thickness in inches
     
     # Calculated losses
     distance_loss = Column(Float)    # dB loss due to distance

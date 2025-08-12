@@ -19,6 +19,8 @@ from sqlalchemy.orm import selectinload
 from models.space import Space
 from calculations.hvac_path_calculator import HVACPathCalculator
 from .hvac_component_dialog import HVACComponentDialog
+from .component_library_dialog import ComponentLibraryDialog
+from .hvac_receiver_dialog import HVACReceiverDialog
 from .hvac_segment_dialog import HVACSegmentDialog
 
 
@@ -787,8 +789,57 @@ class HVACPathDialog(QDialog):
                     break
             self.edit_segment(ref)
         elif kind in ('receiver', 'source'):
-            # Show general info
-            self.tabs.setCurrentIndex(self.info_tab_index)
+            # For 'source' click: open component library selector to choose primary Mechanical Unit
+            if kind == 'source':
+                self.select_primary_source_from_library()
+            else:
+                self.open_receiver_dialog()
+
+    def select_primary_source_from_library(self):
+        """Open component library to select a Mechanical Unit as the path's primary source."""
+        try:
+            lib = ComponentLibraryDialog(self, project_id=self.project_id)
+            if lib.exec() != QDialog.Accepted:
+                return
+            # After closing, get currently selected unit id from the list
+            current = getattr(lib, 'mechanical_list', None)
+            if not current or not current.currentItem():
+                return
+            unit_id = current.currentItem().data(Qt.UserRole)
+            if not unit_id:
+                return
+            session = get_session()
+            try:
+                from models.mechanical import MechanicalUnit
+                unit = session.query(MechanicalUnit).filter(MechanicalUnit.id == unit_id).first()
+                if not unit:
+                    session.close()
+                    return
+                # Persist selection on path
+                if self.path:
+                    db_path = session.query(HVACPath).filter(HVACPath.id == self.path.id).first()
+                    if db_path:
+                        db_path.primary_source_id = unit.id
+                        session.commit()
+                        self.path = db_path
+                # Refresh summary/diagram to reflect change
+                self.update_summary()
+            finally:
+                session.close()
+        except Exception as e:
+            print(f"Error selecting primary source: {e}")
+
+    def open_receiver_dialog(self):
+        """Open the Edit Space HVAC Receiver dialog for the currently selected target space."""
+        try:
+            space_id = self.space_combo.currentData() if hasattr(self, 'space_combo') else None
+            if not space_id:
+                self.tabs.setCurrentIndex(self.info_tab_index)
+                return
+            dlg = HVACReceiverDialog(self, space_id=int(space_id))
+            dlg.exec()
+        except Exception as e:
+            print(f"Error opening receiver dialog: {e}")
     
     def add_component(self):
         """Add a new component to the path"""
@@ -928,12 +979,12 @@ class HVACPathDialog(QDialog):
             # Build path data for calculation
             path_data = {
                 'source_component': {
-                    'component_type': self.components[0].component_type,
-                    'noise_level': self.components[0].noise_level
+                    'component_type': getattr(self.components[0], 'component_type', 'unit'),
+                    'noise_level': getattr(self.components[0], 'noise_level', 50.0)
                 },
                 'terminal_component': {
-                    'component_type': self.components[-1].component_type,
-                    'noise_level': self.components[-1].noise_level
+                    'component_type': getattr(self.components[-1], 'component_type', 'terminal'),
+                    'noise_level': getattr(self.components[-1], 'noise_level', 50.0)
                 },
                 'segments': []
             }
@@ -951,7 +1002,7 @@ class HVACPathDialog(QDialog):
                 }
                 
                 # Add fittings
-                for fitting in segment.fittings:
+                for fitting in getattr(segment, 'fittings', []) or []:
                     fitting_data = {
                         'fitting_type': fitting.fitting_type,
                         'noise_adjustment': fitting.noise_adjustment
@@ -976,7 +1027,8 @@ class HVACPathDialog(QDialog):
         if results['calculation_valid']:
             html += f"<p><b>Source Noise:</b> {results['source_noise']:.1f} dB(A)<br>"
             html += f"<b>Terminal Noise:</b> {results['terminal_noise']:.1f} dB(A)<br>"
-            html += f"<b>Total Attenuation:</b> {results['total_attenuation']:.1f} dB<br>"
+            total_att = results.get('total_attenuation') or results.get('total_attenuation_dba') or 0.0
+            html += f"<b>Total Attenuation:</b> {float(total_att):.1f} dB<br>"
             html += f"<b>NC Rating:</b> NC-{results['nc_rating']:.0f}</p>"
             
             # Segment breakdown
@@ -985,11 +1037,22 @@ class HVACPathDialog(QDialog):
             html += "<tr><th>Segment</th><th>Length</th><th>Noise Before</th><th>Noise After</th><th>Attenuation</th></tr>"
             
             for segment_result in results['path_segments']:
-                html += f"<tr><td>{segment_result['segment_number']}</td>"
-                html += f"<td>{segment_result.get('length', 0):.1f} ft</td>"
-                html += f"<td>{segment_result['noise_before']:.1f} dB</td>"
-                html += f"<td>{segment_result['noise_after']:.1f} dB</td>"
-                html += f"<td>{segment_result['total_attenuation']:.1f} dB</td></tr>"
+                seg_num = segment_result.get('segment_number') or segment_result.get('element_order') or ''
+                length = segment_result.get('length', 0.0) or 0.0
+                nb = float(segment_result.get('noise_before', 0.0) or 0.0)
+                na = float(segment_result.get('noise_after', 0.0) or 0.0)
+                # Support both legacy 'total_attenuation' and engine 'attenuation_dba'
+                att = segment_result.get('total_attenuation')
+                if att is None:
+                    att = segment_result.get('attenuation_dba')
+                if att is None:
+                    # fallback from parts
+                    att = (segment_result.get('duct_loss') or 0.0) - (segment_result.get('generated_dba') or 0.0)
+                html += f"<tr><td>{seg_num}</td>"
+                html += f"<td>{float(length):.1f} ft</td>"
+                html += f"<td>{nb:.1f} dB</td>"
+                html += f"<td>{na:.1f} dB</td>"
+                html += f"<td>{float(att or 0.0):.1f} dB</td></tr>"
             
             html += "</table>"
             

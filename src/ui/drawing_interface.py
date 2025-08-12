@@ -138,7 +138,7 @@ class DrawingInterface(QMainWindow):
         
         # Edit menu
         edit_menu = menubar.addMenu('Edit')
-        edit_menu.addAction('Clear All', self.clear_all_elements)
+        edit_menu.addAction('Clear Unsaved', self.clear_unsaved_elements)
         edit_menu.addAction('Clear Measurements', self.clear_measurements)
         
         # View menu
@@ -203,7 +203,8 @@ class DrawingInterface(QMainWindow):
         
         # Quick actions
         toolbar.addAction('💾 Save', self.save_drawing)
-        toolbar.addAction('🗑️ Clear', self.clear_all_elements)
+        # Clear only unsaved/transient elements so saved path visuals persist
+        toolbar.addAction('🗑️ Clear', self.clear_unsaved_elements)
         
     def create_left_panel(self):
         """Create the left panel with tools and properties"""
@@ -812,6 +813,19 @@ class DrawingInterface(QMainWindow):
             self.drawing_overlay.clear_all_elements()
             self.elements_list.clear()
             self.update_elements_display()
+
+    def clear_unsaved_elements(self):
+        """Clear only elements not registered to saved HVAC paths.
+
+        Preserves the visuals for saved paths by delegating to the overlay's
+        `clear_unsaved_elements` method. Also refreshes the elements list.
+        """
+        if self.drawing_overlay:
+            self.drawing_overlay.clear_unsaved_elements()
+            self.elements_list.clear()
+            # Rebuild list from remaining overlay data
+            overlay_data = self.drawing_overlay.get_elements_data()
+            self.rebuild_elements_list(overlay_data)
             
     def clear_measurements(self):
         """Clear measurement lines"""

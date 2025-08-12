@@ -72,9 +72,11 @@ def ensure_hvac_schema():
             [
                 ("duct_width", "REAL"),
                 ("duct_height", "REAL"),
+                ("diameter", "REAL"),
                 ("duct_shape", "TEXT DEFAULT 'rectangular'"),
                 ("duct_type", "TEXT DEFAULT 'sheet_metal'"),
                 ("insulation", "TEXT"),
+                ("lining_thickness", "REAL"),
                 ("distance_loss", "REAL"),
                 ("duct_loss", "REAL"),
                 ("fitting_additions", "REAL"),

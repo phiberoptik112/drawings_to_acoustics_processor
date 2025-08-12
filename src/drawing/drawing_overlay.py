@@ -696,6 +696,51 @@ class DrawingOverlay(QWidget):
         """Clear only measurement lines"""
         self.measurements.clear()
         self.update()
+
+    def clear_unsaved_elements(self):
+        """Clear elements that are not registered to any saved HVAC path.
+
+        - Always clears measurements and room rectangles (transient drawing aids)
+        - Preserves any components/segments that are part of at least one
+          registered path in `path_element_mapping`.
+        """
+        # Cancel any active tool first
+        self.tool_manager.cancel_tool()
+
+        # Always clear rectangles and measurements
+        self.rectangles.clear()
+        self.measurements.clear()
+
+        # Build protected sets from registered path elements
+        protected_component_ids = set()
+        protected_segment_ids = set()
+        for mapping in self.path_element_mapping.values():
+            for comp in mapping.get('components', []):
+                protected_component_ids.add(id(comp))
+            for seg in mapping.get('segments', []):
+                protected_segment_ids.add(id(seg))
+
+        # Filter components/segments, keeping any that belong to a path
+        if protected_component_ids:
+            self.components = [c for c in self.components if id(c) in protected_component_ids]
+        else:
+            # No registered components → clearing all unsaved components means clear all
+            self.components.clear()
+
+        if protected_segment_ids:
+            self.segments = [s for s in self.segments if id(s) in protected_segment_ids]
+        else:
+            # No registered segments → clear all
+            self.segments.clear()
+
+        # Base caches must be rebuilt on next zoom projection
+        self._base_rectangles = []
+        self._base_components = []
+        self._base_segments = []
+        self._base_measurements = []
+        self._base_dirty = True
+
+        self.update()
         
     def toggle_measurements(self):
         """Toggle measurement display"""

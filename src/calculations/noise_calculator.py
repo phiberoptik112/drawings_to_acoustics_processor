@@ -134,10 +134,12 @@ class NoiseCalculator:
     
     def _convert_result_to_dict(self, result: PathResult) -> Dict:
         """Convert PathResult to legacy dictionary format"""
+        # Provide both legacy and new keys for compatibility
         return {
             'source_noise': result.source_noise_dba,
             'terminal_noise': result.terminal_noise_dba,
             'total_attenuation': result.total_attenuation_dba,
+            'total_attenuation_dba': result.total_attenuation_dba,
             'path_segments': result.element_results,
             'nc_rating': result.nc_rating,
             'calculation_valid': result.calculation_valid,
