@@ -92,6 +92,22 @@ class SegmentListWidget(QListWidget):
         self.segment_double_clicked.emit(segment)
 
 
+class PathDiagramText(QPlainTextEdit):
+    """Read-only ASCII diagram viewer that reports clicked line numbers."""
+    line_clicked = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.setFont(QFont("Courier New", 10))
+
+    def mousePressEvent(self, event):
+        cursor = self.cursorForPosition(event.pos())
+        self.line_clicked.emit(cursor.blockNumber())
+        super().mousePressEvent(event)
+
+
 class HVACPathDialog(QDialog):
     """Dialog for creating and managing HVAC paths"""
     
@@ -221,25 +237,25 @@ class HVACPathDialog(QDialog):
         self.main_splitter = QSplitter(Qt.Horizontal)
 
         # Tabs (left side)
-        tabs = QTabWidget()
+        self.tabs = QTabWidget()
 
         # Path Information tab
         info_tab = self.create_path_info_tab()
-        tabs.addTab(info_tab, "Path Information")
+        self.info_tab_index = self.tabs.addTab(info_tab, "Path Information")
 
         # Components tab
         components_tab = self.create_components_tab()
-        tabs.addTab(components_tab, "Components")
+        self.components_tab_index = self.tabs.addTab(components_tab, "Components")
 
         # Segments tab
         segments_tab = self.create_segments_tab()
-        tabs.addTab(segments_tab, "Segments")
+        self.segments_tab_index = self.tabs.addTab(segments_tab, "Segments")
 
         # Analysis tab
         analysis_tab = self.create_analysis_tab()
-        tabs.addTab(analysis_tab, "Analysis")
+        self.analysis_tab_index = self.tabs.addTab(analysis_tab, "Analysis")
 
-        self.main_splitter.addWidget(tabs)
+        self.main_splitter.addWidget(self.tabs)
 
         # Right side: ASCII diagram panel
         diagram_panel = self.create_ascii_diagram_panel()
@@ -333,11 +349,9 @@ class HVACPathDialog(QDialog):
         title.setFont(QFont("Arial", 12, QFont.Bold))
         v.addWidget(title)
 
-        self.diagram_text = QPlainTextEdit()
-        self.diagram_text.setReadOnly(True)
-        self.diagram_text.setLineWrapMode(QPlainTextEdit.NoWrap)
-        self.diagram_text.setFont(QFont("Courier New", 10))
+        self.diagram_text = PathDiagramText()
         self.diagram_text.setPlaceholderText("ASCII diagram will appear here when components/segments are defined.")
+        self.diagram_text.line_clicked.connect(self.on_diagram_line_clicked)
         v.addWidget(self.diagram_text)
 
         panel.setLayout(v)
@@ -671,6 +685,10 @@ class HVACPathDialog(QDialog):
         if not hasattr(self, 'diagram_text'):
             return
 
+        # Map line index -> (kind, ref)
+        # kind in { 'component', 'segment', 'source', 'receiver' }
+        self._diagram_line_to_item = {}
+
         components = self._ordered_components_from_segments()
         if not components:
             self.diagram_text.setPlainText("No components yet.")
@@ -693,9 +711,17 @@ class HVACPathDialog(QDialog):
             "+" + "-" * (len(text) + 2) + "+",
         ]
 
+        # Helper to register mapping for a box just appended
+        def register_box_mapping(start_line, kind, ref):
+            # Map center text line primarily, but include all three lines
+            for offset in range(3):
+                self._diagram_line_to_item[start_line + offset] = (kind, ref)
+
         # Top: source/mechanical component
         top_label = f"Source: {getattr(components[0], 'name', 'Unknown')}"
+        start_idx = len(lines)
         lines.extend(box(top_label))
+        register_box_mapping(start_idx, 'source', components[0])
 
         # Iterate segments between components
         segs = sorted(self.segments, key=lambda s: getattr(s, 'segment_order', 0)) if self.segments else []
@@ -712,21 +738,57 @@ class HVACPathDialog(QDialog):
             lines.append("     |")
             if i-1 < len(segs):
                 seg_text = seg_label(segs[i-1])
+                start_idx = len(lines)
                 for l in box(seg_text):
                     lines.append("     " + l)
                 lines.append("     v")
+                # map three lines of the segment box (shifted by 1 indent)
+                register_box_mapping(start_idx, 'segment', segs[i-1])
             else:
                 lines.append("     v")
             comp_label = getattr(comp, 'name', 'Component')
+            start_idx = len(lines)
             lines.extend(box(comp_label))
+            register_box_mapping(start_idx, 'component', comp)
 
         # Receiver space at bottom
         if space_name:
             lines.append("     |")
             lines.append("     v")
+            start_idx = len(lines)
             lines.extend(box(f"Receiver: {space_name}"))
+            register_box_mapping(start_idx, 'receiver', space_name)
 
         self.diagram_text.setPlainText("\n".join(lines))
+
+    def on_diagram_line_clicked(self, line_index: int) -> None:
+        """Handle clicks in the diagram and switch left panel accordingly."""
+        item = getattr(self, '_diagram_line_to_item', {}).get(line_index)
+        if not item:
+            return
+        kind, ref = item
+        if kind == 'component':
+            # Go to Components tab and select matching component
+            self.tabs.setCurrentIndex(self.components_tab_index)
+            # Select in list
+            for row in range(self.component_list.count()):
+                it = self.component_list.item(row)
+                if it.data(Qt.UserRole) is ref:
+                    self.component_list.setCurrentRow(row)
+                    break
+            # Open edit dialog for details
+            self.edit_component(ref)
+        elif kind == 'segment':
+            self.tabs.setCurrentIndex(self.segments_tab_index)
+            for row in range(self.segment_list.count()):
+                it = self.segment_list.item(row)
+                if it.data(Qt.UserRole) is ref:
+                    self.segment_list.setCurrentRow(row)
+                    break
+            self.edit_segment(ref)
+        elif kind in ('receiver', 'source'):
+            # Show general info
+            self.tabs.setCurrentIndex(self.info_tab_index)
     
     def add_component(self):
         """Add a new component to the path"""
