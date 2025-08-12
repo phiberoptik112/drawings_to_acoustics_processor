@@ -7,11 +7,13 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QMessageBox, QSpinBox, QCheckBox, QTableWidget,
                              QTableWidgetItem, QHeaderView, QListWidget,
-                             QListWidgetItem, QSplitter, QTabWidget, QWidget)
+                             QListWidgetItem, QSplitter, QTabWidget, QWidget,
+                             QPlainTextEdit)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from models import get_session
+from models.mechanical import MechanicalUnit
 from models.hvac import HVACPath, HVACComponent, HVACSegment
 from sqlalchemy.orm import selectinload
 from models.space import Space
@@ -215,26 +217,36 @@ class HVACPathDialog(QDialog):
         header_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(header_label)
         
-        # Main content in tabs
+        # Main content: tabs on the left + ASCII path diagram on the right
+        self.main_splitter = QSplitter(Qt.Horizontal)
+
+        # Tabs (left side)
         tabs = QTabWidget()
-        
+
         # Path Information tab
         info_tab = self.create_path_info_tab()
         tabs.addTab(info_tab, "Path Information")
-        
+
         # Components tab
         components_tab = self.create_components_tab()
         tabs.addTab(components_tab, "Components")
-        
+
         # Segments tab
         segments_tab = self.create_segments_tab()
         tabs.addTab(segments_tab, "Segments")
-        
+
         # Analysis tab
         analysis_tab = self.create_analysis_tab()
         tabs.addTab(analysis_tab, "Analysis")
-        
-        layout.addWidget(tabs)
+
+        self.main_splitter.addWidget(tabs)
+
+        # Right side: ASCII diagram panel
+        diagram_panel = self.create_ascii_diagram_panel()
+        self.main_splitter.addWidget(diagram_panel)
+        self.main_splitter.setSizes([650, 250])
+
+        layout.addWidget(self.main_splitter)
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -285,6 +297,8 @@ class HVACPathDialog(QDialog):
         # Target space
         self.space_combo = QComboBox()
         self.load_spaces()
+        # Update ASCII diagram when target space changes
+        self.space_combo.currentIndexChanged.connect(self.update_path_diagram)
         info_layout.addRow("Target Space:", self.space_combo)
         
         # Description
@@ -310,6 +324,24 @@ class HVACPathDialog(QDialog):
         layout.addStretch()
         widget.setLayout(layout)
         return widget
+
+    def create_ascii_diagram_panel(self):
+        """Create the right-side panel showing an ASCII path diagram."""
+        panel = QWidget()
+        v = QVBoxLayout()
+        title = QLabel("Path Diagram")
+        title.setFont(QFont("Arial", 12, QFont.Bold))
+        v.addWidget(title)
+
+        self.diagram_text = QPlainTextEdit()
+        self.diagram_text.setReadOnly(True)
+        self.diagram_text.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.diagram_text.setFont(QFont("Courier New", 10))
+        self.diagram_text.setPlaceholderText("ASCII diagram will appear here when components/segments are defined.")
+        v.addWidget(self.diagram_text)
+
+        panel.setLayout(v)
+        return panel
         
     def create_components_tab(self):
         """Create the components tab"""
@@ -468,11 +500,26 @@ class HVACPathDialog(QDialog):
             components = session.query(HVACComponent).filter(
                 HVACComponent.project_id == self.project_id
             ).all()
+            # Also load project-level Mechanical Units for use as source components
+            mechanical_units = (
+                session.query(MechanicalUnit)
+                .filter(MechanicalUnit.project_id == self.project_id)
+                .order_by(MechanicalUnit.name)
+                .all()
+            )
             
             self.available_list.clear()
+            # Drawing-placed HVAC components
             for component in components:
-                item = QListWidgetItem(f"{component.name} ({component.component_type})")
+                item = QListWidgetItem(f"🔧 {component.name} ({component.component_type})")
                 item.setData(Qt.UserRole, component)
+                self.available_list.addItem(item)
+            # Mechanical Units (project-level library)
+            for unit in mechanical_units:
+                label_type = unit.unit_type or "unit"
+                item = QListWidgetItem(f"🏭 {unit.name} ({label_type}) [Mechanical Unit]")
+                # Store the MechanicalUnit directly; we'll wrap on add
+                item.setData(Qt.UserRole, unit)
                 self.available_list.addItem(item)
             
             session.close()
@@ -567,10 +614,12 @@ class HVACPathDialog(QDialog):
         """Update the component list display"""
         self.component_list.set_components(self.components)
         self.add_seg_btn.setEnabled(len(self.components) >= 2)
+        self.update_path_diagram()
     
     def update_segment_list(self):
         """Update the segment list display"""
         self.segment_list.set_segments(self.segments)
+        self.update_path_diagram()
     
     def update_summary(self):
         """Update the path summary"""
@@ -593,6 +642,91 @@ class HVACPathDialog(QDialog):
             summary += f"NC Rating: NC-{self.path.calculated_nc:.0f}"
         
         self.summary_label.setText(summary)
+        # Keep diagram in sync with summary updates
+        self.update_path_diagram()
+
+    def _ordered_components_from_segments(self):
+        """Return components ordered by segment traversal if possible.
+        Falls back to current self.components order when segments are missing."""
+        try:
+            if not self.segments:
+                return list(self.components)
+            # Sort segments by segment_order and stitch components
+            ordered = []
+            seen_ids = set()
+            for seg in sorted(self.segments, key=lambda s: getattr(s, 'segment_order', 0)):
+                for comp in [getattr(seg, 'from_component', None), getattr(seg, 'to_component', None)]:
+                    if comp is None:
+                        continue
+                    cid = getattr(comp, 'id', None) or id(comp)
+                    if cid not in seen_ids:
+                        ordered.append(comp)
+                        seen_ids.add(cid)
+            return ordered if ordered else list(self.components)
+        except Exception:
+            return list(self.components)
+
+    def update_path_diagram(self):
+        """Rebuild and display the ASCII path diagram on the right panel."""
+        if not hasattr(self, 'diagram_text'):
+            return
+
+        components = self._ordered_components_from_segments()
+        if not components:
+            self.diagram_text.setPlainText("No components yet.")
+            return
+
+        # Resolve receiver space name
+        space_name = None
+        try:
+            idx = self.space_combo.currentIndex() if hasattr(self, 'space_combo') else -1
+            space_name = self.space_combo.currentText() if idx >= 0 else None
+            if space_name == "None":
+                space_name = None
+        except Exception:
+            space_name = None
+
+        lines = []
+        box = lambda text: [
+            "+" + "-" * (len(text) + 2) + "+",
+            "| " + text + " |",
+            "+" + "-" * (len(text) + 2) + "+",
+        ]
+
+        # Top: source/mechanical component
+        top_label = f"Source: {getattr(components[0], 'name', 'Unknown')}"
+        lines.extend(box(top_label))
+
+        # Iterate segments between components
+        segs = sorted(self.segments, key=lambda s: getattr(s, 'segment_order', 0)) if self.segments else []
+        def seg_label(seg):
+            length = getattr(seg, 'length', 0) or 0
+            shape = getattr(seg, 'duct_shape', '') or ''
+            w = getattr(seg, 'duct_width', '') or ''
+            h = getattr(seg, 'duct_height', '') or ''
+            dim = f" {int(w)}x{int(h)}" if w and h else ""
+            return f"segment {getattr(seg, 'segment_order', '?')}: {length:.1f} ft{dim} {shape}".strip()
+
+        for i, comp in enumerate(components[1:], start=1):
+            # arrow + segment info block if available
+            lines.append("     |")
+            if i-1 < len(segs):
+                seg_text = seg_label(segs[i-1])
+                for l in box(seg_text):
+                    lines.append("     " + l)
+                lines.append("     v")
+            else:
+                lines.append("     v")
+            comp_label = getattr(comp, 'name', 'Component')
+            lines.extend(box(comp_label))
+
+        # Receiver space at bottom
+        if space_name:
+            lines.append("     |")
+            lines.append("     v")
+            lines.extend(box(f"Receiver: {space_name}"))
+
+        self.diagram_text.setPlainText("\n".join(lines))
     
     def add_component(self):
         """Add a new component to the path"""
@@ -646,11 +780,25 @@ class HVACPathDialog(QDialog):
     
     def add_existing_component(self, item):
         """Add an existing component to the path"""
-        component = item.data(Qt.UserRole)
+        data_obj = item.data(Qt.UserRole)
+        
+        # If this is a MechanicalUnit, wrap into a lightweight component-like object
+        if isinstance(data_obj, MechanicalUnit):
+            unit = data_obj
+            # Create a simple, dialog-scoped component stub
+            component = type('Component', (), {
+                'id': None,  # not persisted to hvac_components
+                'name': unit.name,
+                'component_type': unit.unit_type or 'ahu',
+                # Placeholder overall noise level; can be refined from schedule later
+                'noise_level': 80.0,
+            })()
+        else:
+            component = data_obj
         
         if component in self.components:
             QMessageBox.information(self, "Component Already Added", 
-                                   f"'{component.name}' is already in this path.")
+                                   f"'{getattr(component, 'name', 'Component')}' is already in this path.")
             return
         
         self.components.append(component)

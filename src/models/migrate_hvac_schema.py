@@ -90,6 +90,38 @@ def ensure_hvac_schema():
             ],
         )
 
+        # Ensure mechanical tables exist (created by metadata.create_all), and
+        # keep function idempotent for future mechanical columns.
+        try:
+            _ensure_columns(
+                session,
+                "mechanical_units",
+                [
+                    ("unit_type", "TEXT"),
+                    ("manufacturer", "TEXT"),
+                    ("model_number", "TEXT"),
+                    ("airflow_cfm", "REAL"),
+                    ("external_static_inwg", "REAL"),
+                    ("power_kw", "REAL"),
+                    ("notes", "TEXT"),
+                    ("inlet_levels_json", "TEXT"),
+                    ("radiated_levels_json", "TEXT"),
+                    ("outlet_levels_json", "TEXT"),
+                ],
+            )
+            _ensure_columns(
+                session,
+                "noise_sources",
+                [
+                    ("source_type", "TEXT"),
+                    ("base_noise_dba", "REAL"),
+                    ("notes", "TEXT"),
+                ],
+            )
+        except Exception:
+            # If tables don't exist yet, metadata.create_all will create them.
+            pass
+
         session.commit()
     except Exception:
         session.rollback()

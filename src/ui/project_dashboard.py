@@ -329,6 +329,10 @@ class ProjectDashboard(QMainWindow):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         
         space_hvac_layout.addWidget(self.space_hvac_table)
+        # Receiver analysis button
+        self.edit_receiver_btn = QPushButton("Edit Space HVAC Receiver")
+        self.edit_receiver_btn.clicked.connect(self.open_space_receiver_dialog)
+        space_hvac_layout.addWidget(self.edit_receiver_btn)
         self.space_hvac_group.setLayout(space_hvac_layout)
         right_layout.addWidget(self.space_hvac_group)
 
@@ -351,6 +355,12 @@ class ProjectDashboard(QMainWindow):
         library_group.setLayout(library_layout)
         right_layout.addWidget(library_group)
         
+        # Wire up Edit Library button
+        try:
+            edit_library_btn.clicked.connect(self.open_component_library)
+        except Exception:
+            pass
+
         right_widget.setLayout(right_layout)
         
         return right_widget
@@ -551,6 +561,17 @@ class ProjectDashboard(QMainWindow):
             
         except Exception as e:
             self.status_bar.showMessage(f"Error: {str(e)}")
+
+    def open_component_library(self):
+        """Open the Component Library management dialog."""
+        try:
+            from ui.dialogs.component_library_dialog import ComponentLibraryDialog
+            dialog = ComponentLibraryDialog(self, project_id=self.project_id)
+            dialog.exec()
+            # After closing, refresh the library list for any changes
+            self.refresh_component_library()
+        except Exception as e:
+            QMessageBox.critical(self, "Component Library", f"Failed to open Component Library:\n{e}")
             
     # Slot implementations (placeholder methods)
     def import_drawing(self):
@@ -954,6 +975,23 @@ class ProjectDashboard(QMainWindow):
                 self.update_space_hvac_paths_table()
         except Exception as e:
             QMessageBox.critical(self, "Edit HVAC Path", f"Failed to open HVAC path:\n{str(e)}")
+
+    def open_space_receiver_dialog(self):
+        """Open the receiver analysis dialog for the currently selected space."""
+        try:
+            current_item = self.spaces_list.currentItem()
+            if not current_item:
+                QMessageBox.information(self, "Receiver Analysis", "Select a space first.")
+                return
+            space_id = current_item.data(Qt.UserRole)
+            if space_id is None:
+                QMessageBox.information(self, "Receiver Analysis", "Select a valid space.")
+                return
+            from ui.dialogs.hvac_receiver_dialog import HVACReceiverDialog
+            dialog = HVACReceiverDialog(self, space_id)
+            dialog.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Receiver Analysis", f"Failed to open receiver dialog:\n{str(e)}")
 
     def get_export_options(self):
         """Get export options from user"""

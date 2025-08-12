@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from models import get_session
+from models.mechanical import MechanicalUnit
 from models.hvac import HVACComponent
 from data.components import STANDARD_COMPONENTS
 
@@ -61,6 +62,15 @@ class HVACComponentDialog(QDialog):
         self.type_combo.currentTextChanged.connect(self.on_component_type_changed)
         info_layout.addRow("Component Type:", self.type_combo)
         
+        # Import from Library button row (mechanical units)
+        import_row = QHBoxLayout()
+        self.import_from_library_btn = QPushButton("Import from Library Mech. Units")
+        self.import_from_library_btn.setToolTip("Load name/type (and standard noise) from project Mechanical Units library")
+        self.import_from_library_btn.clicked.connect(self.import_from_library_mechanical_units)
+        import_row.addWidget(self.import_from_library_btn)
+        import_row.addStretch()
+        info_layout.addRow("", self.import_from_library_btn)
+
         info_group.setLayout(info_layout)
         layout.addWidget(info_group)
         
@@ -140,6 +150,108 @@ class HVACComponentDialog(QDialog):
         
         # Initialize with first component type
         self.on_component_type_changed(self.type_combo.currentText())
+
+    # --- Library import helpers ---
+    def import_from_library_mechanical_units(self):
+        """Open a simple chooser to select a MechanicalUnit from the project and
+        populate component name/type and noise level accordingly."""
+        try:
+            session = get_session()
+            units = (
+                session.query(MechanicalUnit)
+                .filter(MechanicalUnit.project_id == self.project_id)
+                .order_by(MechanicalUnit.name)
+                .all()
+            )
+            session.close()
+        except Exception as e:
+            QMessageBox.warning(self, "Library", f"Failed to load Mechanical Units:\n{e}")
+            return
+
+        if not units:
+            QMessageBox.information(self, "Library", "No Mechanical Units found. Use Component Library to import.")
+            return
+
+        # Build a lightweight chooser dialog
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem
+        chooser = QDialog(self)
+        chooser.setWindowTitle("Select Mechanical Unit")
+        v = QVBoxLayout(chooser)
+        listw = QListWidget()
+        for u in units:
+            label_type = u.unit_type or "unit"
+            item = QListWidgetItem(f"{u.name} ({label_type})")
+            item.setData(Qt.UserRole, u)
+            listw.addItem(item)
+        v.addWidget(listw)
+        btns = QHBoxLayout()
+        select_btn = QPushButton("Select")
+        cancel_btn = QPushButton("Cancel")
+        btns.addStretch(); btns.addWidget(cancel_btn); btns.addWidget(select_btn)
+        v.addLayout(btns)
+
+        def accept_selection():
+            item = listw.currentItem()
+            if not item:
+                QMessageBox.information(chooser, "Select", "Pick a unit from the list.")
+                return
+            unit = item.data(Qt.UserRole)
+            self._apply_mechanical_unit(unit)
+            chooser.accept()
+
+        listw.itemDoubleClicked.connect(lambda _i: accept_selection())
+        select_btn.clicked.connect(accept_selection)
+        cancel_btn.clicked.connect(chooser.reject)
+
+        chooser.exec()
+
+    def _apply_mechanical_unit(self, unit: MechanicalUnit) -> None:
+        # Set name
+        self.name_edit.setText(unit.name or "")
+        # Map unit_type to internal component types
+        mapped_type = self._map_unit_type_to_component_type(unit.unit_type)
+        idx = self.type_combo.findText(mapped_type)
+        if idx >= 0:
+            self.type_combo.setCurrentIndex(idx)
+        else:
+            # Fallback: append once
+            if mapped_type:
+                self.type_combo.addItem(mapped_type)
+                self.type_combo.setCurrentText(mapped_type)
+        # Default to standard noise for the mapped type
+        self.use_standard_cb.setChecked(True)
+        self.on_use_standard_toggled(True)
+
+    @staticmethod
+    def _map_unit_type_to_component_type(unit_type_text: str | None) -> str:
+        if not unit_type_text:
+            return 'ahu'
+        t = unit_type_text.strip().lower()
+        # Common schedule abbreviations
+        mapping = {
+            'ahu': 'ahu',
+            'rtu': 'ahu',  # roof-top unit behaves like AHU for noise seed
+            'doas': 'ahu',
+            'vav': 'vav',
+            'ef': 'fan',
+            'rf': 'fan',
+            'tf': 'fan',
+            'fan': 'fan',
+            'diffuser': 'diffuser',
+            'grille': 'grille',
+            'return fan': 'fan',
+            'exhaust fan': 'fan',
+            'supply fan': 'fan',
+            'chiller': 'fan',  # placeholder
+        }
+        # Try direct and startswith matching (e.g., 'ahu-4-1')
+        if t in mapping:
+            return mapping[t]
+        for key in mapping:
+            if t.startswith(key):
+                return mapping[key]
+        # default
+        return 'ahu'
         
     def on_component_type_changed(self, component_type):
         """Handle component type change"""

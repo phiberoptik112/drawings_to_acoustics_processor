@@ -11,6 +11,7 @@ from .hvac_component_dialog import HVACComponentDialog
 from .hvac_segment_dialog import HVACSegmentDialog
 from .hvac_path_dialog import HVACPathDialog
 from .hvac_path_analysis_dialog import HVACPathAnalysisDialog
+from .component_library_dialog import ComponentLibraryDialog
 
 __all__ = [
     'ProjectDialog', 
@@ -22,4 +23,5 @@ __all__ = [
     'HVACSegmentDialog', 
     'HVACPathDialog',
     'HVACPathAnalysisDialog'
+    , 'ComponentLibraryDialog'
 ]

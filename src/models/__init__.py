@@ -10,6 +10,7 @@ from .hvac import HVACComponent, HVACPath, HVACSegment, SegmentFitting
 from .drawing_elements import DrawingElement, DrawingElementManager
 from .rt60_models import (SurfaceCategory, SurfaceType, AcousticMaterial, 
                          RoomSurfaceInstance, RT60CalculationResult)
+from .mechanical import MechanicalUnit, NoiseSource
 
 __all__ = [
     'Base',
@@ -24,6 +25,8 @@ __all__ = [
     'HVACPath', 
     'HVACSegment', 
     'SegmentFitting',
+    'MechanicalUnit',
+    'NoiseSource',
     'DrawingElement',
     'DrawingElementManager',
     'SurfaceCategory',
