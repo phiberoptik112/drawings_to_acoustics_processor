@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QMessageBox, QSpinBox, QCheckBox, QTableWidget,
                              QTableWidgetItem, QHeaderView, QListWidget,
-                             QListWidgetItem, QSplitter, QWidget)
+                             QListWidgetItem, QSplitter, QWidget, QSizePolicy)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
@@ -139,6 +139,7 @@ class HVACSegmentDialog(QDialog):
         
         # Main content in splitter
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         
         # Left panel - Segment properties
         left_panel = self.create_segment_properties_panel()
@@ -151,6 +152,8 @@ class HVACSegmentDialog(QDialog):
         # Set splitter proportions
         splitter.setSizes([400, 300])
         layout.addWidget(splitter)
+        layout.setStretch(0, 0)
+        layout.setStretch(1, 1)
         
         # Buttons
         button_layout = QHBoxLayout()

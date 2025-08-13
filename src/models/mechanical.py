@@ -38,6 +38,8 @@ class MechanicalUnit(Base):
     inlet_levels_json = Column(Text)     # JSON-serialized dict/list
     radiated_levels_json = Column(Text)
     outlet_levels_json = Column(Text)
+    # Arbitrary properties captured during imports
+    extra_json = Column(Text)
 
     # Relationships
     project = relationship("Project", back_populates="mechanical_units")

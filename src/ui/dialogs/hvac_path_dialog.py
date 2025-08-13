@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QMessageBox, QSpinBox, QCheckBox, QTableWidget,
                              QTableWidgetItem, QHeaderView, QListWidget,
                              QListWidgetItem, QSplitter, QTabWidget, QWidget,
-                             QPlainTextEdit)
+                             QPlainTextEdit, QSizePolicy)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
@@ -226,6 +226,7 @@ class HVACPathDialog(QDialog):
         self.setWindowTitle(title)
         self.setModal(True)
         self.resize(900, 700)
+        self.setSizeGripEnabled(True)
         
         layout = QVBoxLayout()
         
@@ -233,10 +234,12 @@ class HVACPathDialog(QDialog):
         header_label = QLabel(title)
         header_label.setFont(QFont("Arial", 14, QFont.Bold))
         header_label.setAlignment(Qt.AlignCenter)
+        header_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         layout.addWidget(header_label)
         
         # Main content: tabs on the left + ASCII path diagram on the right
         self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Tabs (left side)
         self.tabs = QTabWidget()
@@ -257,14 +260,22 @@ class HVACPathDialog(QDialog):
         analysis_tab = self.create_analysis_tab()
         self.analysis_tab_index = self.tabs.addTab(analysis_tab, "Analysis")
 
+        # Ensure tabs expand with window
+        self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.main_splitter.addWidget(self.tabs)
 
         # Right side: ASCII diagram panel
         diagram_panel = self.create_ascii_diagram_panel()
         self.main_splitter.addWidget(diagram_panel)
         self.main_splitter.setSizes([650, 250])
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setStretchFactor(0, 3)
+        self.main_splitter.setStretchFactor(1, 2)
 
         layout.addWidget(self.main_splitter)
+        # Give the splitter all extra vertical space
+        layout.setStretch(0, 0)  # header
+        layout.setStretch(1, 1)  # splitter
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -354,6 +365,7 @@ class HVACPathDialog(QDialog):
         self.diagram_text = PathDiagramText()
         self.diagram_text.setPlaceholderText("ASCII diagram will appear here when components/segments are defined.")
         self.diagram_text.line_clicked.connect(self.on_diagram_line_clicked)
+        self.diagram_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         v.addWidget(self.diagram_text)
 
         panel.setLayout(v)

@@ -109,6 +109,7 @@ def ensure_hvac_schema():
                     ("inlet_levels_json", "TEXT"),
                     ("radiated_levels_json", "TEXT"),
                     ("outlet_levels_json", "TEXT"),
+                    ("extra_json", "TEXT"),
                 ],
             )
             _ensure_columns(
