@@ -5,8 +5,8 @@ PDF Viewer component using PyMuPDF for displaying architectural drawings
 import fitz  # PyMuPDF
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QScrollArea, QPushButton, QSlider, QComboBox,
-                             QMessageBox, QSizePolicy)
-from PySide6.QtCore import Qt, Signal, QRect
+                             QMessageBox, QSizePolicy, QRubberBand)
+from PySide6.QtCore import Qt, Signal, QRect, QPoint, QSize, QTimer
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor
 import os
 
@@ -31,8 +31,13 @@ class PDFViewer(QWidget):
         self.page_width = 0
         self.page_height = 0
         self.pixmap = None
+        # Selection state
+        self._rubber_band = None
+        self._origin = QPoint()
+        self.selection_rect_pdf = None  # (x0,y0,x1,y1) in PDF coords at 100%
         
         self.init_ui()
+        self.selection_mode = 'free'  # 'free' | 'column' | 'row'
         
     def init_ui(self):
         """Initialize the user interface"""
@@ -53,6 +58,8 @@ class PDFViewer(QWidget):
         # Dark-friendly canvas border; keep PDF rendering neutral
         self.pdf_label.setStyleSheet("border: 1px solid #3a3a3a; background-color: #1e1e1e;")
         self.pdf_label.mousePressEvent = self.mouse_press_event
+        self.pdf_label.mouseMoveEvent = self.mouse_move_event
+        self.pdf_label.mouseReleaseEvent = self.mouse_release_event
         self.pdf_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         
         self.scroll_area.setWidget(self.pdf_label)
@@ -306,7 +313,70 @@ class PDFViewer(QWidget):
             # Emit both coordinate systems
             self.coordinates_clicked.emit(pdf_x, pdf_y)  # For PDF-based operations
             self.screen_coordinates_clicked.emit(screen_x, screen_y)  # For scale calculations
+            # Start selection rectangle
+            if self._rubber_band is None:
+                self._rubber_band = QRubberBand(QRubberBand.Rectangle, self.pdf_label)
+            self._origin = QPoint(screen_x, screen_y)
+            # Start with a 1x1 rectangle at the origin
+            self._rubber_band.setGeometry(QRect(self._origin, QSize(1, 1)))
+            self._rubber_band.show()
             
+    def mouse_move_event(self, event):
+        if self._rubber_band and self.pixmap:
+            current = QPoint(event.x(), event.y())
+            rect = QRect(self._origin, current).normalized()
+            self._rubber_band.setGeometry(rect)
+
+    def mouse_release_event(self, event):
+        if self._rubber_band and self.pixmap:
+            rect = self._rubber_band.geometry()
+            # Convert to PDF coords (normalize by zoom)
+            x0 = rect.left() / self.zoom_factor
+            y0 = rect.top() / self.zoom_factor
+            x1 = rect.right() / self.zoom_factor
+            y1 = rect.bottom() / self.zoom_factor
+            # Constrain selection to row or column if mode requests
+            try:
+                page = self.pdf_document[self.current_page]
+                width = page.rect.width
+                height = page.rect.height
+            except Exception:
+                page = None
+                width = height = None
+            if self.selection_mode == 'column' and height is not None:
+                y0, y1 = 0.0, float(height)
+            elif self.selection_mode == 'row' and width is not None:
+                x0, x1 = 0.0, float(width)
+            self.selection_rect_pdf = (x0, y0, x1, y1)
+            # Notify listeners that a selection is available
+            try:
+                # Reuse screen_coordinates_clicked to avoid new signal explosion
+                self.screen_coordinates_clicked.emit(rect.left(), rect.top())
+            except Exception:
+                pass
+            # Show constrained overlay rectangle (adjusted) for visual feedback
+            # Convert constrained PDF rect back to widget pixels
+            sx0 = int(x0 * self.zoom_factor)
+            sy0 = int(y0 * self.zoom_factor)
+            sx1 = int(x1 * self.zoom_factor)
+            sy1 = int(y1 * self.zoom_factor)
+            overlay_rect = QRect(QPoint(sx0, sy0), QPoint(sx1, sy1)).normalized()
+            self._rubber_band.setGeometry(overlay_rect)
+            self._rubber_band.show()
+            # Auto-hide after a short delay to avoid leftover bands
+            QTimer.singleShot(1200, self._rubber_band.hide)
+
+    # Public API
+    def set_selection_mode(self, mode: str):
+        if mode not in ('free', 'column', 'row'):
+            mode = 'free'
+        self.selection_mode = mode
+        # Update status label
+        try:
+            self.status_label.setText(f"Page {self.current_page + 1}/{len(self.pdf_document)} - {int(self.zoom_factor*100)}% - mode: {self.selection_mode}")
+        except Exception:
+            pass
+
     def get_page_dimensions(self):
         """Get current page dimensions in PDF units"""
         if not self.pdf_document:

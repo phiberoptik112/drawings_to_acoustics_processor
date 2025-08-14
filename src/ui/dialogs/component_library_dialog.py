@@ -4,6 +4,10 @@ Component Library Dialog
  - Provides an "Import Mechanical Schedule from Image" workflow that leverages
    the image->CSV utility and ingests the resulting CSV into the Mechanical
    Units table for the active project.
+
+Still needed:
+- Silencer component import - need to differentiate between component type
+
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ from PySide6.QtWidgets import QSizePolicy
 
 from models import get_session
 from models.mechanical import MechanicalUnit, NoiseSource
+from models.hvac import SilencerProduct
 
 
 class ComponentLibraryDialog(QDialog):
@@ -51,7 +56,7 @@ class ComponentLibraryDialog(QDialog):
         self.project_id = project_id
         self.setWindowTitle("Component Library")
         self.resize(900, 600)
-        self.setMinimumSize(800, 500)
+        self.setMinimumSize(1200, 900)
         self.setModal(True)
 
         self._build_ui()
@@ -92,13 +97,14 @@ class ComponentLibraryDialog(QDialog):
         freq_group = QGroupBox("Frequency Preview (Sound Power Levels)")
         freq_v = QVBoxLayout()
         self.band_order = ["63","125","250","500","1000","2000","4000","8000"]
-        self.freq_table = QTableWidget(8, 4)
+        # New orientation: rows = [Inlet, Radiated, Outlet], columns = bands
+        self.freq_table = QTableWidget(3, len(self.band_order))
         self.freq_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.freq_table.setHorizontalHeaderLabels(["Band (Hz)", "Inlet", "Radiated", "Outlet"])
-        for i, b in enumerate(self.band_order):
-            self.freq_table.setItem(i, 0, QTableWidgetItem(b))
-            for j in range(1,4):
-                self.freq_table.setItem(i, j, QTableWidgetItem(""))
+        self.freq_table.setHorizontalHeaderLabels(self.band_order)
+        self.freq_table.setVerticalHeaderLabels(["Inlet", "Radiated", "Outlet"])
+        for r in range(3):
+            for c in range(len(self.band_order)):
+                self.freq_table.setItem(r, c, QTableWidgetItem(""))
         self.freq_table.horizontalHeader().setStretchLastSection(True)
         # Enable editing on double click
         self.freq_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
@@ -116,6 +122,20 @@ class ComponentLibraryDialog(QDialog):
         preview_btns = QHBoxLayout()
         self.load_pdf_btn = QPushButton("Load PDF…")
         self.load_pdf_btn.clicked.connect(self.load_preview_pdf)
+        # Selection mode toggles
+        self.sel_free_btn = QPushButton("Free Select")
+        self.sel_free_btn.setCheckable(True)
+        self.sel_free_btn.setChecked(True)
+        self.sel_free_btn.clicked.connect(lambda: self.set_preview_selection_mode('free'))
+        self.sel_col_btn = QPushButton("Select Column")
+        self.sel_col_btn.setCheckable(True)
+        self.sel_col_btn.clicked.connect(lambda: self.set_preview_selection_mode('column'))
+        self.sel_row_btn = QPushButton("Select Row")
+        self.sel_row_btn.setCheckable(True)
+        self.sel_row_btn.clicked.connect(lambda: self.set_preview_selection_mode('row'))
+        preview_btns.addWidget(self.sel_free_btn)
+        preview_btns.addWidget(self.sel_col_btn)
+        preview_btns.addWidget(self.sel_row_btn)
         preview_btns.addStretch(); preview_btns.addWidget(self.load_pdf_btn)
         preview_v.addLayout(preview_btns)
         preview_group.setLayout(preview_v)
@@ -158,16 +178,89 @@ class ComponentLibraryDialog(QDialog):
         mech_layout.addLayout(mech_btns)
         mech_tab.setLayout(mech_layout)
 
-        # Noise Sources tab
-        noise_tab = QWidget()
-        noise_layout = QVBoxLayout()
-        self.noise_list = QListWidget()
-        noise_layout.addWidget(QLabel("Noise Sources"))
-        noise_layout.addWidget(self.noise_list)
-        noise_tab.setLayout(noise_layout)
+        # Silencers tab
+        silencer_tab = QWidget()
+        silencer_layout = QVBoxLayout()
+        silencer_split = QSplitter(); silencer_split.setOrientation(Qt.Horizontal)
+        # Left: list
+        sil_left = QWidget(); sil_left_v = QVBoxLayout(sil_left)
+        self.silencer_list = QListWidget()
+        sil_left_v.addWidget(self.silencer_list)
+        silencer_split.addWidget(sil_left)
+        # Right: IL preview table
+        sil_right = QWidget(); sil_right_v = QVBoxLayout(sil_right)
+        sil_group = QGroupBox("Insertion Loss (dB)")
+        sil_group_v = QVBoxLayout()
+        self.sil_band_order = ["63","125","250","500","1000","2000","4000","8000"]
+        self.sil_table = QTableWidget(1, len(self.sil_band_order))
+        self.sil_table.setHorizontalHeaderLabels(self.sil_band_order)
+        self.sil_table.setVerticalHeaderLabels(["IL (dB)"])
+        for c in range(len(self.sil_band_order)):
+            self.sil_table.setItem(0, c, QTableWidgetItem(""))
+        self.sil_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
+        self.sil_table.cellChanged.connect(lambda _r,_c: self._toggle_silencer_save(True))
+        # Allow column selection to target band when importing a single value
+        self.sil_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectColumns)
+        sil_group_v.addWidget(self.sil_table)
+        sil_group.setLayout(sil_group_v)
+        sil_right_v.addWidget(sil_group)
+
+        # --- Silencer PDF preview & selection controls ---
+        sil_prev_group = QGroupBox("File Preview (PDF)")
+        sil_prev_v = QVBoxLayout()
+        from drawing.pdf_viewer import PDFViewer
+        self.sil_preview_viewer = PDFViewer()
+        sil_prev_v.addWidget(self.sil_preview_viewer)
+        sil_prev_btns = QHBoxLayout()
+        self.sil_sel_free_btn = QPushButton("Free Select"); self.sil_sel_free_btn.setCheckable(True); self.sil_sel_free_btn.setChecked(True)
+        self.sil_sel_free_btn.clicked.connect(lambda: self.set_sil_preview_selection_mode('free'))
+        self.sil_sel_col_btn = QPushButton("Select Column"); self.sil_sel_col_btn.setCheckable(True)
+        self.sil_sel_col_btn.clicked.connect(lambda: self.set_sil_preview_selection_mode('column'))
+        self.sil_sel_row_btn = QPushButton("Select Row"); self.sil_sel_row_btn.setCheckable(True)
+        self.sil_sel_row_btn.clicked.connect(lambda: self.set_sil_preview_selection_mode('row'))
+        self.sil_load_pdf_btn = QPushButton("Load PDF…")
+        self.sil_load_pdf_btn.clicked.connect(self.load_silencer_preview_pdf)
+        sil_prev_btns.addWidget(self.sil_sel_free_btn)
+        sil_prev_btns.addWidget(self.sil_sel_col_btn)
+        sil_prev_btns.addWidget(self.sil_sel_row_btn)
+        sil_prev_btns.addStretch(); sil_prev_btns.addWidget(self.sil_load_pdf_btn)
+        sil_prev_v.addLayout(sil_prev_btns)
+        sil_prev_group.setLayout(sil_prev_v)
+        sil_right_v.addWidget(sil_prev_group)
+        # Buttons
+        sil_btns = QHBoxLayout()
+        self.add_sil_btn = QPushButton("Add Silencer")
+        self.add_sil_btn.clicked.connect(self.add_silencer)
+        self.edit_sil_btn = QPushButton("Edit")
+        self.edit_sil_btn.setEnabled(False)
+        self.edit_sil_btn.clicked.connect(self.edit_selected_silencer)
+        self.del_sil_btn = QPushButton("Delete")
+        self.del_sil_btn.setEnabled(False)
+        self.del_sil_btn.clicked.connect(self.delete_selected_silencer)
+        self.save_sil_btn = QPushButton("Save IL Changes")
+        self.save_sil_btn.setEnabled(False)
+        self.save_sil_btn.clicked.connect(self.save_silencer_il_changes)
+        # Import controls for silencer
+        self.sil_import_row_btn = QPushButton("Import Selected Row")
+        self.sil_import_row_btn.setToolTip("Select a row region across 8 bands; imports IL values")
+        self.sil_import_row_btn.clicked.connect(self.import_silencer_selected_row)
+        self.sil_import_col_btn = QPushButton("Import Selected Column")
+        self.sil_import_col_btn.setToolTip("Select a single cell/column region; imports value into the selected band column")
+        self.sil_import_col_btn.clicked.connect(self.import_silencer_selected_column)
+        sil_btns.addWidget(self.add_sil_btn)
+        sil_btns.addWidget(self.edit_sil_btn)
+        sil_btns.addWidget(self.del_sil_btn)
+        sil_btns.addStretch()
+        sil_btns.addWidget(self.sil_import_row_btn)
+        sil_btns.addWidget(self.sil_import_col_btn)
+        sil_btns.addWidget(self.save_sil_btn)
+        sil_right_v.addLayout(sil_btns)
+        silencer_split.addWidget(sil_right)
+        silencer_layout.addWidget(silencer_split)
+        silencer_tab.setLayout(silencer_layout)
 
         tabs.addTab(mech_tab, "Mechanical Units")
-        tabs.addTab(noise_tab, "Noise Sources")
+        tabs.addTab(silencer_tab, "Silencers")
 
         layout.addWidget(tabs, 1)
 
@@ -185,6 +278,22 @@ class ComponentLibraryDialog(QDialog):
 
         self.setLayout(layout)
 
+        # Column import controls under right panel
+        column_tools = QHBoxLayout()
+        column_tools.addWidget(QLabel("PDF Region Import:"))
+        self.column_label_edit = QLineEdit()
+        self.column_label_edit.setPlaceholderText("Column label (e.g., Inlet 500, Outlet 1K)")
+        self.import_col_btn = QPushButton("Import Selected Column")
+        self.import_col_btn.setToolTip("Draw a rectangle in File Preview over a single column, then click to OCR just that area")
+        self.import_col_btn.clicked.connect(self.import_selected_pdf_column)
+        self.import_row_btn = QPushButton("Import Selected Row")
+        self.import_row_btn.setToolTip("Draw a rectangle over a single unit row across 8 bands; label must include Inlet, Radiated, or Outlet")
+        self.import_row_btn.clicked.connect(self.import_selected_pdf_row)
+        column_tools.addWidget(self.column_label_edit)
+        column_tools.addWidget(self.import_col_btn)
+        column_tools.addWidget(self.import_row_btn)
+        right_v.addLayout(column_tools)
+
     # Data
     def refresh_lists(self) -> None:
         try:
@@ -195,11 +304,8 @@ class ComponentLibraryDialog(QDialog):
                 .order_by(MechanicalUnit.name)
                 .all()
             )
-            sources: List[NoiseSource] = (
-                session.query(NoiseSource)
-                .filter(NoiseSource.project_id == self.project_id)
-                .order_by(NoiseSource.name)
-                .all()
+            silencers: List[SilencerProduct] = (
+                session.query(SilencerProduct).order_by(SilencerProduct.manufacturer, SilencerProduct.model_number).all()
             )
             self.mechanical_list.clear()
             for u in units:
@@ -209,15 +315,233 @@ class ComponentLibraryDialog(QDialog):
                 self.mechanical_list.addItem(item)
             # Clear preview
             self._clear_freq_preview()
-            self.noise_list.clear()
-            for s in sources:
-                text = f"{s.name} — {s.source_type or ''}  {s.base_noise_dba or ''} dBA"
-                item = QListWidgetItem(text)
-                item.setData(Qt.UserRole, s.id)
-                self.noise_list.addItem(item)
+            if hasattr(self, 'silencer_list'):
+                self.silencer_list.clear()
+                for s in silencers:
+                    text = f"{s.manufacturer} {s.model_number} ({s.silencer_type or ''})"
+                    item = QListWidgetItem(text)
+                    item.setData(Qt.UserRole, s.id)
+                    self.silencer_list.addItem(item)
+                # wire selection change
+                try:
+                    self.silencer_list.itemSelectionChanged.disconnect()
+                except Exception:
+                    pass
+                self.silencer_list.itemSelectionChanged.connect(self._on_silencer_selected)
             session.close()
         except Exception as e:
             QMessageBox.warning(self, "Load Error", f"Failed to load component library:\n{e}")
+
+    def _toggle_silencer_save(self, on: bool) -> None:
+        if hasattr(self, 'save_sil_btn'):
+            self.save_sil_btn.setEnabled(bool(on))
+
+    def _on_silencer_selected(self) -> None:
+        item = self.silencer_list.currentItem() if hasattr(self, 'silencer_list') else None
+        if not item:
+            self._toggle_silencer_save(False)
+            return
+        sid = item.data(Qt.UserRole)
+        try:
+            session = get_session()
+            s = session.query(SilencerProduct).filter(SilencerProduct.id == sid).first()
+            session.close()
+            if not s:
+                return
+            # Fill IL table
+            il_values = [
+                s.insertion_loss_63, s.insertion_loss_125, s.insertion_loss_250, s.insertion_loss_500,
+                s.insertion_loss_1000, s.insertion_loss_2000, s.insertion_loss_4000, s.insertion_loss_8000
+            ]
+            for c, val in enumerate(il_values):
+                self.sil_table.item(0, c).setText("" if val is None else str(val))
+            self._toggle_silencer_save(False)
+            # Toggle buttons
+            self.edit_sil_btn.setEnabled(True)
+            self.del_sil_btn.setEnabled(True)
+        except Exception:
+            pass
+
+    def add_silencer(self) -> None:
+        dlg = SilencerEditDialog(self)
+        if dlg.exec() == QDialog.Accepted:
+            self.refresh_lists()
+
+    def edit_selected_silencer(self) -> None:
+        item = self.silencer_list.currentItem()
+        if not item:
+            return
+        sid = item.data(Qt.UserRole)
+        session = get_session()
+        s = session.query(SilencerProduct).filter(SilencerProduct.id == sid).first()
+        session.close()
+        if not s:
+            return
+        dlg = SilencerEditDialog(self, s)
+        if dlg.exec() == QDialog.Accepted:
+            self.refresh_lists()
+
+    def delete_selected_silencer(self) -> None:
+        item = self.silencer_list.currentItem()
+        if not item:
+            return
+        sid = item.data(Qt.UserRole)
+        if QMessageBox.question(self, "Delete Silencer", "Delete selected silencer?", QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        try:
+            session = get_session()
+            s = session.query(SilencerProduct).filter(SilencerProduct.id == sid).first()
+            if s:
+                session.delete(s)
+                session.commit()
+            session.close()
+            self.refresh_lists()
+        except Exception as e:
+            QMessageBox.critical(self, "Delete Error", f"Failed to delete silencer:\n{e}")
+
+    def save_silencer_il_changes(self) -> None:
+        item = self.silencer_list.currentItem()
+        if not item:
+            return
+        sid = item.data(Qt.UserRole)
+        try:
+            session = get_session()
+            s = session.query(SilencerProduct).filter(SilencerProduct.id == sid).first()
+            if not s:
+                session.close(); return
+            # Read table values
+            def as_float(txt):
+                try:
+                    return float(txt)
+                except Exception:
+                    return None
+            vals = [as_float(self.sil_table.item(0, c).text().strip()) for c in range(len(self.sil_band_order))]
+            s.insertion_loss_63 = vals[0]
+            s.insertion_loss_125 = vals[1]
+            s.insertion_loss_250 = vals[2]
+            s.insertion_loss_500 = vals[3]
+            s.insertion_loss_1000 = vals[4]
+            s.insertion_loss_2000 = vals[5]
+            s.insertion_loss_4000 = vals[6]
+            s.insertion_loss_8000 = vals[7]
+            session.commit(); session.close()
+            self._toggle_silencer_save(False)
+            QMessageBox.information(self, "Silencer", "Insertion loss values saved.")
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save insertion loss:\n{e}")
+
+    def load_silencer_preview_pdf(self):
+        pdf_path, _ = QFileDialog.getOpenFileName(self, "Select PDF to Preview", "", "PDF Files (*.pdf);;All Files (*)")
+        if not pdf_path:
+            return
+        try:
+            self.sil_preview_viewer.load_pdf(pdf_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Preview Error", f"Failed to load PDF:\n{e}")
+
+    def set_sil_preview_selection_mode(self, mode: str):
+        if mode == 'free':
+            self.sil_sel_free_btn.setChecked(True); self.sil_sel_col_btn.setChecked(False); self.sil_sel_row_btn.setChecked(False)
+        elif mode == 'column':
+            self.sil_sel_free_btn.setChecked(False); self.sil_sel_col_btn.setChecked(True); self.sil_sel_row_btn.setChecked(False)
+        elif mode == 'row':
+            self.sil_sel_free_btn.setChecked(False); self.sil_sel_col_btn.setChecked(False); self.sil_sel_row_btn.setChecked(True)
+        try:
+            self.sil_preview_viewer.set_selection_mode(mode)
+        except Exception:
+            pass
+
+    def import_silencer_selected_row(self):
+        item = self.silencer_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "Silencer Row Import", "Select a silencer first.")
+            return
+        if not getattr(self.sil_preview_viewer, 'pdf_document', None):
+            QMessageBox.information(self, "Silencer Row Import", "Load a PDF in the silencer preview.")
+            return
+        sel = getattr(self.sil_preview_viewer, 'selection_rect_pdf', None)
+        if not sel:
+            QMessageBox.information(self, "Silencer Row Import", "Drag to select a row region across 8 bands.")
+            return
+        try:
+            import tempfile, os, sys, re, csv as csvmod
+            import fitz
+            page = self.sil_preview_viewer.pdf_document[self.sil_preview_viewer.current_page]
+            x0,y0,x1,y1 = sel
+            rect = fitz.Rect(x0,y0,x1,y1)
+            zoom = 300.0/72.0
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom,zoom), clip=rect)
+            with tempfile.TemporaryDirectory() as td:
+                img_path = os.path.join(td,'row.png'); csv_path = os.path.join(td,'row.csv'); pix.save(img_path)
+                script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..','..','calculations','image_table_to_csv.py'))
+                res = subprocess.run([sys.executable, script_path, '--image', img_path, '--output', csv_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                if res.returncode != 0:
+                    raise RuntimeError(res.stderr or 'OCR failed')
+                tokens = []
+                with open(csv_path, newline='', encoding='utf-8') as f:
+                    reader = csvmod.reader(f)
+                    for r in reader:
+                        tokens.extend([c.strip() for c in r if c and c.strip()])
+                nums = [t for t in tokens if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", t)]
+                vals8 = nums[:8]
+                if not vals8:
+                    QMessageBox.information(self, 'Silencer Row Import', 'No numeric values detected.')
+                    return
+                for c, v in enumerate(vals8):
+                    if c < len(self.sil_band_order):
+                        self.sil_table.item(0, c).setText(v)
+                self._toggle_silencer_save(True)
+        except Exception as e:
+            QMessageBox.critical(self, "Silencer Row Import", f"Failed: {e}")
+
+    def import_silencer_selected_column(self):
+        item = self.silencer_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "Silencer Column Import", "Select a silencer first.")
+            return
+        if not getattr(self.sil_preview_viewer, 'pdf_document', None):
+            QMessageBox.information(self, "Silencer Column Import", "Load a PDF in the silencer preview.")
+            return
+        sel = getattr(self.sil_preview_viewer, 'selection_rect_pdf', None)
+        if not sel:
+            QMessageBox.information(self, "Silencer Column Import", "Drag to select a single cell/column region.")
+            return
+        selected_cols = set([rng.leftColumn() for rng in self.sil_table.selectedRanges()])
+        if not selected_cols:
+            QMessageBox.information(self, "Silencer Column Import", "Select a target band column in the IL table first.")
+            return
+        target_col = list(sorted(selected_cols))[0]
+        try:
+            import tempfile, os, sys, re, csv as csvmod
+            import fitz
+            page = self.sil_preview_viewer.pdf_document[self.sil_preview_viewer.current_page]
+            x0,y0,x1,y1 = sel
+            rect = fitz.Rect(x0,y0,x1,y1)
+            zoom = 300.0/72.0
+            pix = page.get_pixmap(matrix=fitz.Matrix(zoom,zoom), clip=rect)
+            with tempfile.TemporaryDirectory() as td:
+                img_path = os.path.join(td,'col.png'); csv_path = os.path.join(td,'col.csv'); pix.save(img_path)
+                script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..','..','calculations','image_table_to_csv.py'))
+                res = subprocess.run([sys.executable, script_path, '--image', img_path, '--output', csv_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                if res.returncode != 0:
+                    raise RuntimeError(res.stderr or 'OCR failed')
+                value = None
+                with open(csv_path, newline='', encoding='utf-8') as f:
+                    reader = csvmod.reader(f)
+                    for r in reader:
+                        for c in r:
+                            s = c.strip()
+                            if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", s):
+                                value = s; break
+                        if value is not None:
+                            break
+                if value is None:
+                    QMessageBox.information(self, 'Silencer Column Import', 'No numeric value found in selection.')
+                    return
+                self.sil_table.item(0, target_col).setText(value)
+                self._toggle_silencer_save(True)
+        except Exception as e:
+            QMessageBox.critical(self, "Silencer Column Import", f"Failed: {e}")
 
     def _update_mech_tooltip(self) -> None:
         # Show frequency preview in item tooltip when available
@@ -251,9 +575,9 @@ class ComponentLibraryDialog(QDialog):
 
     def _clear_freq_preview(self) -> None:
         if hasattr(self, 'freq_table') and self.freq_table is not None:
-            for i in range(self.freq_table.rowCount()):
-                for j in range(1, 4):
-                    item = self.freq_table.item(i, j)
+            for r in range(self.freq_table.rowCount()):
+                for c in range(self.freq_table.columnCount()):
+                    item = self.freq_table.item(r, c)
                     if item:
                         item.setText("")
         # reset dirty state
@@ -277,23 +601,24 @@ class ComponentLibraryDialog(QDialog):
                 self._clear_freq_preview()
                 return
             import json
-            def fill_column(json_str: str | None, col: int) -> None:
+            def fill_row(json_str: str | None, row_index: int) -> None:
+                # row_index: 0 Inlet, 1 Radiated, 2 Outlet
+                for c in range(self.freq_table.columnCount()):
+                    self.freq_table.item(row_index, c).setText("")
                 if not json_str:
-                    for r in range(len(self.band_order)):
-                        self.freq_table.item(r, col).setText("")
                     return
                 try:
                     data = json.loads(json_str)
                 except Exception:
                     data = {}
-                for r, band in enumerate(self.band_order):
+                for c, band in enumerate(self.band_order):
                     val = data.get(band, "")
-                    self.freq_table.item(r, col).setText(str(val) if val is not None else "")
+                    self.freq_table.item(row_index, c).setText(str(val) if val is not None else "")
 
-            # Fill preview columns
-            fill_column(getattr(unit, 'inlet_levels_json', None), 1)
-            fill_column(getattr(unit, 'radiated_levels_json', None), 2)
-            fill_column(getattr(unit, 'outlet_levels_json', None), 3)
+            # Fill preview rows
+            fill_row(getattr(unit, 'inlet_levels_json', None), 0)
+            fill_row(getattr(unit, 'radiated_levels_json', None), 1)
+            fill_row(getattr(unit, 'outlet_levels_json', None), 2)
             # reset dirty state after load
             self.freq_dirty = False
             if hasattr(self, 'save_btn'):
@@ -435,6 +760,25 @@ class ComponentLibraryDialog(QDialog):
         if hasattr(self, 'save_btn'):
             self.save_btn.setEnabled(True)
 
+    def set_preview_selection_mode(self, mode: str) -> None:
+        # Update toggle states
+        if mode == 'free':
+            self.sel_free_btn.setChecked(True)
+            self.sel_col_btn.setChecked(False)
+            self.sel_row_btn.setChecked(False)
+        elif mode == 'column':
+            self.sel_free_btn.setChecked(False)
+            self.sel_col_btn.setChecked(True)
+            self.sel_row_btn.setChecked(False)
+        elif mode == 'row':
+            self.sel_free_btn.setChecked(False)
+            self.sel_col_btn.setChecked(False)
+            self.sel_row_btn.setChecked(True)
+        try:
+            self.preview_viewer.set_selection_mode(mode)
+        except Exception:
+            pass
+
     def save_frequency_changes(self) -> None:
         if not self.freq_dirty:
             return
@@ -445,18 +789,18 @@ class ComponentLibraryDialog(QDialog):
         unit_id = current.data(Qt.UserRole)
         try:
             # Collect values from table
-            def collect_col(col: int) -> dict:
+            def collect_row(row: int) -> dict:
                 data = {}
-                for r, band in enumerate(self.band_order):
-                    item = self.freq_table.item(r, col)
+                for c, band in enumerate(self.band_order):
+                    item = self.freq_table.item(row, c)
                     if item:
                         val = item.text().strip()
                         if val:
                             data[band] = val
                 return data
-            inlet_data = collect_col(1)
-            radiated_data = collect_col(2)
-            outlet_data = collect_col(3)
+            inlet_data = collect_row(0)
+            radiated_data = collect_row(1)
+            outlet_data = collect_row(2)
             import json as _json
             session = get_session()
             unit = session.query(MechanicalUnit).filter(MechanicalUnit.id == unit_id).first()
@@ -474,6 +818,175 @@ class ComponentLibraryDialog(QDialog):
             QMessageBox.information(self, "Saved", "Frequency values saved to database.")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save changes:\n{e}")
+
+    def import_selected_pdf_column(self) -> None:
+        # Validate selection and input
+        if not hasattr(self, 'preview_viewer') or not getattr(self.preview_viewer, 'pdf_document', None):
+            QMessageBox.information(self, "Column Import", "Load a PDF in File Preview first.")
+            return
+        sel = getattr(self.preview_viewer, 'selection_rect_pdf', None)
+        if not sel:
+            QMessageBox.information(self, "Column Import", "Drag to select a column region in the PDF preview.")
+            return
+        label_text = self.column_label_edit.text().strip()
+        if not label_text:
+            QMessageBox.information(self, "Column Import", "Enter a column label (e.g., 'Inlet 500').")
+            return
+        try:
+            import tempfile, os, sys, json as _json
+            import fitz
+            # Render just the selected rectangle region to a temp image
+            page = self.preview_viewer.pdf_document[self.preview_viewer.current_page]
+            x0, y0, x1, y1 = sel
+            rect = fitz.Rect(x0, y0, x1, y1)
+            zoom = 300.0 / 72.0
+            mat = fitz.Matrix(zoom, zoom)
+            clip_pix = page.get_pixmap(matrix=mat, clip=rect)
+            with tempfile.TemporaryDirectory() as td:
+                img_path = os.path.join(td, 'col.png')
+                csv_path = os.path.join(td, 'col.csv')
+                clip_pix.save(img_path)
+                # Run the image table extractor on the cropped column
+                script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'calculations', 'image_table_to_csv.py'))
+                cmd = [sys.executable, script_path, '--image', img_path, '--output', csv_path]
+                import subprocess
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                if res.returncode != 0:
+                    raise RuntimeError(res.stderr or 'OCR failed')
+                # Read rows and map into a single band column
+                import csv
+                with open(csv_path, newline='', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    rows = [r for r in reader if any(c.strip() for c in r)]
+                if not rows:
+                    QMessageBox.information(self, 'Column Import', 'No text detected in selection.')
+                    return
+                # Apply to selected MechanicalUnit if any; else prompt to pick
+                current = self.mechanical_list.currentItem()
+                if not current:
+                    QMessageBox.information(self, 'Column Import', 'Select a Mechanical Unit to apply values to.')
+                    return
+                unit_id = current.data(Qt.UserRole)
+                session = get_session()
+                unit = session.query(MechanicalUnit).filter(MechanicalUnit.id == unit_id).first()
+                if not unit:
+                    session.close(); QMessageBox.information(self, 'Column Import', 'Unit not found.'); return
+                # Decide which column to fill based on label
+                lt = label_text.lower()
+                import re
+                band_keys = self.band_order
+                # Extract band name if present (63, 125, 250, 500, 1k/1000, 2k/2000, 4k/4000, 8k/8000)
+                def norm_band(s):
+                    s = s.lower().replace('hz','').strip()
+                    if s in {'63','125','250','500'}: return s
+                    if s in {'1k','1000'}: return '1000'
+                    if s in {'2k','2000'}: return '2000'
+                    if s in {'4k','4000'}: return '4000'
+                    if s in {'8k','8000'}: return '8000'
+                    return None
+                # Build map from rows sequentially
+                values = {}
+                for idx, r in enumerate(rows):
+                    # Use first non-empty cell per row as the value
+                    val = next((c for c in r if c.strip()), '')
+                    if not val:
+                        continue
+                    # Map rows to bands in order if explicit band not provided
+                    if idx < len(band_keys):
+                        values[band_keys[idx]] = val
+                # Assign to inlet/radiated/outlet based on label
+                target = None
+                if 'inlet' in lt:
+                    target = 'inlet_levels_json'
+                elif 'radiated' in lt:
+                    target = 'radiated_levels_json'
+                elif 'outlet' in lt:
+                    target = 'outlet_levels_json'
+                if not target:
+                    session.close(); QMessageBox.information(self, 'Column Import', 'Label must include Inlet, Radiated, or Outlet.'); return
+                setattr(unit, target, _json.dumps(values) if values else None)
+                session.commit(); session.close()
+                # Refresh display
+                self._on_mech_selection_changed()
+                QMessageBox.information(self, 'Column Import', f'Applied {len(values)} values to {label_text}.')
+        except Exception as e:
+            QMessageBox.critical(self, 'Column Import', f'Failed: {e}')
+
+    def import_selected_pdf_row(self) -> None:
+        # Require a selected unit
+        current = self.mechanical_list.currentItem()
+        if not current:
+            QMessageBox.information(self, 'Row Import', 'Select a Mechanical Unit in the list first.')
+            return
+        if not hasattr(self, 'preview_viewer') or not getattr(self.preview_viewer, 'pdf_document', None):
+            QMessageBox.information(self, 'Row Import', 'Load a PDF in File Preview, then drag-select a single row region.')
+            return
+        sel = getattr(self.preview_viewer, 'selection_rect_pdf', None)
+        if not sel:
+            QMessageBox.information(self, 'Row Import', 'Drag to select a single unit row region in the PDF preview.')
+            return
+        # Determine target row from label
+        label_text = self.column_label_edit.text().strip().lower()
+        target = None
+        if 'inlet' in label_text:
+            target = 'inlet_levels_json'
+        elif 'radiated' in label_text:
+            target = 'radiated_levels_json'
+        elif 'outlet' in label_text:
+            target = 'outlet_levels_json'
+        if not target:
+            QMessageBox.information(self, 'Row Import', 'Enter a label that includes Inlet, Radiated, or Outlet to specify the target row.')
+            return
+        try:
+            import tempfile, os, sys, json as _json, re, csv
+            import fitz
+            page = self.preview_viewer.pdf_document[self.preview_viewer.current_page]
+            x0, y0, x1, y1 = sel
+            rect = fitz.Rect(x0, y0, x1, y1)
+            zoom = 300.0 / 72.0
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat, clip=rect)
+            with tempfile.TemporaryDirectory() as td:
+                img_path = os.path.join(td, 'row.png')
+                csv_path = os.path.join(td, 'row.csv')
+                pix.save(img_path)
+                script_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'calculations', 'image_table_to_csv.py'))
+                cmd = [sys.executable, script_path, '--image', img_path, '--output', csv_path]
+                import subprocess
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                if res.returncode != 0:
+                    raise RuntimeError(res.stderr or 'OCR failed')
+                tokens = []
+                with open(csv_path, newline='', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    for r in reader:
+                        tokens.extend([c.strip() for c in r if c and c.strip()])
+                if not tokens:
+                    QMessageBox.information(self, 'Row Import', 'No text detected in the selected row.')
+                    return
+                # Extract numeric tokens only
+                nums = [t for t in tokens if re.fullmatch(r"[-+]?\d+(?:\.\d+)?", t)]
+                if not nums:
+                    QMessageBox.information(self, 'Row Import', 'No numeric values detected in the selection.')
+                    return
+                # Expect exactly the first 8 bands for a single row
+                band_keys = self.band_order
+                vals8 = nums[:8]
+                if len(vals8) < 1:
+                    QMessageBox.information(self, 'Row Import', 'Could not detect the 8 band values in the selection.')
+                    return
+                values_map = {k: v for k, v in zip(band_keys, vals8)}
+                unit_id = current.data(Qt.UserRole)
+                session = get_session()
+                unit = session.query(MechanicalUnit).filter(MechanicalUnit.id == unit_id).first()
+                if not unit:
+                    session.close(); QMessageBox.information(self, 'Row Import', 'Selected unit not found.'); return
+                setattr(unit, target, _json.dumps(values_map))
+                session.commit(); session.close()
+                self._on_mech_selection_changed()
+                QMessageBox.information(self, 'Row Import', f'Imported {len(values_map)} band values into the {target.replace("_levels_json"," ")} row.')
+        except Exception as e:
+            QMessageBox.critical(self, 'Row Import', f'Failed: {e}')
 
     # --- Edit/Delete operations ---
     def edit_selected_mechanical_unit(self) -> None:
@@ -609,6 +1122,52 @@ class MechanicalUnitEditDialog(QDialog):
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save changes:\n{e}")
+
+
+class SilencerEditDialog(QDialog):
+    def __init__(self, parent=None, silencer: SilencerProduct | None = None):
+        super().__init__(parent)
+        self.silencer = silencer
+        self.setWindowTitle("Edit Silencer" if silencer else "Add Silencer")
+        self.resize(500, 450)
+        self.setModal(True)
+        v = QVBoxLayout(self)
+        form = QFormLayout()
+        self.mfr_edit = QLineEdit(silencer.manufacturer if silencer else "")
+        self.model_edit = QLineEdit(silencer.model_number if silencer else "")
+        self.type_edit = QLineEdit(silencer.silencer_type if silencer else "")
+        form.addRow("Manufacturer:", self.mfr_edit)
+        form.addRow("Model:", self.model_edit)
+        form.addRow("Type:", self.type_edit)
+        v.addLayout(form)
+        btns = QHBoxLayout()
+        cancel = QPushButton("Cancel"); save = QPushButton("Save")
+        cancel.clicked.connect(self.reject)
+        save.clicked.connect(self._save)
+        btns.addStretch(); btns.addWidget(cancel); btns.addWidget(save)
+        v.addLayout(btns)
+
+    def _save(self):
+        try:
+            session = get_session()
+            if self.silencer:
+                s = session.query(SilencerProduct).filter(SilencerProduct.id == self.silencer.id).first()
+                if not s:
+                    session.close(); QMessageBox.warning(self, "Silencer", "Not found"); return
+                s.manufacturer = self.mfr_edit.text().strip()
+                s.model_number = self.model_edit.text().strip()
+                s.silencer_type = self.type_edit.text().strip()
+            else:
+                s = SilencerProduct(
+                    manufacturer=self.mfr_edit.text().strip(),
+                    model_number=self.model_edit.text().strip(),
+                    silencer_type=self.type_edit.text().strip() or 'dissipative',
+                )
+                session.add(s)
+            session.commit(); session.close()
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save silencer: {e}")
 
     def _import_csv_into_mechanical_units(self, csv_path: str) -> None:
         """Import Mechanical Units from a CSV produced by the OCR tool.
