@@ -239,8 +239,13 @@ class Space(Base):
         return [path for path in self.hvac_paths]
     
     def calculate_mechanical_background_noise(self):
-        """Calculate mechanical background noise from HVAC paths serving this space"""
-        from calculations.noise_calculator import NoiseCalculator
+        """Calculate mechanical background noise from HVAC paths serving this space.
+        Uses the unified HVACPathCalculator to build path data and compute spectra.
+        """
+        from calculations.hvac_path_calculator import HVACPathCalculator
+        from models import get_session
+        from sqlalchemy.orm import selectinload
+        from models.hvac import HVACPath
         
         if not self.hvac_paths:
             return {
@@ -250,85 +255,87 @@ class Space(Base):
                 'error': 'No HVAC paths found serving this space'
             }
         
-        calculator = NoiseCalculator()
-        total_noise_levels = {}
+        path_calculator = HVACPathCalculator()
+        total_energy_by_freq = {63: 0.0, 125: 0.0, 250: 0.0, 500: 0.0, 1000: 0.0, 2000: 0.0, 4000: 0.0, 8000: 0.0}
         paths_analyzed = 0
         
-        # Calculate noise from each HVAC path
         for path in self.hvac_paths:
             try:
-                # Convert path to calculation format
-                path_data = {
-                    'source_component': {
-                        'type': path.source_component_type or 'ahu',
-                        'noise_level': path.source_noise_level or 80.0
-                    },
-                    'segments': [],
-                    'terminal_component': {
-                        'type': path.terminal_component_type or 'diffuser',
-                        'noise_level': path.terminal_noise_level or 30.0
-                    }
-                }
+                # Fetch a fresh, session-bound path with relationships eager-loaded
+                session = get_session()
+                try:
+                    from models.hvac import HVACSegment  # local import to avoid cycles
+                    db_path = (
+                        session.query(HVACPath)
+                        .options(
+                            selectinload(HVACPath.segments).selectinload(HVACSegment.fittings),
+                            selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
+                            selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                            selectinload(HVACPath.primary_source),
+                        )
+                        .filter(HVACPath.id == getattr(path, 'id', None))
+                        .first()
+                    )
+                finally:
+                    try:
+                        session.close()
+                    except Exception:
+                        pass
+                if not db_path:
+                    continue
                 
-                # Add segments
-                for segment in path.segments:
-                    segment_data = {
-                        'length': segment.length or 0,
-                        'duct_size': f"{segment.width}x{segment.height}" if segment.width and segment.height else "12x12",
-                        'fittings': []
-                    }
-                    
-                    # Add fittings
-                    for fitting in segment.fittings:
-                        fitting_data = {
-                            'type': fitting.fitting_type,
-                            'quantity': fitting.quantity or 1
-                        }
-                        segment_data['fittings'].append(fitting_data)
-                    
-                    path_data['segments'].append(segment_data)
+                # Build path data and calculate spectrum via the engine
+                path_data = path_calculator.build_path_data_from_db(db_path)
+                if not path_data:
+                    continue
+                calc = path_calculator.noise_calculator.calculate_hvac_path_noise(path_data)
+                spectrum = calc.get('octave_band_spectrum') or []
+                if not spectrum:
+                    continue
                 
-                # Calculate noise for this path
-                path_results = calculator.calculate_hvac_path_noise(path_data)
-                
-                if path_results.get('success') and 'terminal_sound_levels' in path_results:
-                    # Add to total noise levels (energy sum)
-                    terminal_levels = path_results['terminal_sound_levels']
-                    for freq, level in terminal_levels.items():
-                        if freq not in total_noise_levels:
-                            total_noise_levels[freq] = 0
-                        # Convert dB to energy, sum, convert back
-                        total_noise_levels[freq] += 10 ** (level / 10)
-                    
-                    paths_analyzed += 1
-                    
+                # Accumulate energy by standard bands (assume order 63..8000)
+                standard_bands = [63, 125, 250, 500, 1000, 2000, 4000, 8000]
+                for i, freq in enumerate(standard_bands):
+                    if i < len(spectrum):
+                        lvl = float(spectrum[i] or 0.0)
+                        total_energy_by_freq[freq] += 10 ** (lvl / 10.0)
+                paths_analyzed += 1
             except Exception as e:
-                print(f"Error calculating noise for path {path.id}: {e}")
+                print(f"Error calculating noise for path {getattr(path, 'id', '?')}: {e}")
                 continue
         
-        # Convert total energy back to dB
+        # Convert back to dB SPL by band
         final_sound_levels = {}
-        for freq, energy in total_noise_levels.items():
-            final_sound_levels[freq] = 10 * math.log10(energy) if energy > 0 else 0
+        for freq, energy in total_energy_by_freq.items():
+            final_sound_levels[freq] = 10 * math.log10(energy) if energy > 0 else 0.0
         
-        # Calculate NC rating
+        # Calculate NC rating from the combined spectrum
         nc_rating = None
-        if final_sound_levels:
+        if any(energy > 0 for energy in total_energy_by_freq.values()):
             try:
                 from calculations.nc_rating_analyzer import OctaveBandData
                 octave_data = OctaveBandData(
-                    freq_63=final_sound_levels.get(63, 0),
-                    freq_125=final_sound_levels.get(125, 0),
-                    freq_250=final_sound_levels.get(250, 0),
-                    freq_500=final_sound_levels.get(500, 0),
-                    freq_1000=final_sound_levels.get(1000, 0),
-                    freq_2000=final_sound_levels.get(2000, 0),
-                    freq_4000=final_sound_levels.get(4000, 0),
-                    freq_8000=final_sound_levels.get(8000, 0)
+                    freq_63=final_sound_levels.get(63, 0.0),
+                    freq_125=final_sound_levels.get(125, 0.0),
+                    freq_250=final_sound_levels.get(250, 0.0),
+                    freq_500=final_sound_levels.get(500, 0.0),
+                    freq_1000=final_sound_levels.get(1000, 0.0),
+                    freq_2000=final_sound_levels.get(2000, 0.0),
+                    freq_4000=final_sound_levels.get(4000, 0.0),
+                    freq_8000=final_sound_levels.get(8000, 0.0),
                 )
-                nc_results = calculator.nc_analyzer.analyze_nc_rating(octave_data)
-                nc_rating = nc_results.get('nc_rating')
-                
+                nc_results = path_calculator.nc_analyzer.analyze_nc_rating(octave_data) if hasattr(path_calculator, 'nc_analyzer') else None
+                # Fallback: compute using engine util if nc_analyzer not present
+                if nc_results and isinstance(nc_results, dict):
+                    nc_rating = nc_results.get('nc_rating')
+                else:
+                    # Use engine's NC if available
+                    try:
+                        engine = path_calculator.noise_calculator.hvac_engine
+                        spectrum_list = [final_sound_levels.get(f, 0.0) for f in [63,125,250,500,1000,2000,4000,8000]]
+                        nc_rating = engine._calculate_nc_rating(spectrum_list)
+                    except Exception:
+                        nc_rating = None
             except Exception as e:
                 print(f"Error calculating NC rating: {e}")
         

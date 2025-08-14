@@ -120,6 +120,8 @@ class HVACPathDialog(QDialog):
         self.project_id = project_id
         self.path = path  # Existing path for editing
         self.is_editing = path is not None
+        # Store primitive path id to avoid detached SQLAlchemy access
+        self.path_id = getattr(path, 'id', None)
         
         # Components and segments for this path
         self.components = []
@@ -132,6 +134,12 @@ class HVACPathDialog(QDialog):
         
         # Calculator
         self.path_calculator = HVACPathCalculator()
+        # Last calculation element results for component context lookups
+        self._last_element_results = []
+        # Selected Mechanical Unit (library) source data for calculations
+        self.source_octave_bands = None  # list[float] | None
+        self.source_noise_dba = None     # float | None
+        self._selected_source_label = None
         
         self.init_ui()
         if self.is_editing:
@@ -264,7 +272,7 @@ class HVACPathDialog(QDialog):
         self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.main_splitter.addWidget(self.tabs)
 
-        # Right side: ASCII diagram panel
+        # Right side: NC summary + ASCII diagram panel
         diagram_panel = self.create_ascii_diagram_panel()
         self.main_splitter.addWidget(diagram_panel)
         self.main_splitter.setSizes([650, 250])
@@ -355,20 +363,40 @@ class HVACPathDialog(QDialog):
         return widget
 
     def create_ascii_diagram_panel(self):
-        """Create the right-side panel showing an ASCII path diagram."""
+        """Create the right-side panel showing Path NC summary and ASCII path diagram."""
         panel = QWidget()
-        v = QVBoxLayout()
-        title = QLabel("Path Diagram")
-        title.setFont(QFont("Arial", 12, QFont.Bold))
-        v.addWidget(title)
+        root_v = QVBoxLayout()
 
+        # Header
+        header = QHBoxLayout()
+        title_left = QLabel("Path NC")
+        title_left.setFont(QFont("Arial", 12, QFont.Bold))
+        title_right = QLabel("Path Diagram")
+        title_right.setFont(QFont("Arial", 12, QFont.Bold))
+        header.addWidget(title_left)
+        header.addStretch()
+        header.addWidget(title_right)
+        root_v.addLayout(header)
+
+        # Content area: left NC list, right ASCII diagram
+        content = QHBoxLayout()
+
+        # NC list
+        self.nc_list = QListWidget()
+        self.nc_list.setFixedWidth(90)
+        self.nc_list.setSelectionMode(QListWidget.NoSelection)
+        self.nc_list.setFocusPolicy(Qt.NoFocus)
+        content.addWidget(self.nc_list)
+
+        # ASCII diagram
         self.diagram_text = PathDiagramText()
         self.diagram_text.setPlaceholderText("ASCII diagram will appear here when components/segments are defined.")
         self.diagram_text.line_clicked.connect(self.on_diagram_line_clicked)
         self.diagram_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        v.addWidget(self.diagram_text)
+        content.addWidget(self.diagram_text)
 
-        panel.setLayout(v)
+        root_v.addLayout(content)
+        panel.setLayout(root_v)
         return panel
         
     def create_components_tab(self):
@@ -486,9 +514,12 @@ class HVACPathDialog(QDialog):
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
         self.results_text.setHtml("<i>Click 'Calculate Noise' to analyze this path</i>")
+        # Ensure the results area can grow to use vertical space
+        self.results_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         results_layout.addWidget(self.results_text)
         
         results_group.setLayout(results_layout)
+        results_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         layout.addWidget(results_group)
         
         # Analysis options
@@ -500,9 +531,13 @@ class HVACPathDialog(QDialog):
         options_layout.addWidget(self.auto_calculate_cb)
         
         options_group.setLayout(options_layout)
+        # Keep options compact so results get the extra space
+        options_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         layout.addWidget(options_group)
         
-        layout.addStretch()
+        # Give most of the vertical space to the results group
+        layout.setStretch(0, 1)
+        layout.setStretch(1, 0)
         widget.setLayout(layout)
         return widget
         
@@ -655,7 +690,7 @@ class HVACPathDialog(QDialog):
             self.summary_label.setText("No components added yet.")
             return
         
-        source = self.components[0].name if self.components else "Unknown"
+        source = self._selected_source_label or (self.components[0].name if self.components else "Unknown")
         terminal = self.components[-1].name if self.components else "Unknown"
         segment_count = len(self.segments)
         
@@ -824,20 +859,60 @@ class HVACPathDialog(QDialog):
             try:
                 from models.mechanical import MechanicalUnit
                 unit = session.query(MechanicalUnit).filter(MechanicalUnit.id == unit_id).first()
-                if not unit:
-                    session.close()
-                    return
-                # Persist selection on path
-                if self.path:
-                    db_path = session.query(HVACPath).filter(HVACPath.id == self.path.id).first()
-                    if db_path:
-                        db_path.primary_source_id = unit.id
-                        session.commit()
-                        self.path = db_path
-                # Refresh summary/diagram to reflect change
-                self.update_summary()
             finally:
                 session.close()
+
+            if not unit:
+                return
+
+            # Extract octave-band data from the unit (prefer outlet -> inlet -> radiated)
+            import json
+            def parse_bands(js):
+                if not js:
+                    return None
+                try:
+                    data = json.loads(js)
+                    order = ["63","125","250","500","1000","2000","4000","8000"]
+                    vals = []
+                    for k in order:
+                        v = data.get(k)
+                        vals.append(float(v) if v is not None and str(v).strip() != '' else 0.0)
+                    return vals
+                except Exception:
+                    return None
+
+            bands = (parse_bands(getattr(unit, 'outlet_levels_json', None)) or
+                     parse_bands(getattr(unit, 'inlet_levels_json', None)) or
+                     parse_bands(getattr(unit, 'radiated_levels_json', None)))
+
+            # Compute A-weighted if we have bands; fallback to 80 dB(A)
+            if bands:
+                try:
+                    dba = self.path_calculator.noise_calculator.hvac_engine._calculate_dba_from_spectrum(bands)
+                except Exception:
+                    dba = 80.0
+            else:
+                dba = 80.0
+
+            self.source_octave_bands = bands
+            self.source_noise_dba = dba
+            self._selected_source_label = unit.name or unit.unit_type or "Mechanical Unit"
+
+            # Persist selection on path when editing
+            try:
+                if self.path:
+                    session = get_session()
+                    db_path = session.query(HVACPath).filter(HVACPath.id == self.path.id).first()
+                    if db_path:
+                        db_path.primary_source_id = getattr(unit, 'id', None)
+                        session.commit()
+                        self.path = db_path
+                    session.close()
+            except Exception:
+                pass
+
+            # Refresh summary/diagram to reflect change
+            self.update_summary()
         except Exception as e:
             print(f"Error selecting primary source: {e}")
 
@@ -870,6 +945,23 @@ class HVACPathDialog(QDialog):
             component = current_item.data(Qt.UserRole)
         
         dialog = HVACComponentDialog(self, self.project_id, None, component)
+        # If we have recent analysis, provide context for passive components
+        try:
+            if hasattr(self, '_last_element_results') and self._last_element_results:
+                # Prefer segment leaving this component, else entering
+                seg = next((s for s in self.segments if getattr(s, 'from_component', None) is component), None)
+                if seg is None:
+                    seg = next((s for s in self.segments if getattr(s, 'to_component', None) is component), None)
+                if seg is not None:
+                    order = int(getattr(seg, 'segment_order', 0) or 0)
+                    # Index 0 in results is source pseudo; segments start at index 1
+                    if order >= 1 and order < len(self._last_element_results):
+                        elem_res = self._last_element_results[order]
+                        # Apply to the dialog if it exposes the helper
+                        if hasattr(dialog, 'apply_passive_context_from_element_result'):
+                            dialog.apply_passive_context_from_element_result(elem_res)
+        except Exception:
+            pass
         if dialog.exec() == QDialog.Accepted:
             # Component was updated, refresh lists
             self.load_project_components()
@@ -941,7 +1033,7 @@ class HVACPathDialog(QDialog):
         from_component = self.components[-2] if len(self.components) > 1 else self.components[0]
         to_component = self.components[-1]
         
-        dialog = HVACSegmentDialog(self, self.path.id if self.path else None, 
+        dialog = HVACSegmentDialog(self, self.path_id if self.path_id else None, 
                                  from_component, to_component, None)
         if dialog.exec() == QDialog.Accepted:
             # Segment was created, refresh list
@@ -956,7 +1048,7 @@ class HVACPathDialog(QDialog):
                 return
             segment = current_item.data(Qt.UserRole)
         
-        dialog = HVACSegmentDialog(self, self.path.id if self.path else None,
+        dialog = HVACSegmentDialog(self, self.path_id if self.path_id else None,
                                  segment.from_component, segment.to_component, segment)
         if dialog.exec() == QDialog.Accepted:
             # Segment was updated, refresh list
@@ -989,11 +1081,16 @@ class HVACPathDialog(QDialog):
         
         try:
             # Build path data for calculation
+            # Prefer library-selected Mechanical Unit spectrum if available
+            source_payload = {
+                'component_type': getattr(self.components[0], 'component_type', 'unit'),
+                'noise_level': (self.source_noise_dba if isinstance(self.source_noise_dba, (int, float)) else getattr(self.components[0], 'noise_level', 50.0))
+            }
+            if isinstance(self.source_octave_bands, list) and len(self.source_octave_bands) >= 8:
+                source_payload['octave_band_levels'] = list(self.source_octave_bands)
+
             path_data = {
-                'source_component': {
-                    'component_type': getattr(self.components[0], 'component_type', 'unit'),
-                    'noise_level': getattr(self.components[0], 'noise_level', 50.0)
-                },
+                'source_component': source_payload,
                 'terminal_component': {
                     'component_type': getattr(self.components[-1], 'component_type', 'terminal'),
                     'noise_level': getattr(self.components[-1], 'noise_level', 50.0)
@@ -1007,27 +1104,41 @@ class HVACPathDialog(QDialog):
                     'length': segment.length,
                     'duct_width': segment.duct_width,
                     'duct_height': segment.duct_height,
+                    'diameter': getattr(segment, 'diameter', 0) or 0,
                     'duct_shape': segment.duct_shape,
                     'duct_type': segment.duct_type,
                     'insulation': segment.insulation,
+                    'lining_thickness': getattr(segment, 'lining_thickness', 0) or 0,
                     'fittings': []
                 }
                 
                 # Add fittings
+                first_fitting_type = None
                 for fitting in getattr(segment, 'fittings', []) or []:
                     fitting_data = {
                         'fitting_type': fitting.fitting_type,
                         'noise_adjustment': fitting.noise_adjustment
                     }
                     segment_data['fittings'].append(fitting_data)
+                    if not first_fitting_type and getattr(fitting, 'fitting_type', None):
+                        first_fitting_type = fitting.fitting_type
+                # Promote primary fitting type to segment for engine element typing
+                if first_fitting_type:
+                    segment_data['fitting_type'] = first_fitting_type
                 
                 path_data['segments'].append(segment_data)
             
             # Calculate noise
             results = self.path_calculator.noise_calculator.calculate_hvac_path_noise(path_data)
+            # Store for contextual lookups when editing components
+            try:
+                self._last_element_results = results.get('path_elements', results.get('path_segments', [])) or []
+            except Exception:
+                self._last_element_results = []
             
-            # Display results
+            # Display results in Analysis tab and NC summary
             self.display_analysis_results(results)
+            self.update_nc_summary(results)
             
         except Exception as e:
             QMessageBox.critical(self, "Calculation Error", f"Failed to calculate noise:\n{str(e)}")
@@ -1067,6 +1178,20 @@ class HVACPathDialog(QDialog):
                 html += f"<td>{float(att or 0.0):.1f} dB</td></tr>"
             
             html += "</table>"
+
+            # Components and fittings breakdown with NC and spectra
+            html += "<h4>Components & Elements</h4>"
+            html += "<table border='1' cellpadding='5'>"
+            html += "<tr><th>#</th><th>Type</th><th>Noise After</th><th>NC</th><th>Octave Bands (63-8k Hz)</th></tr>"
+            for element in results.get('path_elements', results.get('path_segments', [])):
+                order = element.get('segment_number') or element.get('element_order') or ''
+                etype = element.get('element_type') or 'segment'
+                na = float(element.get('noise_after', 0.0) or 0.0)
+                nc = element.get('nc_rating', '')
+                bands = element.get('noise_after_spectrum') or []
+                bands_str = ", ".join(f"{float(b):.1f}" for b in bands) if bands else ""
+                html += f"<tr><td>{order}</td><td>{etype}</td><td>{na:.1f} dB(A)</td><td>{nc}</td><td>{bands_str}</td></tr>"
+            html += "</table>"
             
             # Warnings
             if results.get('warnings'):
@@ -1078,6 +1203,31 @@ class HVACPathDialog(QDialog):
             html += f"<p style='color: red;'>Calculation failed: {results.get('error', 'Unknown error')}</p>"
         
         self.results_text.setHtml(html)
+
+    def update_nc_summary(self, results: dict) -> None:
+        """Update the compact NC list aligned with the path diagram.
+        Expects each element to include 'nc_rating'. Falls back to blank.
+        """
+        try:
+            self.nc_list.clear()
+            elements = results.get('path_elements', results.get('path_segments', []))
+            # Build a simple list of NC values, color-coded
+            for elem in elements:
+                nc = elem.get('nc_rating')
+                label = f"NC {int(nc)}" if isinstance(nc, (int, float)) and nc > 0 else ""
+                item = QListWidgetItem(label)
+                # Background by NC performance
+                if isinstance(nc, (int, float)):
+                    if nc <= 30:
+                        item.setBackground(Qt.green)
+                    elif nc <= 40:
+                        item.setBackground(Qt.yellow)
+                    else:
+                        item.setBackground(Qt.red)
+                self.nc_list.addItem(item)
+        except Exception:
+            # Keep UI resilient
+            pass
     
     def save_path(self):
         """Save the HVAC path"""

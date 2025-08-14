@@ -162,7 +162,7 @@ class RectangularDuctCalculator:
         if duct_size in self.unlined_data:
             data = self.unlined_data[duct_size]
             attenuation = data['attenuation_63hz'] * length
-            return {
+            result = {
                 'duct_size': f"{dim1} x {dim2} in",
                 'p_a_ratio': data['P_A'],
                 'attenuation_63hz_db_ft': data['attenuation_63hz'],
@@ -170,6 +170,10 @@ class RectangularDuctCalculator:
                 'length_ft': length,
                 'method': 'exact_match'
             }
+            # Add engine-compatible numeric keys (totals per band)
+            for f in [63, 125, 250, 500, 1000, 2000, 4000, 8000]:
+                result[str(f)] = attenuation if f == 63 else 0.0
+            return result
         
         # Interpolate if size not in data
         return self._interpolate_unlined_attenuation(width, height, length)
@@ -222,7 +226,7 @@ class RectangularDuctCalculator:
         
         total_attenuation = attenuation * length
         
-        return {
+        result = {
             'duct_size': f"{width} x {height} in",
             'p_a_ratio': p_a_ratio,
             'attenuation_63hz_db_ft': attenuation,
@@ -230,6 +234,10 @@ class RectangularDuctCalculator:
             'length_ft': length,
             'method': 'interpolated'
         }
+        # Add engine-compatible numeric keys (totals per band)
+        for f in [63, 125, 250, 500, 1000, 2000, 4000, 8000]:
+            result[str(f)] = total_attenuation if f == 63 else 0.0
+        return result
     
     def get_1inch_lining_insertion_loss(self, width: float, height: float, 
                                       length: float = 1.0) -> Dict[str, float]:
@@ -252,13 +260,17 @@ class RectangularDuctCalculator:
             insertion_loss_per_ft = self.lining_1inch_data[duct_size]
             total_insertion_loss = insertion_loss_per_ft * length
             
-            return {
+            result = {
                 'duct_size': f"{dim1} x {dim2} in",
                 'insertion_loss_125hz_db_ft': insertion_loss_per_ft,
                 'total_insertion_loss_125hz_db': total_insertion_loss,
                 'length_ft': length,
                 'method': 'exact_match'
             }
+            # Add engine-compatible numeric keys (totals per band)
+            for f in [63, 125, 250, 500, 1000, 2000, 4000, 8000]:
+                result[str(f)] = total_insertion_loss if f == 125 else 0.0
+            return result
         
         # Interpolate if size not in data
         return self._interpolate_1inch_lining(width, height, length)
@@ -275,7 +287,7 @@ class RectangularDuctCalculator:
         insertion_loss_per_ft = self.lining_1inch_data[closest_size]
         total_insertion_loss = insertion_loss_per_ft * length
         
-        return {
+        result = {
             'duct_size': f"{width} x {height} in",
             'insertion_loss_125hz_db_ft': insertion_loss_per_ft,
             'total_insertion_loss_125hz_db': total_insertion_loss,
@@ -283,6 +295,10 @@ class RectangularDuctCalculator:
             'method': 'interpolated',
             'closest_reference_size': f"{closest_size[0]} x {closest_size[1]} in"
         }
+        # Add engine-compatible numeric keys (totals per band)
+        for f in [63, 125, 250, 500, 1000, 2000, 4000, 8000]:
+            result[str(f)] = total_insertion_loss if f == 125 else 0.0
+        return result
     
     def get_2inch_lining_attenuation(self, width: float, height: float, 
                                    length: float = 1.0) -> Dict[str, any]:
@@ -316,6 +332,10 @@ class RectangularDuctCalculator:
             for i, freq in enumerate(self.frequency_bands):
                 result[f'attenuation_{freq}hz_db_ft'] = attenuation_per_ft[i]
                 result[f'total_attenuation_{freq}hz_db'] = total_attenuation[i]
+            # Add engine-compatible numeric keys (totals per band)
+            result['63'] = 0.0
+            for i, freq in enumerate(self.frequency_bands):
+                result[str(freq)] = total_attenuation[i]
             
             return result
         
@@ -346,6 +366,10 @@ class RectangularDuctCalculator:
         for i, freq in enumerate(self.frequency_bands):
             result[f'attenuation_{freq}hz_db_ft'] = attenuation_per_ft[i]
             result[f'total_attenuation_{freq}hz_db'] = total_attenuation[i]
+        # Add engine-compatible numeric keys (totals per band)
+        result['63'] = 0.0
+        for i, freq in enumerate(self.frequency_bands):
+            result[str(freq)] = total_attenuation[i]
         
         return result
     

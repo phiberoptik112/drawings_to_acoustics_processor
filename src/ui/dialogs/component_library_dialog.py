@@ -38,6 +38,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QDoubleSpinBox,
     QTextEdit,
+    QComboBox,
+    QGridLayout,
 )
 from PySide6.QtWidgets import QAbstractItemView
 from PySide6.QtCore import Qt
@@ -164,6 +166,9 @@ class ComponentLibraryDialog(QDialog):
         self.import_btn.clicked.connect(self.import_mechanical_schedule_from_image)
         self.import_pdf_btn = QPushButton("Import Mechanical Schedule from PDF")
         self.import_pdf_btn.clicked.connect(self.import_mechanical_schedule_from_pdf)
+        self.manual_add_btn = QPushButton("Manual Component Add")
+        self.manual_add_btn.setToolTip("Manually add a mechanical component with octave-band data")
+        self.manual_add_btn.clicked.connect(self.manual_add_component)
         self.edit_btn = QPushButton("Edit Entry")
         self.edit_btn.setEnabled(False)
         self.edit_btn.clicked.connect(self.edit_selected_mechanical_unit)
@@ -172,6 +177,7 @@ class ComponentLibraryDialog(QDialog):
         self.delete_btn.clicked.connect(self.delete_selected_mechanical_unit)
         mech_btns.addWidget(self.import_btn)
         mech_btns.addWidget(self.import_pdf_btn)
+        mech_btns.addWidget(self.manual_add_btn)
         mech_btns.addStretch()
         mech_btns.addWidget(self.edit_btn)
         mech_btns.addWidget(self.delete_btn)
@@ -1029,6 +1035,12 @@ class ComponentLibraryDialog(QDialog):
             QMessageBox.critical(self, "Delete Error", f"Failed to delete entry:\n{e}")
 
 
+    def manual_add_component(self) -> None:
+        dlg = ManualMechanicalUnitAddDialog(self, project_id=self.project_id)
+        if dlg.exec() == QDialog.Accepted:
+            self.refresh_lists()
+
+
 class MechanicalUnitEditDialog(QDialog):
     """Simple editor for MechanicalUnit properties, including extras JSON."""
 
@@ -1427,3 +1439,109 @@ class SilencerEditDialog(QDialog):
         QMessageBox.information(self, "Import", f"Imported {imported_count} mechanical units from CSV.")
 
 
+
+class ManualMechanicalUnitAddDialog(QDialog):
+    """Dialog to manually add a MechanicalUnit with octave-band data."""
+
+    def __init__(self, parent: QWidget | None, project_id: int | None):
+        super().__init__(parent)
+        self.project_id = project_id
+        self.setWindowTitle("Manual Component Add")
+        self.resize(640, 520)
+        self.setModal(True)
+
+        self.band_order = ["63", "125", "250", "500", "1000", "2000", "4000", "8000"]
+
+        v = QVBoxLayout(self)
+        form = QFormLayout()
+
+        # Type (editable combo) and Name
+        self.type_combo = QComboBox()
+        self.type_combo.setEditable(True)
+        self.type_combo.addItems(["AHU", "RTU", "RF", "EF", "VAV", "DOAS", "FCU", "TF"])
+        self.type_combo.setCurrentText("AHU")
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("e.g., 1-1 or AHU-1")
+
+        # Entry type (sound power/pressure)
+        self.entry_type_combo = QComboBox()
+        self.entry_type_combo.addItem("Sound Power (Lw)", userData="sound_power")
+        self.entry_type_combo.addItem("Sound Pressure (Lp)", userData="sound_pressure")
+
+        form.addRow("Type:", self.type_combo)
+        form.addRow("Name:", self.name_edit)
+        form.addRow("Entry Type:", self.entry_type_combo)
+        v.addLayout(form)
+
+        # Band editors
+        def build_band_group(title: str):
+            grp = QGroupBox(title)
+            grid = QGridLayout()
+            # headers
+            for c, b in enumerate(self.band_order):
+                grid.addWidget(QLabel(b), 0, c + 1)
+            grid.addWidget(QLabel("Band (Hz)"), 0, 0)
+            # inputs in one row
+            edits = []
+            grid.addWidget(QLabel("dB"), 1, 0)
+            for c in range(len(self.band_order)):
+                e = QLineEdit()
+                e.setMaximumWidth(70)
+                edits.append(e)
+                grid.addWidget(e, 1, c + 1)
+            grp.setLayout(grid)
+            return grp, edits
+
+        self.inlet_group, self.inlet_edits = build_band_group("Inlet Levels")
+        self.radiated_group, self.radiated_edits = build_band_group("Radiated Levels")
+        self.outlet_group, self.outlet_edits = build_band_group("Outlet Levels")
+
+        v.addWidget(self.inlet_group)
+        v.addWidget(self.radiated_group)
+        v.addWidget(self.outlet_group)
+
+        # Buttons
+        btns = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        save = QPushButton("Save")
+        cancel.clicked.connect(self.reject)
+        save.clicked.connect(self._save)
+        btns.addStretch(); btns.addWidget(cancel); btns.addWidget(save)
+        v.addLayout(btns)
+
+    def _collect_band_values(self, edits: list[QLineEdit]) -> dict[str, float]:
+        values: dict[str, float] = {}
+        for b, e in zip(self.band_order, edits):
+            txt = e.text().strip()
+            if not txt:
+                continue
+            try:
+                values[b] = float(txt)
+            except Exception:
+                continue
+        return values
+
+    def _save(self) -> None:
+        name = self.name_edit.text().strip()
+        unit_type = self.type_combo.currentText().strip() or None
+        if not name:
+            QMessageBox.information(self, "Manual Add", "Enter a component name.")
+            return
+        try:
+            session = get_session()
+            unit = MechanicalUnit(project_id=self.project_id, name=name, unit_type=unit_type)
+            inlet = self._collect_band_values(self.inlet_edits)
+            radiated = self._collect_band_values(self.radiated_edits)
+            outlet = self._collect_band_values(self.outlet_edits)
+            import json as _json
+            unit.inlet_levels_json = _json.dumps(inlet) if inlet else None
+            unit.radiated_levels_json = _json.dumps(radiated) if radiated else None
+            unit.outlet_levels_json = _json.dumps(outlet) if outlet else None
+            etype = self.entry_type_combo.currentData() or "sound_power"
+            unit.extra_json = _json.dumps({"entry_type": etype, "manual": True})
+            session.add(unit)
+            session.commit()
+            session.close()
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save component:\n{e}")

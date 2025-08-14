@@ -13,6 +13,7 @@ from models import get_session
 from models.mechanical import MechanicalUnit
 from models.hvac import HVACComponent
 from data.components import STANDARD_COMPONENTS
+from calculations.hvac_noise_engine import HVACNoiseEngine
 
 
 class HVACComponentDialog(QDialog):
@@ -30,6 +31,8 @@ class HVACComponentDialog(QDialog):
         self.init_ui()
         if self.is_editing:
             self.load_component_data()
+        # Allow parent to feed HVAC engine context for passive components
+        self._passive_context_elem = None
         
     def init_ui(self):
         """Initialize the user interface"""
@@ -109,6 +112,21 @@ class HVACComponentDialog(QDialog):
         self.use_standard_cb.setChecked(True)
         self.use_standard_cb.toggled.connect(self.on_use_standard_toggled)
         acoustic_layout.addRow("", self.use_standard_cb)
+
+        # Frequency preview (read-only) for imported Mechanical Units
+        self.freq_preview_title = QLabel("Frequency Bands (Lp) — imported from Library when available")
+        self.freq_preview_title.setStyleSheet("color: #aaa;")
+        acoustic_layout.addRow(self.freq_preview_title)
+        mono_css = "font-family: Courier New, monospace;"
+        self.inlet_label = QLabel("Inlet: —")
+        self.inlet_label.setStyleSheet(mono_css)
+        self.radiated_label = QLabel("Radiated: —")
+        self.radiated_label.setStyleSheet(mono_css)
+        self.outlet_label = QLabel("Outlet: —")
+        self.outlet_label.setStyleSheet(mono_css)
+        acoustic_layout.addRow(self.inlet_label)
+        acoustic_layout.addRow(self.radiated_label)
+        acoustic_layout.addRow(self.outlet_label)
         
         acoustic_group.setLayout(acoustic_layout)
         layout.addWidget(acoustic_group)
@@ -150,6 +168,43 @@ class HVACComponentDialog(QDialog):
         
         # Initialize with first component type
         self.on_component_type_changed(self.type_combo.currentText())
+
+    # Public helper so parent dialogs can supply recent element result
+    def apply_passive_context_from_element_result(self, element_result: dict) -> None:
+        """Pre-load acoustic fields for passive components using the last analysis.
+
+        element_result is expected to contain keys like 'noise_before',
+        'noise_after_spectrum', 'attenuation_spectrum', 'generated_spectrum',
+        and 'element_type'. We use this to compute a representative base
+        noise level shown in the dialog.
+        """
+        try:
+            self._passive_context_elem = dict(element_result or {})
+            et = str(self._passive_context_elem.get('element_type', '') or '')
+            # Only auto-derive for passive/inline types
+            if et in {'duct', 'flex_duct', 'elbow', 'junction'}:
+                # Prefer noise_after A-weighted if provided; else derive from spectrum
+                after_dba = self._passive_context_elem.get('noise_after')
+                if not isinstance(after_dba, (int, float)):
+                    bands = self._passive_context_elem.get('noise_after_spectrum')
+                    if isinstance(bands, list) and len(bands) >= 8:
+                        engine = HVACNoiseEngine()
+                        after_dba = engine._calculate_dba_from_spectrum([float(x) for x in bands])
+                if isinstance(after_dba, (int, float)):
+                    self.use_standard_cb.setChecked(False)
+                    self.noise_spin.setEnabled(True)
+                    self.noise_spin.setValue(float(after_dba))
+                # Fill preview labels from spectra where available
+                def fmt(vals):
+                    if not vals:
+                        return '—'
+                    return ", ".join(f"{float(v):.0f}" for v in vals)
+                self.inlet_label.setText(f"Inlet:    —")
+                self.radiated_label.setText(f"Radiated: —")
+                self.outlet_label.setText(
+                    f"Outlet:   {fmt(self._passive_context_elem.get('noise_after_spectrum'))}")
+        except Exception:
+            pass
 
     # --- Library import helpers ---
     def import_from_library_mechanical_units(self):
@@ -203,6 +258,14 @@ class HVACComponentDialog(QDialog):
         select_btn.clicked.connect(accept_selection)
         cancel_btn.clicked.connect(chooser.reject)
 
+        # Save-on-close behavior: if a unit is currently selected when the chooser closes,
+        # persist the in-dialog edits so users don't have to click Update explicitly.
+        def on_close_result(result: int):
+            # If the dialog was accepted, _apply_mechanical_unit already persisted when editing
+            # via _apply_mechanical_unit's immediate save; if rejected, do nothing.
+            pass
+        chooser.finished.connect(on_close_result)
+
         chooser.exec()
 
     def _apply_mechanical_unit(self, unit: MechanicalUnit) -> None:
@@ -218,9 +281,71 @@ class HVACComponentDialog(QDialog):
             if mapped_type:
                 self.type_combo.addItem(mapped_type)
                 self.type_combo.setCurrentText(mapped_type)
-        # Default to standard noise for the mapped type
-        self.use_standard_cb.setChecked(True)
-        self.on_use_standard_toggled(True)
+        # Populate acoustic properties from the unit's octave-band data when available
+        try:
+            import json
+            def parse_row(js):
+                if not js:
+                    return None
+                try:
+                    data = json.loads(js)
+                except Exception:
+                    return None
+                order = ["63","125","250","500","1000","2000","4000","8000"]
+                vals = []
+                for k in order:
+                    v = data.get(k)
+                    vals.append(float(v) if v is not None and str(v).strip() != '' else None)
+                return vals
+            inlet = parse_row(getattr(unit, 'inlet_levels_json', None))
+            radiated = parse_row(getattr(unit, 'radiated_levels_json', None))
+            outlet = parse_row(getattr(unit, 'outlet_levels_json', None))
+
+            def fmt(vals):
+                if not vals:
+                    return "—"
+                return ", ".join("" if v is None else f"{float(v):.0f}" for v in vals)
+
+            self.inlet_label.setText(f"Inlet:    {fmt(inlet)}")
+            self.radiated_label.setText(f"Radiated: {fmt(radiated)}")
+            self.outlet_label.setText(f"Outlet:   {fmt(outlet)}")
+
+            # Choose best available row to compute A-weighted seed (prefer Outlet)
+            engine = HVACNoiseEngine()
+            seed = outlet or inlet or radiated
+            if seed:
+                # Replace None with 0.0 for calculation
+                seed_clean = [0.0 if v is None else float(v) for v in seed]
+                dba = engine._calculate_dba_from_spectrum(seed_clean)
+                self.use_standard_cb.setChecked(False)
+                self.noise_spin.setEnabled(True)
+                self.noise_spin.setValue(max(0.0, float(dba)))
+                # If editing an existing component, persist immediately so closing the window keeps changes
+                if self.is_editing and self.component is not None:
+                    try:
+                        session = get_session()
+                        db_comp = session.query(HVACComponent).filter(HVACComponent.id == self.component.id).first()
+                        if db_comp:
+                            db_comp.name = self.name_edit.text().strip() or db_comp.name
+                            db_comp.component_type = self.type_combo.currentText()
+                            db_comp.noise_level = float(self.noise_spin.value())
+                            session.commit()
+                            # Also mirror into in-memory object so UI reflects save
+                            self.component.name = db_comp.name
+                            self.component.component_type = db_comp.component_type
+                            self.component.noise_level = db_comp.noise_level
+                        session.close()
+                    except Exception:
+                        # Non-fatal; user can still click Update to save
+                        pass
+            else:
+                # Fallback to standard noise when no bands
+                self.use_standard_cb.setChecked(True)
+                self.on_use_standard_toggled(True)
+        except Exception:
+            # On any parsing failure, keep previous behavior
+            self.use_standard_cb.setChecked(True)
+            self.on_use_standard_toggled(True)
 
     @staticmethod
     def _map_unit_type_to_component_type(unit_type_text: str | None) -> str:

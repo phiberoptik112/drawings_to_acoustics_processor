@@ -360,7 +360,8 @@ class HVACPathCalculator:
                 for fitting in segment.fittings:
                     fitting_data = {
                         'fitting_type': fitting.fitting_type,
-                        'noise_adjustment': fitting.noise_adjustment or self.get_fitting_noise_adjustment(fitting.fitting_type)
+                        'noise_adjustment': fitting.noise_adjustment or self.get_fitting_noise_adjustment(fitting.fitting_type),
+                        'position': getattr(fitting, 'position_on_segment', 0.0) or 0.0
                     }
                     segment_data['fittings'].append(fitting_data)
 

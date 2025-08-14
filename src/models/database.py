@@ -81,7 +81,15 @@ def initialize_database(db_path=None):
         cursor.close()
     
     # Create session factory
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    # expire_on_commit=False prevents ORM instances used by the UI from
+    # expiring their loaded attributes after commit, which otherwise causes
+    # detached refresh errors once the session is closed.
+    SessionLocal = sessionmaker(
+        autocommit=False,
+        autoflush=False,
+        expire_on_commit=False,
+        bind=engine,
+    )
     
     # Import all models to ensure they're registered
     from . import project, drawing, space, hvac, rt60_models, mechanical

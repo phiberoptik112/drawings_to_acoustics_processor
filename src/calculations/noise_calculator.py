@@ -141,6 +141,8 @@ class NoiseCalculator:
             'total_attenuation': result.total_attenuation_dba,
             'total_attenuation_dba': result.total_attenuation_dba,
             'path_segments': result.element_results,
+            # Convenience alias for UI naming: elements can be components, fittings, or segments
+            'path_elements': result.element_results,
             'nc_rating': result.nc_rating,
             'calculation_valid': result.calculation_valid,
             'warnings': result.warnings,

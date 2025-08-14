@@ -144,6 +144,23 @@ class HVACNoiseEngine:
                     # Estimate spectrum from A-weighted level
                     current_spectrum = self._estimate_spectrum_from_dba(source_element.source_noise_level)
                     current_dba = source_element.source_noise_level
+
+            # Add a pseudo element result for the Source so UI numbering starts at 1
+            try:
+                source_result = {
+                    'element_id': getattr(source_element, 'element_id', 'source_1'),
+                    'element_type': 'source',
+                    'element_order': 0,
+                    'segment_number': 1,
+                    'noise_before': current_dba,
+                    'noise_after': current_dba,
+                    'noise_after_dba': current_dba,
+                    'noise_after_spectrum': current_spectrum.copy(),
+                    'nc_rating': self._calculate_nc_rating(current_spectrum),
+                }
+                element_results.append(source_result)
+            except Exception:
+                pass
             
             # Process each element in the path
             total_attenuation_dba = 0.0
@@ -189,6 +206,12 @@ class HVACNoiseEngine:
                 element_result['noise_after'] = current_dba
                 element_result['noise_after_dba'] = current_dba
                 element_result['noise_after_spectrum'] = current_spectrum.copy()
+                # Include per-element NC rating for UI summary panels
+                try:
+                    element_result['nc_rating'] = self._calculate_nc_rating(current_spectrum)
+                except Exception:
+                    # If NC calculation fails, omit but do not break pipeline
+                    pass
                 
                 element_results.append(element_result)
                 
