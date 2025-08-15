@@ -476,18 +476,20 @@ class HVACSegmentDialog(QDialog):
         return down_dba, downstream_spec
     
     def _auto_generated_for_fitting(self, fitting_type: str, context_spectrum: list, context_dba: float) -> float:
+        """Return the net dB increase of a fitting given context spectrum.
+        Calculates generated spectrum for the fitting and combines with context to
+        report delta dB(A)."""
         from calculations.hvac_noise_engine import PathElement
         etype = self._map_fitting_to_element_type(fitting_type)
-        element = PathElement(
-            element_type=etype,
-            element_id='tmp_fit',
-        )
+        element = PathElement(element_type=etype, element_id='tmp_fit')
         effect = self.noise_engine._calculate_element_effect(element, context_spectrum, context_dba)
-        gen = effect.get('generated_dba')
-        try:
-            return float(gen) if gen is not None else 0.0
-        except Exception:
-            return 0.0
+        generated = effect.get('generated_spectrum') or [0.0] * 8
+        new_spec = context_spectrum.copy()
+        for i in range(min(8, len(generated))):
+            if generated[i] > 0:
+                new_spec[i] = self.noise_engine._combine_noise_levels(new_spec[i], generated[i])
+        new_dba = self.noise_engine._calculate_dba_from_spectrum(new_spec)
+        return max(0.0, new_dba - context_dba)
     
     def refresh_context(self):
         up_dba, _ = self._get_upstream_context()
@@ -712,7 +714,8 @@ class HVACSegmentDialog(QDialog):
                 segment_id=segment.id,
                 fitting_type=up_type,
                 quantity=1,
-                noise_adjustment=up_adj
+                noise_adjustment=up_adj,
+                position_on_segment=0.0
             ))
         
         # Downstream fitting (if any)
@@ -723,7 +726,8 @@ class HVACSegmentDialog(QDialog):
                 segment_id=segment.id,
                 fitting_type=down_type,
                 quantity=1,
-                noise_adjustment=down_adj
+                noise_adjustment=down_adj,
+                position_on_segment=(segment.length or 0.0)
             ))
     
     def delete_segment(self):

@@ -11,7 +11,17 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QIcon, QColor
 
-from models import get_session, Project, Drawing, Space, HVACPath
+from models import (
+    get_session,
+    Project,
+    Drawing,
+    Space,
+    HVACPath,
+    RoomBoundary,
+    HVACComponent,
+    HVACSegment,
+    DrawingElement,
+)
 from models.hvac import HVACSegment
 from sqlalchemy.orm import selectinload
 from ui.drawing_interface import DrawingInterface
@@ -628,7 +638,120 @@ class ProjectDashboard(QMainWindow):
         
     def remove_drawing(self):
         """Remove the selected drawing"""
-        QMessageBox.information(self, "Remove Drawing", "Drawing removal will be implemented.")
+        try:
+            current_item = self.drawings_list.currentItem()
+            if not current_item:
+                QMessageBox.information(self, "Remove Drawing", "Select a drawing to remove.")
+                return
+            drawing_id = current_item.data(Qt.UserRole)
+            if drawing_id is None:
+                QMessageBox.information(self, "Remove Drawing", "Select a valid drawing to remove.")
+                return
+
+            session = get_session()
+            drawing = session.query(Drawing).filter(Drawing.id == drawing_id).first()
+            if not drawing:
+                session.close()
+                QMessageBox.warning(self, "Remove Drawing", "Selected drawing not found.")
+                return
+
+            # Gather dependency counts for confirmation
+            spaces_count = session.query(Space).filter(Space.drawing_id == drawing_id).count()
+            boundaries_count = session.query(RoomBoundary).filter(RoomBoundary.drawing_id == drawing_id).count()
+            components = session.query(HVACComponent).filter(HVACComponent.drawing_id == drawing_id).all()
+            component_ids = [c.id for c in components]
+            segments_count = 0
+            if component_ids:
+                segments_count = (
+                    session.query(HVACSegment)
+                    .filter(
+                        (HVACSegment.from_component_id.in_(component_ids))
+                        | (HVACSegment.to_component_id.in_(component_ids))
+                    )
+                    .count()
+                )
+            elements_count = session.query(DrawingElement).filter(DrawingElement.drawing_id == drawing_id).count()
+
+            confirm_text = (
+                f"Remove drawing '{drawing.name}'?\n\n"
+                f"This will:\n"
+                f"• Detach {spaces_count} space(s) from this drawing\n"
+                f"• Delete {boundaries_count} room boundary(ies) on this drawing\n"
+                f"• Delete {segments_count} HVAC segment(s) tied to components on this drawing\n"
+                f"• Delete {len(components)} HVAC component(s) on this drawing\n"
+                f"• Delete {elements_count} saved overlay element(s) (rectangles, components, segments, measurements)\n\n"
+                "Project data remains otherwise intact. The PDF file on disk is not deleted."
+            )
+
+            reply = QMessageBox.question(
+                self,
+                "Confirm Removal",
+                confirm_text,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                session.close()
+                return
+
+            try:
+                # Start cleanup in a single transaction
+                # 1) Delete HVAC segments that reference components on this drawing
+                if component_ids:
+                    session.query(HVACSegment).filter(
+                        (HVACSegment.from_component_id.in_(component_ids))
+                        | (HVACSegment.to_component_id.in_(component_ids))
+                    ).delete(synchronize_session=False)
+
+                # 2) Delete HVAC components on this drawing
+                session.query(HVACComponent).filter(HVACComponent.drawing_id == drawing_id).delete(
+                    synchronize_session=False
+                )
+
+                # 3) Delete overlay elements and room boundaries tied to this drawing
+                session.query(DrawingElement).filter(DrawingElement.drawing_id == drawing_id).delete(
+                    synchronize_session=False
+                )
+                session.query(RoomBoundary).filter(RoomBoundary.drawing_id == drawing_id).delete(
+                    synchronize_session=False
+                )
+
+                # 4) Detach spaces (keep the spaces; clear drawing reference)
+                session.query(Space).filter(Space.drawing_id == drawing_id).update(
+                    {Space.drawing_id: None}, synchronize_session=False
+                )
+
+                # 5) Finally delete the drawing record itself
+                session.delete(drawing)
+                session.commit()
+            except Exception as e:
+                session.rollback()
+                session.close()
+                QMessageBox.critical(self, "Remove Drawing", f"Failed to remove drawing:\n{e}")
+                return
+
+            session.close()
+
+            # Close any open drawing interface for this drawing
+            try:
+                if getattr(self, "drawing_interface", None) is not None:
+                    if getattr(self.drawing_interface, "drawing_id", None) == drawing_id:
+                        self.drawing_interface.close()
+                        self.drawing_interface = None
+            except Exception:
+                pass
+
+            # Refresh UI elements
+            self.refresh_drawings()
+            self.refresh_spaces()
+            self.refresh_hvac_paths()
+            self.update_analysis_status()
+            self.update_status_bar()
+
+            QMessageBox.information(self, "Remove Drawing", f"Drawing '{drawing.name}' removed.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Remove Drawing", f"Unexpected error:\n{e}")
         
     def new_space(self):
         """Create a new space"""

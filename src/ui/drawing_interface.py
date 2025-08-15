@@ -16,6 +16,9 @@ from models import get_session, Drawing, Project, Space, RoomBoundary, DrawingEl
 from drawing import PDFViewer, DrawingOverlay, ScaleManager, ToolType
 from ui.dialogs.scale_dialog import ScaleDialog
 from ui.dialogs.room_properties import RoomPropertiesDialog
+from ui.dialogs.hvac_path_dialog import HVACPathDialog
+from ui.dialogs.hvac_component_dialog import HVACComponentDialog
+from ui.dialogs.hvac_segment_dialog import HVACSegmentDialog
 from data.components import STANDARD_COMPONENTS
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 from calculations import RT60Calculator, NoiseCalculator, HVACPathCalculator
@@ -191,6 +194,13 @@ class DrawingInterface(QMainWindow):
         seg_action.triggered.connect(lambda: self.set_drawing_tool(ToolType.SEGMENT))
         toolbar.addAction(seg_action)
         self.tool_group.addButton(toolbar.widgetForAction(seg_action))
+
+        # Edit/Select tool
+        edit_action = QAction('✏️ Edit', self)
+        edit_action.setCheckable(True)
+        edit_action.triggered.connect(lambda: self.set_drawing_tool(ToolType.SELECT))
+        toolbar.addAction(edit_action)
+        self.tool_group.addButton(toolbar.widgetForAction(edit_action))
         
         # Measure tool
         measure_action = QAction('📏 Measure', self)
@@ -410,11 +420,15 @@ class DrawingInterface(QMainWindow):
         if self.drawing_overlay:
             self.drawing_overlay.element_created.connect(self.element_created)
             self.drawing_overlay.measurement_taken.connect(self.measurement_taken)
+            # Open edit dialogs on double-clicks in overlay
+            self.drawing_overlay.element_double_clicked.connect(self.overlay_element_double_clicked)
             
         self.scale_manager.scale_changed.connect(self.scale_updated)
         
         # Element list selection
         self.elements_list.itemSelectionChanged.connect(self.element_selected)
+        # Saved paths list double-click to edit path
+        self.paths_list.itemDoubleClicked.connect(self.open_path_editor_from_item)
         
     def load_pdf(self):
         """Load the PDF file"""
@@ -2110,6 +2124,8 @@ class DrawingInterface(QMainWindow):
                 # Path name label
                 path_label = QLabel(self.format_path_display_name(hvac_path))
                 path_label.setToolTip(self.format_path_tooltip(hvac_path))
+                # Let double-clicks pass through label to the list item row
+                path_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                 
                 # Toggle button for show/hide
                 toggle_btn = QPushButton("👁️‍🗨️")  # Hidden eye initially
@@ -2145,6 +2161,17 @@ class DrawingInterface(QMainWindow):
                 # Set the widget as the item widget
                 self.paths_list.addItem(item)
                 self.paths_list.setItemWidget(item, widget)
+                # Also allow double-clicking the row to open the editor directly
+                def _row_dbl_click(event, p=hvac_path):
+                    try:
+                        if event.button() == Qt.LeftButton:
+                            self.open_path_editor(p)
+                            event.accept()
+                            return
+                    except Exception:
+                        pass
+                    QWidget.mouseDoubleClickEvent(widget, event)
+                widget.mouseDoubleClickEvent = _row_dbl_click
             
             session.close()
             
@@ -2270,6 +2297,134 @@ class DrawingInterface(QMainWindow):
             calc_action.triggered.connect(lambda: self.calculate_path_noise(hvac_path.id))
         
         menu.exec_(self.paths_list.mapToGlobal(position))
+
+    def open_path_editor_from_item(self, item: QListWidgetItem):
+        """Open the Edit HVAC Path dialog when a saved path list item is double-clicked."""
+        try:
+            hvac_path = item.data(Qt.UserRole)
+            if not hvac_path:
+                return
+            # Open in edit mode
+            dlg = HVACPathDialog(self, project_id=self.project_id, path=hvac_path)
+            if dlg.exec() == QDialog.Accepted:
+                # Refresh list and notify listeners
+                self.load_saved_paths()
+                try:
+                    self.paths_updated.emit()
+                except Exception:
+                    pass
+        except Exception as e:
+            QMessageBox.warning(self, "Path Editor", f"Failed to open path editor:\n{e}")
+
+    def overlay_element_double_clicked(self, element: dict):
+        """Open component or segment editor when double-clicked on the drawing overlay."""
+        try:
+            etype = (element or {}).get('type')
+            if etype == 'component':
+                # Prefer DB component id embedded via registration; else try to match by position/type
+                db_id = element.get('db_component_id')
+                session = None
+                try:
+                    from models.hvac import HVACComponent
+                    if db_id:
+                        session = get_session()
+                        comp = session.query(HVACComponent).filter(HVACComponent.id == db_id).first()
+                        session.close()
+                    else:
+                        # Fallback lookup by position/type within this drawing
+                        session = get_session()
+                        from models.hvac import HVACComponent as _HC
+                        comp = (
+                            session.query(_HC)
+                            .filter(
+                                _HC.project_id == self.project_id,
+                                _HC.drawing_id == (self.drawing.id if self.drawing else None),
+                                _HC.x_position == element.get('x'),
+                                _HC.y_position == element.get('y'),
+                                _HC.component_type == element.get('component_type')
+                            )
+                            .first()
+                        )
+                        session.close()
+                    if comp is None:
+                        QMessageBox.information(self, "Edit Component", "No saved component found at this location.")
+                        return
+                finally:
+                    try:
+                        if session is not None:
+                            session.close()
+                    except Exception:
+                        pass
+                dlg = HVACComponentDialog(self, self.project_id, self.drawing.id if self.drawing else None, comp)
+                dlg.exec()
+                return
+            if etype == 'segment':
+                # Eager-load relationships to avoid detached lazy-loads when dialog accesses them
+                seg_id = element.get('db_segment_id')
+                session = None
+                seg = None
+                try:
+                    from sqlalchemy.orm import selectinload
+                    from models.hvac import HVACSegment
+                    session = get_session()
+                    if seg_id:
+                        seg = (
+                            session.query(HVACSegment)
+                            .options(
+                                selectinload(HVACSegment.from_component),
+                                selectinload(HVACSegment.to_component),
+                                selectinload(HVACSegment.fittings),
+                            )
+                            .filter(HVACSegment.id == int(seg_id))
+                            .first()
+                        )
+                    else:
+                        from models.hvac import HVACSegment as _HS
+                        seg = (
+                            session.query(_HS)
+                            .options(
+                                selectinload(_HS.from_component),
+                                selectinload(_HS.to_component),
+                                selectinload(_HS.fittings),
+                            )
+                            .filter(_HS.hvac_path_id == element.get('db_path_id'))
+                            .order_by(_HS.segment_order.asc())
+                            .first()
+                        )
+                    if seg is None:
+                        QMessageBox.information(self, "Edit Segment", "No saved segment found here.")
+                        return
+                    # Access relationships while session is open
+                    _ = seg.from_component, seg.to_component
+                    try:
+                        _ = list(seg.fittings)
+                    except Exception:
+                        pass
+                    # Optionally detach to be safe
+                    try:
+                        session.expunge(seg)
+                        if seg.from_component:
+                            session.expunge(seg.from_component)
+                        if seg.to_component:
+                            session.expunge(seg.to_component)
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        if session is not None:
+                            session.close()
+                    except Exception:
+                        pass
+                dlg = HVACSegmentDialog(
+                    self,
+                    hvac_path_id=getattr(seg, 'hvac_path_id', None),
+                    from_component=getattr(seg, 'from_component', None),
+                    to_component=getattr(seg, 'to_component', None),
+                    segment=seg,
+                )
+                dlg.exec()
+        except Exception as e:
+            QMessageBox.warning(self, "Edit Element", f"Failed to open editor:\n{e}")
     
     def show_path_information(self, hvac_path):
         """Show detailed information about a path"""
@@ -2289,6 +2444,21 @@ class DrawingInterface(QMainWindow):
             info += "Noise: Not calculated"
         
         QMessageBox.information(self, "Path Information", info)
+
+    def open_path_editor(self, hvac_path):
+        """Open the Edit HVAC Path dialog for a given HVACPath instance."""
+        try:
+            if not hvac_path:
+                return
+            dlg = HVACPathDialog(self, project_id=self.project_id, path=hvac_path)
+            if dlg.exec() == QDialog.Accepted:
+                self.load_saved_paths()
+                try:
+                    self.paths_updated.emit()
+                except Exception:
+                    pass
+        except Exception as e:
+            QMessageBox.warning(self, "Path Editor", f"Failed to open path editor:\n{e}")
     
     def calculate_path_noise(self, path_id: int):
         """Calculate noise for a specific path"""
@@ -2345,6 +2515,8 @@ class DrawingInterface(QMainWindow):
                             comp.get('component_type') == db_comp.component_type):
                             if comp not in path_components:
                                 path_components.append(comp)
+                                # Attach DB id for edit lookups
+                                comp['db_component_id'] = db_comp.id
                                 print(f"DEBUG: Found matching from_component: {comp}")
                             found = True
                             break
@@ -2363,6 +2535,8 @@ class DrawingInterface(QMainWindow):
                             comp.get('component_type') == db_comp.component_type):
                             if comp not in path_components:
                                 path_components.append(comp)
+                                # Attach DB id for edit lookups
+                                comp['db_component_id'] = db_comp.id
                                 print(f"DEBUG: Found matching to_component: {comp}")
                             found = True
                             break
@@ -2385,6 +2559,9 @@ class DrawingInterface(QMainWindow):
                             to_comp.get('y') == segment.to_component.y_position):
                             if seg not in path_segments:
                                 path_segments.append(seg)
+                                # Attach DB ids for edit lookups
+                                seg['db_segment_id'] = segment.id
+                                seg['db_path_id'] = hvac_path.id
                                 print(f"DEBUG: Found matching segment: {from_comp.get('component_type')} -> {to_comp.get('component_type')}")
                             found = True
                             break

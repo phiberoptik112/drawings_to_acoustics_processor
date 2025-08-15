@@ -113,6 +113,47 @@ class RectangleTool(DrawingTool):
             painter.drawRect(rect.normalized())
 
 
+class SelectionTool(DrawingTool):
+    """Selection/edit tool. This tool itself does not create elements; it
+    exists so that the overlay can detect SELECT mode via the tool manager.
+
+    The overlay owns the selection logic and uses mouse events to perform
+    hit-testing, box selection, and dragging. This class only provides an
+    optional rubber-band preview rectangle when active in box-select mode.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.pen = QPen(QColor(255, 200, 0), 1, Qt.DashLine)
+        self._box_select_mode = False
+
+    def start(self, point):
+        self.active = True
+        self.start_point = point
+        self.current_point = point
+        # Overlay will decide whether this is a drag or a box; default to box
+        self._box_select_mode = True
+
+    def update(self, point):
+        if self.active:
+            self.current_point = point
+            self.updated.emit()
+
+    def finish(self, point):
+        # Selection tool does not emit new elements; overlay will handle
+        self.active = False
+        self._box_select_mode = False
+
+    def cancel(self):
+        super().cancel()
+        self._box_select_mode = False
+
+    def draw_preview(self, painter):
+        if self.active and self._box_select_mode and self.start_point and self.current_point:
+            painter.setPen(self.pen)
+            rect = QRect(self.start_point, self.current_point).normalized()
+            painter.drawRect(rect)
+
 class ComponentTool(DrawingTool):
     """Tool for placing HVAC components"""
     
@@ -543,6 +584,7 @@ class DrawingToolManager(QObject):
     def __init__(self):
         super().__init__()
         self.tools = {
+            ToolType.SELECT: SelectionTool(),
             ToolType.RECTANGLE: RectangleTool(),
             ToolType.COMPONENT: ComponentTool(),
             ToolType.SEGMENT: SegmentTool(),

@@ -16,6 +16,8 @@ class DrawingOverlay(QWidget):
     element_created = Signal(dict)  # New drawing element created
     coordinates_clicked = Signal(float, float)  # Raw coordinates clicked
     measurement_taken = Signal(float, str)  # Measurement in real units
+    # Emitted when user double-clicks on a component or segment element
+    element_double_clicked = Signal(dict)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -49,6 +51,17 @@ class DrawingOverlay(QWidget):
         self.show_grid = False
         self.path_only_mode = False  # Show only elements belonging to visible paths
         
+        # Selection/edit state (used when ToolType.SELECT is active)
+        self._selection_rect = None  # QRect while box-selecting
+        self._selected_components = []
+        self._selected_segments = []
+        self._drag_active = False
+        self._drag_last_point = None
+        # When dragging a segment endpoint, keep which endpoint is grabbed
+        # {'type': 'segment', 'ref': seg_dict, 'endpoint': 'start'|'end'|None}
+        self._hit_target = None
+        self._select_modifiers = Qt.NoModifier
+        
         # Connect signals
         self.tool_manager.element_created.connect(self.handle_element_created)
         
@@ -63,6 +76,9 @@ class DrawingOverlay(QWidget):
         # If switching to segment tool, update available components
         if tool_type == ToolType.SEGMENT:
             self.update_segment_tool_components()
+        # Leaving edit mode clears selection
+        if tool_type != ToolType.SELECT:
+            self._clear_selection()
         
     def set_component_type(self, component_type):
         """Set component type for component tool"""
@@ -242,15 +258,23 @@ class DrawingOverlay(QWidget):
             # Emit raw coordinates
             self.coordinates_clicked.emit(event.x(), event.y())
             
-            # Start tool operation
-            self.tool_manager.start_tool(point)
+            # Start tool or selection depending on tool type
+            if self.tool_manager.current_tool_type == ToolType.SELECT:
+                self._select_modifiers = event.modifiers()
+                self._handle_select_press(point)
+            else:
+                # Start tool operation
+                self.tool_manager.start_tool(point)
             self.update()
             
     def mouseMoveEvent(self, event):
         """Handle mouse move events"""
         if event.buttons() & Qt.LeftButton:
             point = QPoint(event.x(), event.y())
-            self.tool_manager.update_tool(point)
+            if self.tool_manager.current_tool_type == ToolType.SELECT:
+                self._handle_select_move(point)
+            else:
+                self.tool_manager.update_tool(point)
             self.update()
             
     def mouseReleaseEvent(self, event):
@@ -259,15 +283,43 @@ class DrawingOverlay(QWidget):
             point = QPoint(event.x(), event.y())
             print(f"DEBUG: mouseReleaseEvent - pos: ({point.x()}, {point.y()})")
             print(f"DEBUG: mouseReleaseEvent - calling finish_tool")
-            self.tool_manager.finish_tool(point)
+            if self.tool_manager.current_tool_type == ToolType.SELECT:
+                self._handle_select_release(point)
+                self._select_modifiers = Qt.NoModifier
+            else:
+                self.tool_manager.finish_tool(point)
             print(f"DEBUG: mouseReleaseEvent - calling cancel_tool")
             self.tool_manager.cancel_tool()
             self.update()
+
+    def mouseDoubleClickEvent(self, event):
+        """Handle element double-clicks to trigger edit dialogs upstream."""
+        try:
+            if event.button() == Qt.LeftButton:
+                point = QPoint(event.x(), event.y())
+                # Prefer segment (endpoints or line), then component
+                hit = self._hit_test_segment(point)
+                if hit is not None:
+                    seg = hit.get('segment')
+                    if isinstance(seg, dict):
+                        seg.setdefault('type', 'segment')
+                        self.element_double_clicked.emit(seg)
+                        return
+                comp = self._hit_test_component(point)
+                if comp is not None and isinstance(comp, dict):
+                    comp.setdefault('type', 'component')
+                    self.element_double_clicked.emit(comp)
+                    return
+        finally:
+            super().mouseDoubleClickEvent(event)
             
     def keyPressEvent(self, event):
         """Handle key press events"""
         if event.key() == Qt.Key_Escape:
             self.tool_manager.cancel_tool()
+            # Clear selection if in edit mode
+            if self.tool_manager.current_tool_type == ToolType.SELECT:
+                self._clear_selection()
             self.update()
             
     def handle_element_created(self, element_data):
@@ -362,6 +414,8 @@ class DrawingOverlay(QWidget):
             current_tool = self.tool_manager.get_current_tool()
             if current_tool and current_tool.active:
                 current_tool.draw_preview(painter)
+            # Draw selection visuals
+            self._draw_selection(painter)
         finally:
             painter.end()
             
@@ -488,6 +542,12 @@ class DrawingOverlay(QWidget):
                 painter.setBrush(brush)
                 painter.drawEllipse(x - size//2, y - size//2, size, size)
                 
+            # Selection highlight outline
+            if comp_data in self._selected_components:
+                painter.setPen(QPen(QColor(255, 165, 0), 2, Qt.DashLine))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(x - size//2 - 6, y - size//2 - 6, size + 12, size + 12)
+
             # Draw label
             painter.setPen(QPen(Qt.black))
             painter.setFont(QFont("Arial", 8, QFont.Bold))
@@ -495,8 +555,9 @@ class DrawingOverlay(QWidget):
             
     def draw_segments(self, painter):
         """Draw duct segments"""
-        pen = QPen(QColor(50, 150, 50), 3, Qt.SolidLine)
-        painter.setPen(pen)
+        base_pen = QPen(QColor(50, 150, 50), 3, Qt.SolidLine)
+        selected_pen = QPen(QColor(255, 165, 0), 4, Qt.SolidLine)
+        painter.setPen(base_pen)
         effective_path_only = self.path_only_mode and bool(self.visible_paths)
         for seg_data in self.segments:
             # Check if this segment belongs to a hidden path
@@ -512,7 +573,12 @@ class DrawingOverlay(QWidget):
             start_x, start_y = seg_data['start_x'], seg_data['start_y']
             end_x, end_y = seg_data['end_x'], seg_data['end_y']
             
-            painter.drawLine(start_x, start_y, end_x, end_y)
+            if seg_data in self._selected_segments:
+                painter.setPen(selected_pen)
+                painter.drawLine(start_x, start_y, end_x, end_y)
+                painter.setPen(base_pen)
+            else:
+                painter.drawLine(start_x, start_y, end_x, end_y)
             
             # Draw length label
             mid_x = (start_x + end_x) // 2
@@ -786,6 +852,244 @@ class DrawingOverlay(QWidget):
             'segments': self.segments.copy(),
             'measurements': self.measurements.copy()
         }
+
+    # ================= Selection and editing logic =================
+    def _clear_selection(self):
+        self._selection_rect = None
+        self._selected_components = []
+        self._selected_segments = []
+        self._drag_active = False
+        self._drag_last_point = None
+        self._hit_target = None
+
+    def _hit_test_component(self, point: QPoint, radius: int = 14):
+        px, py = point.x(), point.y()
+        for comp in reversed(self.components):
+            cx, cy = int(comp.get('x', 0)), int(comp.get('y', 0))
+            if abs(px - cx) <= radius and abs(py - cy) <= radius:
+                return comp
+        return None
+
+    def _hit_test_segment(self, point: QPoint, endpoint_radius: int = 10, line_tolerance: int = 8):
+        px, py = point.x(), point.y()
+        for seg in reversed(self.segments):
+            sx, sy = int(seg.get('start_x', 0)), int(seg.get('start_y', 0))
+            ex, ey = int(seg.get('end_x', 0)), int(seg.get('end_y', 0))
+            if abs(px - sx) <= endpoint_radius and abs(py - sy) <= endpoint_radius:
+                return {'segment': seg, 'endpoint': 'start'}
+            if abs(px - ex) <= endpoint_radius and abs(py - ey) <= endpoint_radius:
+                return {'segment': seg, 'endpoint': 'end'}
+            try:
+                import math
+                vx, vy = ex - sx, ey - sy
+                wx, wy = px - sx, py - sy
+                seg_len2 = vx * vx + vy * vy
+                if seg_len2 == 0:
+                    continue
+                t = max(0.0, min(1.0, (wx * vx + wy * vy) / seg_len2))
+                projx, projy = sx + t * vx, sy + t * vy
+                dist = math.hypot(px - projx, py - projy)
+                if dist <= line_tolerance:
+                    return {'segment': seg, 'endpoint': None}
+            except Exception:
+                pass
+        return None
+
+    def _rect_selection(self, rect: QRect):
+        # Build sets for in-rect hits
+        comps_in_rect = []
+        segs_in_rect = []
+        for comp in self.components:
+            if rect.contains(int(comp.get('x', 0)), int(comp.get('y', 0))):
+                comps_in_rect.append(comp)
+        for seg in self.segments:
+            sx, sy = int(seg.get('start_x', 0)), int(seg.get('start_y', 0))
+            ex, ey = int(seg.get('end_x', 0)), int(seg.get('end_y', 0))
+            if rect.contains(sx, sy) and rect.contains(ex, ey):
+                segs_in_rect.append(seg)
+
+        if self._select_modifiers & Qt.ShiftModifier:
+            # Additive selection (union)
+            for c in comps_in_rect:
+                if c not in self._selected_components:
+                    self._selected_components.append(c)
+            for s in segs_in_rect:
+                if s not in self._selected_segments:
+                    self._selected_segments.append(s)
+        elif self._select_modifiers & Qt.MetaModifier or self._select_modifiers & Qt.ControlModifier:
+            # Toggle selection for each hit
+            for c in comps_in_rect:
+                if c in self._selected_components:
+                    self._selected_components.remove(c)
+                else:
+                    self._selected_components.append(c)
+            for s in segs_in_rect:
+                if s in self._selected_segments:
+                    self._selected_segments.remove(s)
+                else:
+                    self._selected_segments.append(s)
+        else:
+            # Replace selection
+            self._selected_components = comps_in_rect
+            self._selected_segments = segs_in_rect
+
+    def _draw_selection(self, painter: QPainter):
+        if self._selection_rect:
+            painter.setPen(QPen(QColor(255, 200, 0), 1, Qt.DashLine))
+            painter.setBrush(QBrush(QColor(255, 200, 0, 30)))
+            painter.drawRect(self._selection_rect)
+
+    def _begin_drag(self, point: QPoint):
+        self._drag_active = True
+        self._drag_last_point = QPoint(point)
+
+    def _update_drag(self, point: QPoint):
+        if not self._drag_active or self._drag_last_point is None:
+            return
+        dx = point.x() - self._drag_last_point.x()
+        dy = point.y() - self._drag_last_point.y()
+        if dx == 0 and dy == 0:
+            return
+        self._drag_last_point = QPoint(point)
+
+        for comp in self._selected_components:
+            comp['x'] = int(comp.get('x', 0)) + dx
+            comp['y'] = int(comp.get('y', 0)) + dy
+            if isinstance(comp.get('position'), dict):
+                comp['position']['x'] = comp['x']
+                comp['position']['y'] = comp['y']
+
+        # Keep any segments that are attached to moved components connected to the
+        # component centers
+        if self._selected_components:
+            moved_set = set(id(c) for c in self._selected_components)
+            for seg in self.segments:
+                fc = seg.get('from_component')
+                tc = seg.get('to_component')
+                if fc is not None and id(fc) in moved_set:
+                    seg['start_x'] = int(fc.get('x', 0))
+                    seg['start_y'] = int(fc.get('y', 0))
+                if tc is not None and id(tc) in moved_set:
+                    seg['end_x'] = int(tc.get('x', 0))
+                    seg['end_y'] = int(tc.get('y', 0))
+
+        for seg in self._selected_segments:
+            seg['start_x'] = int(seg.get('start_x', 0)) + dx
+            seg['start_y'] = int(seg.get('start_y', 0)) + dy
+            seg['end_x'] = int(seg.get('end_x', 0)) + dx
+            seg['end_y'] = int(seg.get('end_y', 0)) + dy
+
+        if self._hit_target and self._hit_target.get('type') == 'segment' and self._hit_target.get('endpoint') in ('start', 'end'):
+            seg = self._hit_target['ref']
+            if self._hit_target['endpoint'] == 'start':
+                seg['start_x'] = int(seg.get('start_x', 0)) + dx
+                seg['start_y'] = int(seg.get('start_y', 0)) + dy
+            else:
+                seg['end_x'] = int(seg.get('end_x', 0)) + dx
+                seg['end_y'] = int(seg.get('end_y', 0)) + dy
+
+        self._relink_segments_to_components()
+        # Update lengths for any segments potentially affected
+        for seg in self.segments:
+            sx, sy = int(seg.get('start_x', 0)), int(seg.get('start_y', 0))
+            ex, ey = int(seg.get('end_x', 0)), int(seg.get('end_y', 0))
+            dxp, dyp = ex - sx, ey - sy
+            lp = (dxp * dxp + dyp * dyp) ** 0.5
+            seg['length_pixels'] = lp
+            try:
+                lr = self.scale_manager.pixels_to_real(lp)
+                seg['length_real'] = lr
+                seg['length_formatted'] = self.scale_manager.format_distance(lr)
+            except Exception:
+                pass
+
+        # Mark caches dirty so a future zoom change re-normalizes correctly
+        self._base_dirty = True
+        self.update()
+
+    def _end_drag(self):
+        self._drag_active = False
+        self._drag_last_point = None
+        self._hit_target = None
+
+    def _relink_segments_to_components(self, threshold_px: int = 20):
+        for seg in self.segments:
+            for ep in ('start', 'end'):
+                x = int(seg.get('start_x', 0)) if ep == 'start' else int(seg.get('end_x', 0))
+                y = int(seg.get('start_y', 0)) if ep == 'start' else int(seg.get('end_y', 0))
+                nearest = None
+                nearest_d = 10 ** 9
+                for comp in self.components:
+                    cx, cy = int(comp.get('x', 0)), int(comp.get('y', 0))
+                    d = self._distance(x, y, cx, cy)
+                    if d < nearest_d:
+                        nearest = comp
+                        nearest_d = d
+                if nearest and nearest_d <= threshold_px:
+                    if ep == 'start':
+                        seg['from_component'] = nearest
+                    else:
+                        seg['to_component'] = nearest
+        self.update_segment_tool_components()
+
+    def _handle_select_press(self, point: QPoint):
+        # Priority: segment endpoint -> component -> segment line -> box select
+        hit = self._hit_test_segment(point)
+        if hit is not None:
+            seg = hit['segment']
+            if self._select_modifiers & Qt.ShiftModifier:
+                if seg not in self._selected_segments:
+                    self._selected_segments.append(seg)
+            elif self._select_modifiers & Qt.MetaModifier or self._select_modifiers & Qt.ControlModifier:
+                if seg in self._selected_segments:
+                    self._selected_segments.remove(seg)
+                else:
+                    self._selected_segments.append(seg)
+            else:
+                self._selected_segments = [seg]
+                self._selected_components = []
+            self._hit_target = {'type': 'segment', 'ref': seg, 'endpoint': hit.get('endpoint')}
+            self._begin_drag(point)
+            return
+        comp = self._hit_test_component(point)
+        if comp is not None:
+            if self._select_modifiers & Qt.ShiftModifier:
+                if comp not in self._selected_components:
+                    self._selected_components.append(comp)
+            elif self._select_modifiers & Qt.MetaModifier or self._select_modifiers & Qt.ControlModifier:
+                if comp in self._selected_components:
+                    self._selected_components.remove(comp)
+                else:
+                    self._selected_components.append(comp)
+            else:
+                self._selected_components = [comp]
+                self._selected_segments = []
+            self._hit_target = {'type': 'component', 'ref': comp}
+            self._begin_drag(point)
+            return
+        # Start rubber-band selection
+        self._selection_rect = QRect(point, point)
+        self.tool_manager.start_tool(point)
+
+    def _handle_select_move(self, point: QPoint):
+        if self._drag_active:
+            self._update_drag(point)
+            return
+        if self._selection_rect is not None:
+            self._selection_rect.setBottomRight(point)
+            self._rect_selection(self._selection_rect.normalized())
+            self.tool_manager.update_tool(point)
+
+    def _handle_select_release(self, point: QPoint):
+        if self._drag_active:
+            self._end_drag()
+            return
+        if self._selection_rect is not None:
+            self._selection_rect = self._selection_rect.normalized()
+            self._rect_selection(self._selection_rect)
+            self.tool_manager.finish_tool(point)
+            self.tool_manager.cancel_tool()
+            return
 
     def _distance(self, x1: int, y1: int, x2: int, y2: int) -> float:
         dx = x2 - x1

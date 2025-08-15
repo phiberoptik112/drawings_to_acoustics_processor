@@ -678,11 +678,66 @@ class HVACPathDialog(QDialog):
         self.component_list.set_components(self.components)
         self.add_seg_btn.setEnabled(len(self.components) >= 2)
         self.update_path_diagram()
+        # Auto-calc when enabled and path is minimally defined
+        try:
+            if getattr(self, 'auto_calculate_cb', None) and self.auto_calculate_cb.isChecked():
+                if len(self.components) >= 2 and len(self.segments) >= 1:
+                    self.calculate_path_noise()
+        except Exception:
+            pass
     
     def update_segment_list(self):
         """Update the segment list display"""
+        # Re-sort segments by connectivity if possible for consistent display and calculation order
+        try:
+            segs = list(self.segments)
+            from_map = {}
+            to_set = set()
+            for s in segs:
+                fcid = getattr(s, 'from_component_id', None) or (getattr(getattr(s, 'from_component', None), 'id', None))
+                tcid = getattr(s, 'to_component_id', None) or (getattr(getattr(s, 'to_component', None), 'id', None))
+                if fcid is not None and fcid not in from_map:
+                    from_map[fcid] = s
+                if tcid is not None:
+                    to_set.add(tcid)
+            start = None
+            for fcid in list(from_map.keys()):
+                if fcid not in to_set:
+                    start = fcid
+                    break
+            ordered = []
+            visited = set()
+            current = start
+            max_iters = len(segs) + 2
+            iters = 0
+            while current is not None and iters < max_iters:
+                iters += 1
+                seg = from_map.get(current)
+                if seg is None:
+                    break
+                if seg in visited:
+                    break
+                ordered.append(seg)
+                visited.add(seg)
+                current = getattr(seg, 'to_component_id', None) or (getattr(getattr(seg, 'to_component', None), 'id', None))
+            if len(ordered) < len(segs):
+                remaining = [s for s in segs if s not in ordered]
+                ordered.extend(sorted(remaining, key=lambda s: getattr(s, 'segment_order', 0)))
+            # Persist the reordering in-memory for UI and save flow
+            self.segments = ordered
+        except Exception:
+            # Fallback to stored order
+            self.segments = sorted(list(self.segments), key=lambda s: getattr(s, 'segment_order', 0))
+
         self.segment_list.set_segments(self.segments)
         self.update_path_diagram()
+        # Auto-calc when enabled and path is minimally defined
+        try:
+            if getattr(self, 'auto_calculate_cb', None) and self.auto_calculate_cb.isChecked():
+                if len(self.components) >= 2 and len(self.segments) >= 1:
+                    self.calculate_path_noise()
+        except Exception:
+            pass
     
     def update_summary(self):
         """Update the path summary"""
@@ -709,22 +764,50 @@ class HVACPathDialog(QDialog):
         self.update_path_diagram()
 
     def _ordered_components_from_segments(self):
-        """Return components ordered by segment traversal if possible.
+        """Return components ordered by connectivity traversal if possible.
         Falls back to current self.components order when segments are missing."""
         try:
             if not self.segments:
                 return list(self.components)
-            # Sort segments by segment_order and stitch components
-            ordered = []
-            seen_ids = set()
-            for seg in sorted(self.segments, key=lambda s: getattr(s, 'segment_order', 0)):
-                for comp in [getattr(seg, 'from_component', None), getattr(seg, 'to_component', None)]:
-                    if comp is None:
-                        continue
-                    cid = getattr(comp, 'id', None) or id(comp)
-                    if cid not in seen_ids:
-                        ordered.append(comp)
-                        seen_ids.add(cid)
+            # Build adjacency and in-degree to locate a starting component
+            from_to = {}
+            in_degree = {}
+            comp_ref_by_id = {}
+            for seg in self.segments:
+                f = getattr(seg, 'from_component', None)
+                t = getattr(seg, 'to_component', None)
+                if f is None or t is None:
+                    continue
+                fid = getattr(f, 'id', None) or id(f)
+                tid = getattr(t, 'id', None) or id(t)
+                comp_ref_by_id[fid] = f
+                comp_ref_by_id[tid] = t
+                if fid not in from_to:
+                    from_to[fid] = tid
+                in_degree[tid] = in_degree.get(tid, 0) + 1
+                in_degree.setdefault(fid, in_degree.get(fid, 0))
+            # Choose start: in-degree 0 if available; else current first component
+            start_id = None
+            for cid, deg in in_degree.items():
+                if deg == 0:
+                    start_id = cid
+                    break
+            if start_id is None and self.components:
+                start_id = getattr(self.components[0], 'id', None) or id(self.components[0])
+            # Walk chain
+            ordered_ids = []
+            visited = set()
+            current = start_id
+            max_iters = len(from_to) + 2
+            iters = 0
+            while current is not None and iters < max_iters:
+                iters += 1
+                if current in visited:
+                    break
+                visited.add(current)
+                ordered_ids.append(current)
+                current = from_to.get(current)
+            ordered = [comp_ref_by_id[cid] for cid in ordered_ids if cid in comp_ref_by_id]
             return ordered if ordered else list(self.components)
         except Exception:
             return list(self.components)

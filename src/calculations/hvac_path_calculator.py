@@ -88,6 +88,7 @@ class HVACPathCalculator:
             session.flush()  # Get ID
             
             # Create segments using actual connections from drawing
+            created_segments: List[HVACSegment] = []
             for i, seg_data in enumerate(segments):
                 # Find the actual connected components
                 from_comp_id = None
@@ -123,10 +124,11 @@ class HVACPathCalculator:
                         segment_order=i+1,
                         duct_width=12,  # Default rectangular duct
                         duct_height=8,
-                    duct_shape='rectangular',
-                    duct_type='sheet_metal'
+                        duct_shape='rectangular',
+                        duct_type='sheet_metal'
                     )
                     session.add(hvac_segment)
+                    created_segments.append(hvac_segment)
                 else:
                     # Fallback: if neither endpoint matched by exact equality, try position/type match
                     # to be resilient to dict identity differences between overlay and calculator
@@ -154,7 +156,17 @@ class HVACPathCalculator:
                             duct_type='sheet_metal'
                         )
                         session.add(hvac_segment)
+                        created_segments.append(hvac_segment)
             
+            # Reorder segments by connectivity from source to terminal
+            try:
+                ordered = self._order_segments_by_connectivity(created_segments, preferred_source_component_id=getattr(source_comp, 'id', None))
+                for idx, seg in enumerate(ordered):
+                    seg.segment_order = idx + 1
+                print(f"DEBUG: Reordered {len(ordered)} segments by connectivity from source -> terminal")
+            except Exception as e:
+                print(f"DEBUG: Failed to reorder segments by connectivity: {e}")
+
             session.commit()
             
             # Calculate noise for the new path (uses any saved source/receiver if available later)
@@ -296,18 +308,46 @@ class HVACPathCalculator:
             if not segments:
                 return None
             
+            # Ensure segments are ordered by actual connectivity
+            try:
+                preferred_source_id = getattr(getattr(hvac_path, 'primary_source', None), 'id', None)
+                segments = self._order_segments_by_connectivity(list(segments), preferred_source_component_id=preferred_source_id)
+            except Exception as e:
+                print(f"DEBUG: Using stored segment order; connectivity ordering failed: {e}")
+
             # Get source: prefer selected MechanicalUnit (primary_source), otherwise first segment's from_component
-            if hvac_path.primary_source:
-                unit: MechanicalUnit = hvac_path.primary_source
+            unit = None
+            # Case 1: Relationship points to HVACComponent (schema FK) – try to look up MechanicalUnit by id if present
+            try:
+                if getattr(hvac_path, 'primary_source_id', None):
+                    # Attempt to resolve a MechanicalUnit with the same id (stored by the dialog)
+                    sess2 = get_session()
+                    try:
+                        mu = sess2.query(MechanicalUnit).filter(MechanicalUnit.id == hvac_path.primary_source_id).first()
+                        unit = mu if mu is not None else None
+                    finally:
+                        try:
+                            sess2.close()
+                        except Exception:
+                            pass
+            except Exception:
+                unit = None
+
+            # Case 2: If relationship actually references a MechanicalUnit-like object (defensive)
+            if unit is None and hvac_path.primary_source is not None:
+                obj = hvac_path.primary_source
+                if hasattr(obj, 'unit_type') or hasattr(obj, 'outlet_levels_json'):
+                    unit = obj  # Treat as MechanicalUnit-like
+
+            if unit is not None:
                 # Parse outlet spectrum if available
                 octave_bands = None
                 try:
                     import json
-                    ob = getattr(unit, 'outlet_levels_json', None)
+                    ob = getattr(unit, 'outlet_levels_json', None) or getattr(unit, 'inlet_levels_json', None) or getattr(unit, 'radiated_levels_json', None)
                     if ob:
                         data = json.loads(ob)
                         order = ["63","125","250","500","1000","2000","4000","8000"]
-                        # convert to float where possible
                         octave_bands = [float(data.get(k, 0) or 0) for k in order]
                 except Exception:
                     octave_bands = None
@@ -320,7 +360,7 @@ class HVACPathCalculator:
                         pass
                 noise_level = noise_level or getattr(unit, 'base_noise_dba', None) or 50.0
                 path_data['source_component'] = {
-                    'component_type': (unit.unit_type or 'unit'),
+                    'component_type': getattr(unit, 'unit_type', None) or 'unit',
                     'noise_level': noise_level,
                     'octave_band_levels': octave_bands,
                 }
@@ -387,6 +427,75 @@ class HVACPathCalculator:
         except Exception as e:
             print(f"Error building path data: {e}")
             return None
+
+    def _order_segments_by_connectivity(self, segments: List[HVACSegment], preferred_source_component_id: Optional[int] = None) -> List[HVACSegment]:
+        """Order segments by walking the chain from source to terminal.
+
+        - If a preferred source component id is provided and exists in the chain, start from there.
+        - Otherwise, start from a component that appears as a 'from' but never as a 'to'.
+        - Fall back to existing segment_order if traversal fails.
+        """
+        try:
+            if not segments:
+                return []
+
+            # Index mappings
+            from_map = {}
+            to_set = set()
+            for seg in segments:
+                fcid = getattr(seg, 'from_component_id', None)
+                tcid = getattr(seg, 'to_component_id', None)
+                if fcid is not None:
+                    # Prefer the first observed mapping for simple paths
+                    if fcid not in from_map:
+                        from_map[fcid] = seg
+                if tcid is not None:
+                    to_set.add(tcid)
+
+            # Determine start component
+            start_comp_id = None
+            if preferred_source_component_id and preferred_source_component_id in from_map:
+                start_comp_id = preferred_source_component_id
+            else:
+                # A 'from' that is never a 'to' is a likely source
+                candidates = [fcid for fcid in from_map.keys() if fcid not in to_set]
+                if candidates:
+                    start_comp_id = candidates[0]
+                else:
+                    # Fallback: choose the lowest segment_order's from_component
+                    try:
+                        first_seg = sorted(segments, key=lambda s: getattr(s, 'segment_order', 0))[0]
+                        start_comp_id = getattr(first_seg, 'from_component_id', None)
+                    except Exception:
+                        start_comp_id = None
+
+            # Traverse chain
+            ordered: List[HVACSegment] = []
+            visited = set()
+            current = start_comp_id
+            # Limit iterations to avoid infinite loops
+            max_iters = len(segments) + 2
+            iters = 0
+            while current is not None and iters < max_iters:
+                iters += 1
+                seg = from_map.get(current)
+                if seg is None:
+                    break
+                if seg.id in visited:
+                    # Loop detected
+                    break
+                ordered.append(seg)
+                visited.add(seg.id)
+                current = getattr(seg, 'to_component_id', None)
+
+            # If traversal did not include all segments, append remaining by existing order
+            if len(ordered) < len(segments):
+                remaining = [s for s in sorted(segments, key=lambda s: getattr(s, 'segment_order', 0)) if s.id not in visited]
+                ordered.extend(remaining)
+
+            return ordered if ordered else list(sorted(segments, key=lambda s: getattr(s, 'segment_order', 0)))
+        except Exception:
+            return list(sorted(segments, key=lambda s: getattr(s, 'segment_order', 0)))
     
     def get_component_noise_level(self, component_type: str) -> float:
         """Get standard noise level for component type"""
