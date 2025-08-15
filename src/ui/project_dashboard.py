@@ -7,9 +7,9 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QListWidget, QListWidgetItem,
                              QTabWidget, QMenuBar, QStatusBar, QMessageBox,
                              QFileDialog, QSplitter, QTextEdit, QGroupBox, QDialog,
-                             QTableWidget, QTableWidgetItem, QHeaderView)
+                             QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox)
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QIcon, QColor
+from PySide6.QtGui import QFont, QIcon, QColor, QAction
 
 from models import (
     get_session,
@@ -25,6 +25,7 @@ from models import (
 from models.hvac import HVACSegment
 from sqlalchemy.orm import selectinload
 from ui.drawing_interface import DrawingInterface
+from ui.drawing_panel import DrawingPanel
 from ui.results_widget import ResultsWidget
 from ui.dialogs.hvac_path_dialog import HVACPathDialog
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
@@ -84,7 +85,13 @@ class ProjectDashboard(QMainWindow):
         left_panel = self.create_left_panel()
         splitter.addWidget(left_panel)
         
-        # Right panel - details and info
+        # Prepare embedded drawing panel before creating right panel
+        try:
+            self.drawing_panel = DrawingPanel(self.project_id)
+        except Exception:
+            self.drawing_panel = None
+        
+        # Right panel - details and drawing panel
         right_panel = self.create_right_panel()
         splitter.addWidget(right_panel)
         
@@ -117,6 +124,13 @@ class ProjectDashboard(QMainWindow):
         # Drawings menu
         drawings_menu = menubar.addMenu('Drawings')
         drawings_menu.addAction('Open Drawing', self.open_drawing)
+        # Link selection toggle for embedded view
+        try:
+            self.link_selection_chk = QAction('Link selection to drawing view', self, checkable=True)
+            self.link_selection_chk.setChecked(True)
+            drawings_menu.addAction(self.link_selection_chk)
+        except Exception:
+            pass
         drawings_menu.addAction('Remove Drawing', self.remove_drawing)
         
         # Calculations menu
@@ -212,6 +226,11 @@ class ProjectDashboard(QMainWindow):
         self.drawings_list = QListWidget()
         self.apply_dark_list_style(self.drawings_list)
         self.drawings_list.itemDoubleClicked.connect(self.open_selected_drawing)
+        # Also sync selection to embedded drawing panel
+        try:
+            self.drawings_list.currentItemChanged.connect(self._on_drawing_selected)
+        except Exception:
+            pass
         layout.addWidget(self.drawings_list)
         
         # Buttons
@@ -284,6 +303,11 @@ class ProjectDashboard(QMainWindow):
         self.hvac_list = QListWidget()
         self.apply_dark_list_style(self.hvac_list)
         self.hvac_list.itemDoubleClicked.connect(self.edit_hvac_path)
+        # Single-click selection focuses path on embedded panel
+        try:
+            self.hvac_list.itemClicked.connect(self._on_hvac_path_clicked)
+        except Exception:
+            pass
         layout.addWidget(self.hvac_list)
         
         # Buttons
@@ -371,6 +395,13 @@ class ProjectDashboard(QMainWindow):
         except Exception:
             pass
 
+        # Embedded drawing panel area takes remaining space
+        try:
+            if getattr(self, 'drawing_panel', None) is not None:
+                right_layout.addWidget(self.drawing_panel, 1)
+        except Exception:
+            pass
+ 
         right_widget.setLayout(right_layout)
         
         return right_widget
@@ -622,12 +653,16 @@ class ProjectDashboard(QMainWindow):
         self.open_selected_drawing(self.drawings_list.currentItem())
         
     def open_selected_drawing(self, item):
-        """Open the selected drawing in drawing interface"""
+        """Open the selected drawing in drawing interface or embedded panel"""
         if item:
             drawing_id = item.data(Qt.UserRole)
             try:
+                # Prefer embedded panel if available
+                if getattr(self, 'drawing_panel', None) is not None:
+                    self.drawing_panel.load_drawing(drawing_id)
+                    return
+                # Fallback to windowed interface
                 self.drawing_interface = DrawingInterface(drawing_id, self.project_id)
-                # Keep HVAC Paths tab in sync with drawing-created paths
                 try:
                     self.drawing_interface.paths_updated.connect(self.refresh_hvac_paths)
                 except Exception:
@@ -635,6 +670,63 @@ class ProjectDashboard(QMainWindow):
                 self.drawing_interface.show()
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Could not open drawing:\n{str(e)}")
+        
+    def _on_drawing_selected(self, current, _previous):
+        """Synchronize drawings list selection to the embedded drawing panel."""
+        try:
+            if current is None:
+                return
+            if getattr(self, 'link_selection_chk', None) and not self.link_selection_chk.isChecked():
+                return
+            if getattr(self, 'drawing_panel', None) is None:
+                return
+            drawing_id = current.data(Qt.UserRole)
+            if drawing_id is None:
+                return
+            self.drawing_panel.load_drawing(drawing_id)
+        except Exception:
+            pass
+ 
+    def _on_hvac_path_clicked(self, item):
+        """Focus a single-clicked HVAC path in the embedded drawing panel."""
+        try:
+            if item is None:
+                return
+            if getattr(self, 'link_selection_chk', None) and not self.link_selection_chk.isChecked():
+                return
+            if getattr(self, 'drawing_panel', None) is None:
+                return
+            path_id = item.data(Qt.UserRole)
+            if path_id is None:
+                return
+            # Ensure drawing panel is on the correct drawing for this path if possible
+            session = get_session()
+            from models.hvac import HVACPath
+            from models.hvac import HVACSegment
+            path = (
+                session.query(HVACPath)
+                .options(
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                )
+                .filter(HVACPath.id == path_id)
+                .first()
+            )
+            session.close()
+            if path and getattr(path, 'segments', None):
+                comp = None
+                first_seg = path.segments[0] if len(path.segments) > 0 else None
+                if first_seg is not None:
+                    if first_seg.from_component is not None:
+                        comp = first_seg.from_component
+                    elif first_seg.to_component is not None:
+                        comp = first_seg.to_component
+                if comp and getattr(comp, 'drawing_id', None):
+                    self.drawing_panel.load_drawing(comp.drawing_id)
+            # Focus the path
+            self.drawing_panel.focus_path(path_id, center=True, highlight=True, exclusive=True)
+        except Exception:
+            pass
         
     def remove_drawing(self):
         """Remove the selected drawing"""
@@ -1096,6 +1188,22 @@ class ProjectDashboard(QMainWindow):
                 self.refresh_hvac_paths()
                 self.update_analysis_status()
                 self.update_space_hvac_paths_table()
+                # Re-focus the edited path in embedded panel
+                try:
+                    if getattr(self, 'drawing_panel', None) is not None:
+                        # Best-effort to switch drawing then focus
+                        comp = None
+                        first_seg = path.segments[0] if len(path.segments) > 0 else None
+                        if first_seg is not None:
+                            if first_seg.from_component is not None:
+                                comp = first_seg.from_component
+                            elif first_seg.to_component is not None:
+                                comp = first_seg.to_component
+                        if comp and getattr(comp, 'drawing_id', None):
+                            self.drawing_panel.load_drawing(comp.drawing_id)
+                        self.drawing_panel.focus_path(path_id, center=True, highlight=True, exclusive=True)
+                except Exception:
+                    pass
         except Exception as e:
             QMessageBox.critical(self, "Edit HVAC Path", f"Failed to open HVAC path:\n{str(e)}")
 

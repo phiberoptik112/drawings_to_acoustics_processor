@@ -50,6 +50,7 @@ class DrawingOverlay(QWidget):
         self.show_measurements = True
         self.show_grid = False
         self.path_only_mode = False  # Show only elements belonging to visible paths
+        self._highlighted_path_id = None
         
         # Selection/edit state (used when ToolType.SELECT is active)
         self._selection_rect = None  # QRect while box-selecting
@@ -249,6 +250,46 @@ class DrawingOverlay(QWidget):
             self.update()
         except Exception as e:
             print(f"DEBUG: set_zoom_factor error: {e}")
+    
+    def compute_path_bounding_rect(self, path_id: int):
+        """Compute a QRect bounding all registered elements for the given path in current screen pixels.
+        Returns None if the path has no registered elements.
+        """
+        try:
+            mapping = self.path_element_mapping.get(path_id)
+            if not mapping:
+                return None
+            xs = []
+            ys = []
+            xe = []
+            ye = []
+            # Components
+            for comp in mapping.get('components', []):
+                xs.append(int(comp.get('x', 0)))
+                ys.append(int(comp.get('y', 0)))
+            # Segments
+            for seg in mapping.get('segments', []):
+                xs.append(int(seg.get('start_x', 0)))
+                ys.append(int(seg.get('start_y', 0)))
+                xe.append(int(seg.get('end_x', 0)))
+                ye.append(int(seg.get('end_y', 0)))
+            all_x = xs + xe
+            all_y = ys + ye
+            if not all_x or not all_y:
+                return None
+            min_x = min(all_x)
+            max_x = max(all_x)
+            min_y = min(all_y)
+            max_y = max(all_y)
+            from PySide6.QtCore import QRect as _QRect
+            return _QRect(min_x, min_y, max(1, max_x - min_x), max(1, max_y - min_y))
+        except Exception:
+            return None
+    
+    def set_highlighted_path(self, path_id: int | None) -> None:
+        """Set which path should be visually emphasized in paint routines."""
+        self._highlighted_path_id = path_id
+        self.update()
         
     def mousePressEvent(self, event):
         """Handle mouse press events"""
@@ -416,8 +457,21 @@ class DrawingOverlay(QWidget):
                 current_tool.draw_preview(painter)
             # Draw selection visuals
             self._draw_selection(painter)
-        finally:
-            painter.end()
+            # Optional highlight pass for focused path
+            if self._highlighted_path_id is not None and self._highlighted_path_id in self.path_element_mapping:
+                try:
+                    mapping = self.path_element_mapping[self._highlighted_path_id]
+                    pen = QPen(QColor(255, 215, 0))
+                    pen.setWidth(3)
+                    painter.setPen(pen)
+                    for seg in mapping.get('segments', []):
+                        painter.drawLine(int(seg.get('start_x', 0)), int(seg.get('start_y', 0)), int(seg.get('end_x', 0)), int(seg.get('end_y', 0)))
+                    for comp in mapping.get('components', []):
+                        painter.drawEllipse(int(comp.get('x', 0)) - 6, int(comp.get('y', 0)) - 6, 12, 12)
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"Error drawing overlay: {e}")
             
     def draw_rectangles(self, painter):
         """Draw room boundary rectangles"""
