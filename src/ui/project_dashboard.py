@@ -28,6 +28,8 @@ from ui.drawing_interface import DrawingInterface
 from ui.drawing_panel import DrawingPanel
 from ui.results_widget import ResultsWidget
 from ui.dialogs.hvac_path_dialog import HVACPathDialog
+from ui.dialogs.drawing_sets_dialog import DrawingSetsDialog
+from ui.drawing_comparison_interface import DrawingComparisonInterface
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 
 
@@ -195,6 +197,10 @@ class ProjectDashboard(QMainWindow):
         # Create tabs for different element types
         tabs = QTabWidget()
         
+        # Drawing Sets tab (new)
+        drawing_sets_tab = self.create_drawing_sets_tab()
+        tabs.addTab(drawing_sets_tab, "📁 Drawing Sets")
+        
         # Drawings tab
         drawings_tab = self.create_drawings_tab()
         tabs.addTab(drawings_tab, "Drawings")
@@ -216,6 +222,46 @@ class ProjectDashboard(QMainWindow):
         left_widget.setLayout(left_layout)
         
         return left_widget
+        
+    def create_drawing_sets_tab(self):
+        """Create the drawing sets management tab"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Drawing sets list with phase indicators
+        self.drawing_sets_list = QListWidget()
+        self.apply_dark_list_style(self.drawing_sets_list)
+        try:
+            self.drawing_sets_list.itemDoubleClicked.connect(self.manage_drawing_sets)
+        except Exception:
+            pass
+        layout.addWidget(self.drawing_sets_list)
+        
+        # Management buttons
+        button_layout = QHBoxLayout()
+        
+        new_set_btn = QPushButton("New Set")
+        new_set_btn.clicked.connect(self.create_new_drawing_set)
+        
+        set_active_btn = QPushButton("Set Active")
+        set_active_btn.clicked.connect(self.set_active_drawing_set)
+        
+        compare_sets_btn = QPushButton("Compare Sets")
+        compare_sets_btn.clicked.connect(self.compare_drawing_sets)
+        
+        manage_sets_btn = QPushButton("Manage Sets")
+        manage_sets_btn.clicked.connect(self.manage_drawing_sets)
+        
+        button_layout.addWidget(new_set_btn)
+        button_layout.addWidget(set_active_btn)
+        button_layout.addWidget(compare_sets_btn)
+        button_layout.addWidget(manage_sets_btn)
+        button_layout.addStretch()
+        
+        layout.addLayout(button_layout)
+        widget.setLayout(layout)
+        
+        return widget
         
     def create_drawings_tab(self):
         """Create the drawings tab"""
@@ -416,6 +462,7 @@ class ProjectDashboard(QMainWindow):
         
     def refresh_all_data(self):
         """Refresh all data displays"""
+        self.refresh_drawing_sets()
         self.refresh_drawings()
         self.refresh_spaces()
         self.refresh_hvac_paths()
@@ -427,6 +474,33 @@ class ProjectDashboard(QMainWindow):
         if hasattr(self, 'results_widget'):
             self.results_widget.refresh_data()
         
+    def refresh_drawing_sets(self):
+        """Refresh the drawing sets list"""
+        try:
+            session = get_session()
+            from models.drawing_sets import DrawingSet as _DrawingSet
+            drawing_sets = (
+                session.query(_DrawingSet)
+                .filter(_DrawingSet.project_id == self.project_id)
+                .order_by(_DrawingSet.created_date)
+                .all()
+            )
+            self.drawing_sets_list.clear()
+            for drawing_set in drawing_sets:
+                drawing_count = len(drawing_set.drawings) if drawing_set.drawings else 0
+                active_indicator = "🟢" if drawing_set.is_active else "⚪"
+                phase_colors = { 'DD': '🟦', 'SD': '🟨', 'CD': '🟥', 'Final': '🟩', 'Legacy': '⚫' }
+                phase_icon = phase_colors.get(drawing_set.phase_type, '⚪')
+                item_text = f"{active_indicator} {phase_icon} {drawing_set.name} ({drawing_set.phase_type}) - {drawing_count} drawings"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.UserRole, drawing_set.id)
+                if drawing_set.is_active:
+                    item.setForeground(QColor(144, 238, 144))
+                self.drawing_sets_list.addItem(item)
+            session.close()
+        except Exception as e:
+            QMessageBox.warning(self, "Warning", f"Could not load drawing sets:\n{str(e)}")
+            
     def refresh_drawings(self):
         """Refresh the drawings list"""
         try:
@@ -1332,3 +1406,64 @@ class ProjectDashboard(QMainWindow):
         """Handle window close event"""
         self.finished.emit()
         event.accept()
+
+    def create_new_drawing_set(self):
+        """Create a new drawing set"""
+        try:
+            dialog = DrawingSetsDialog(self, self.project_id, mode='create')
+            if dialog.exec() == QDialog.Accepted:
+                self.refresh_drawing_sets()
+                self.refresh_drawings()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create drawing set:\n{str(e)}")
+
+    def set_active_drawing_set(self):
+        """Set the selected drawing set as active"""
+        try:
+            current_item = getattr(self, 'drawing_sets_list', None)
+            current_item = current_item.currentItem() if current_item else None
+            if not current_item:
+                QMessageBox.information(self, "Set Active", "Please select a drawing set.")
+                return
+            set_id = current_item.data(Qt.UserRole)
+            session = get_session()
+            from models.drawing_sets import DrawingSet as _DrawingSet
+            session.query(_DrawingSet).filter(_DrawingSet.project_id == self.project_id).update({_DrawingSet.is_active: False})
+            drawing_set = session.query(_DrawingSet).filter(_DrawingSet.id == set_id).first()
+            if drawing_set:
+                drawing_set.is_active = True
+                session.commit()
+                QMessageBox.information(self, "Active Set", f"'{drawing_set.name}' is now the active drawing set.")
+                self.refresh_drawing_sets()
+            session.close()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to set active drawing set:\n{str(e)}")
+
+    def compare_drawing_sets(self):
+        """Open drawing sets comparison interface"""
+        try:
+            session = get_session()
+            from models.drawing_sets import DrawingSet as _DrawingSet
+            drawing_sets = session.query(_DrawingSet).filter(_DrawingSet.project_id == self.project_id).all()
+            session.close()
+            if len(drawing_sets) < 2:
+                QMessageBox.information(self, "Compare Sets", "At least two drawing sets are required for comparison.")
+                return
+            from ui.dialogs.comparison_selection_dialog import ComparisonSelectionDialog
+            dialog = ComparisonSelectionDialog(self, drawing_sets)
+            if dialog.exec() == QDialog.Accepted:
+                base_set_id, compare_set_id = dialog.get_selected_sets()
+                comparison_interface = DrawingComparisonInterface(base_set_id, compare_set_id)
+                comparison_interface.show()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open comparison:\n{str(e)}")
+
+    def manage_drawing_sets(self):
+        """Open drawing sets management dialog"""
+        try:
+            dialog = DrawingSetsDialog(self, self.project_id, mode='manage')
+            if dialog.exec() == QDialog.Accepted:
+                self.refresh_drawing_sets()
+                self.refresh_drawings()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open drawing sets management:\n{str(e)}")

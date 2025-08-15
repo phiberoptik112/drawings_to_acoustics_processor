@@ -31,6 +31,9 @@ class Project(Base):
     # New: project-level mechanical schedule and noise sources
     mechanical_units = relationship("MechanicalUnit", back_populates="project", cascade="all, delete-orphan")
     noise_sources = relationship("NoiseSource", back_populates="project", cascade="all, delete-orphan")
+    # Drawing sets and comparisons
+    drawing_sets = relationship("DrawingSet", back_populates="project", cascade="all, delete-orphan")
+    drawing_comparisons = relationship("DrawingComparison", back_populates="project", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Project(id={self.id}, name='{self.name}')>"
