@@ -397,3 +397,54 @@ class PDFViewer(QWidget):
             self.pdf_label.setText("No PDF loaded")
             self.status_label.setText("No PDF loaded")
             self.update_page_navigation()
+         
+    def zoom_to_rect(self, x: int, y: int, w: int, h: int, padding_ratio: float = 0.15) -> None:
+        """Zoom and scroll to fit the given PDF-space rectangle in view.
+        The coordinates (x, y, w, h) are in PDF units at 100% zoom.
+        """
+        try:
+            if not self.pdf_document or w is None or h is None:
+                return
+            # Guard against zero-sized rectangles
+            w = max(int(w), 1)
+            h = max(int(h), 1)
+            # Compute padded rectangle size
+            pad_w = int(w * (1.0 + 2.0 * padding_ratio))
+            pad_h = int(h * (1.0 + 2.0 * padding_ratio))
+            # Available viewport
+            vp_w = max(1, self.scroll_area.viewport().width() - 20)
+            vp_h = max(1, self.scroll_area.viewport().height() - 20)
+            # Determine zoom to fit padded rect
+            zoom_width = vp_w / float(pad_w)
+            zoom_height = vp_h / float(pad_h)
+            new_zoom = max(0.25, min(4.0, min(zoom_width, zoom_height)))
+            # Apply zoom (emits scale_changed and renders page)
+            self.set_zoom(new_zoom)
+            # Center on the rect center at current zoom
+            cx_pdf = x + (w // 2)
+            cy_pdf = y + (h // 2)
+            self.center_on_point(cx_pdf, cy_pdf)
+        except Exception:
+            # Fail silently in UI helper
+            pass
+         
+    def center_on_point(self, x: int, y: int) -> None:
+        """Scroll to center the given PDF-space point (x, y) with the current zoom."""
+        try:
+            if not self.pdf_document:
+                return
+            # Convert to screen pixels with current zoom
+            sx = int(x * self.zoom_factor)
+            sy = int(y * self.zoom_factor)
+            # Center inside viewport
+            hbar = self.scroll_area.horizontalScrollBar()
+            vbar = self.scroll_area.verticalScrollBar()
+            vp_w = self.scroll_area.viewport().width()
+            vp_h = self.scroll_area.viewport().height()
+            target_x = max(0, sx - vp_w // 2)
+            target_y = max(0, sy - vp_h // 2)
+            hbar.setValue(target_x)
+            vbar.setValue(target_y)
+        except Exception:
+            # Best-effort only
+            pass
