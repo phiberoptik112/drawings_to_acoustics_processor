@@ -92,12 +92,12 @@ def initialize_database(db_path=None):
     )
     
     # Import all models to ensure they're registered
-    from . import project, drawing, space, hvac, rt60_models, mechanical
+    from . import project, drawing, space, hvac, rt60_models, mechanical, drawing_sets
     
     # Create all tables
     Base.metadata.create_all(bind=engine)
     
-    # Run idempotent HVAC schema migrations for legacy DBs
+    # Run idempotent schema migrations for legacy DBs
     try:
         from .migrate_hvac_schema import ensure_hvac_schema
         ensure_hvac_schema()
@@ -105,6 +105,13 @@ def initialize_database(db_path=None):
         # Avoid crashing startup; downstream code may still operate on fresh DBs
         # If migration fails, it will surface when querying; better to log minimal info here
         print(f"Warning: HVAC schema migration failed: {e}")
+    
+    # New: drawing sets schema/migration
+    try:
+        from .migrate_drawing_sets import ensure_drawing_sets_schema
+        ensure_drawing_sets_schema()
+    except Exception as e:
+        print(f"Warning: Drawing sets schema migration failed: {e}")
     
     return db_path
 
