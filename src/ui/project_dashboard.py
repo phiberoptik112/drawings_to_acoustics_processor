@@ -26,6 +26,7 @@ from models.hvac import HVACSegment
 from sqlalchemy.orm import selectinload
 from ui.drawing_interface import DrawingInterface
 from ui.drawing_panel import DrawingPanel
+from drawing import PDFViewer
 from ui.results_widget import ResultsWidget
 from ui.dialogs.hvac_path_dialog import HVACPathDialog
 from ui.dialogs.drawing_sets_dialog import DrawingSetsDialog
@@ -97,8 +98,8 @@ class ProjectDashboard(QMainWindow):
         right_panel = self.create_right_panel()
         splitter.addWidget(right_panel)
         
-        # Set splitter proportions
-        splitter.setSizes([800, 400])
+        # Set splitter proportions (favor the drawing/right pane)
+        splitter.setSizes([450, 750])
         
         main_layout.addWidget(splitter)
         central_widget.setLayout(main_layout)
@@ -272,9 +273,9 @@ class ProjectDashboard(QMainWindow):
         self.drawings_list = QListWidget()
         self.apply_dark_list_style(self.drawings_list)
         self.drawings_list.itemDoubleClicked.connect(self.open_selected_drawing)
-        # Also sync selection to embedded drawing panel
+        # Keep the embedded preview synchronized with selection
         try:
-            self.drawings_list.currentItemChanged.connect(self._on_drawing_selected)
+            self.drawings_list.currentItemChanged.connect(self.on_drawings_selection_changed)
         except Exception:
             pass
         layout.addWidget(self.drawings_list)
@@ -379,17 +380,7 @@ class ProjectDashboard(QMainWindow):
         right_widget = QWidget()
         right_layout = QVBoxLayout()
         
-        # Analysis status group
-        status_group = QGroupBox("Analysis Status")
-        status_layout = QVBoxLayout()
-        
-        self.status_text = QTextEdit()
-        self.status_text.setMaximumHeight(150)
-        self.status_text.setReadOnly(True)
-        status_layout.addWidget(self.status_text)
-        
-        status_group.setLayout(status_layout)
-        right_layout.addWidget(status_group)
+        # Removed Analysis Status to maximize drawing space
         
         # HVAC Pathing per Space group
         self.space_hvac_group = QGroupBox("HVAC Pathing per Space")
@@ -414,32 +405,49 @@ class ProjectDashboard(QMainWindow):
         self.edit_receiver_btn.clicked.connect(self.open_space_receiver_dialog)
         space_hvac_layout.addWidget(self.edit_receiver_btn)
         self.space_hvac_group.setLayout(space_hvac_layout)
-        right_layout.addWidget(self.space_hvac_group)
-
-        # Component library group
-        library_group = QGroupBox("Component Library")
-        library_layout = QVBoxLayout()
-        
-        self.library_list = QListWidget()
-        self.apply_dark_list_style(self.library_list)
-        library_layout.addWidget(self.library_list)
-        
-        library_button_layout = QHBoxLayout()
-        add_component_btn = QPushButton("Add Component")
-        edit_library_btn = QPushButton("Edit Library")
-        
-        library_button_layout.addWidget(add_component_btn)
-        library_button_layout.addWidget(edit_library_btn)
-        
-        library_layout.addLayout(library_button_layout)
-        library_group.setLayout(library_layout)
-        right_layout.addWidget(library_group)
-        
-        # Wire up Edit Library button
+        # Keep this section compact so the drawing preview has room
         try:
-            edit_library_btn.clicked.connect(self.open_component_library)
+            self.space_hvac_group.setSizePolicy(self.space_hvac_group.sizePolicy().Preferred, self.space_hvac_group.sizePolicy().Maximum)
+            self.space_hvac_group.setMaximumHeight(260)
         except Exception:
             pass
+        right_layout.addWidget(self.space_hvac_group)
+
+        # Removed Component Library to maximize drawing space
+
+        # Embedded Drawing preview (expands to fill remaining space)
+        preview_group = QGroupBox("Drawing")
+        preview_layout = QVBoxLayout()
+
+        # Small actions row above the preview
+        preview_actions = QHBoxLayout()
+        self.open_editor_btn = QPushButton("Open Drawing Editor…")
+        self.open_editor_btn.setToolTip("Open the full drawing editor with rectangle, component, and segment tools")
+        self.open_editor_btn.clicked.connect(self.open_selected_drawing_editor)
+        preview_actions.addWidget(self.open_editor_btn)
+        preview_actions.addStretch()
+        preview_layout.addLayout(preview_actions)
+
+        # The embedded PDF viewer provides page/zoom controls and scrollable canvas
+        self.preview_viewer = PDFViewer()
+        try:
+            self.preview_viewer.setMinimumHeight(420)
+        except Exception:
+            pass
+        self.preview_viewer.setSizePolicy(self.preview_viewer.sizePolicy().Expanding, self.preview_viewer.sizePolicy().Expanding)
+        preview_layout.addWidget(self.preview_viewer)
+
+        preview_group.setLayout(preview_layout)
+        right_layout.addWidget(preview_group)
+
+        # Give most vertical space to the preview
+        try:
+            right_layout.setStretch(0, 0)  # HVAC Pathing per Space
+            right_layout.setStretch(1, 1)  # Drawing preview
+        except Exception:
+            pass
+        
+        # No library wiring (section removed)
 
         # Embedded drawing panel area takes remaining space
         try:
@@ -451,6 +459,26 @@ class ProjectDashboard(QMainWindow):
         right_widget.setLayout(right_layout)
         
         return right_widget
+
+    def open_selected_drawing_editor(self):
+        """Open the full drawing editor window for the currently selected drawing."""
+        current = self.drawings_list.currentItem() if hasattr(self, 'drawings_list') else None
+        if not current:
+            QMessageBox.information(self, "Open Drawing", "Select a drawing first.")
+            return
+        drawing_id = current.data(Qt.UserRole)
+        if drawing_id is None:
+            QMessageBox.information(self, "Open Drawing", "Select a valid drawing.")
+            return
+        try:
+            self.drawing_interface = DrawingInterface(drawing_id, self.project_id)
+            try:
+                self.drawing_interface.paths_updated.connect(self.refresh_hvac_paths)
+            except Exception:
+                pass
+            self.drawing_interface.show()
+        except Exception as e:
+            QMessageBox.critical(self, "Drawing Editor", f"Failed to open drawing editor:\n{e}")
         
     def create_status_bar(self):
         """Create the status bar"""
@@ -727,23 +755,29 @@ class ProjectDashboard(QMainWindow):
         self.open_selected_drawing(self.drawings_list.currentItem())
         
     def open_selected_drawing(self, item):
-        """Open the selected drawing in drawing interface or embedded panel"""
-        if item:
-            drawing_id = item.data(Qt.UserRole)
-            try:
-                # Prefer embedded panel if available
-                if getattr(self, 'drawing_panel', None) is not None:
-                    self.drawing_panel.load_drawing(drawing_id)
-                    return
-                # Fallback to windowed interface
-                self.drawing_interface = DrawingInterface(drawing_id, self.project_id)
-                try:
-                    self.drawing_interface.paths_updated.connect(self.refresh_hvac_paths)
-                except Exception:
-                    pass
-                self.drawing_interface.show()
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not open drawing:\n{str(e)}")
+        """Open the selected drawing in the embedded preview; keep external window for full edit via menu."""
+        if not item:
+            return
+        drawing_id = item.data(Qt.UserRole)
+        try:
+            # Load into embedded preview by resolving path
+            session = get_session()
+            drawing = session.query(Drawing).filter(Drawing.id == drawing_id).first()
+            session.close()
+            if drawing and getattr(drawing, 'file_path', None):
+                self.preview_viewer.load_pdf(drawing.file_path)
+            else:
+                QMessageBox.information(self, "Open Drawing", "Selected drawing has no file path.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not load drawing in preview:\n{e}")
+
+    def on_drawings_selection_changed(self, current, _previous):
+        """When selection changes, render the drawing in the embedded preview."""
+        try:
+            if current is not None:
+                self.open_selected_drawing(current)
+        except Exception:
+            pass
         
     def _on_drawing_selected(self, current, _previous):
         """Synchronize drawings list selection to the embedded drawing panel."""
