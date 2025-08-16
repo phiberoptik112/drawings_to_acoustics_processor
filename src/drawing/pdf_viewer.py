@@ -60,7 +60,7 @@ class PDFViewer(QWidget):
         self.pdf_label.mousePressEvent = self.mouse_press_event
         self.pdf_label.mouseMoveEvent = self.mouse_move_event
         self.pdf_label.mouseReleaseEvent = self.mouse_release_event
-        self.pdf_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.pdf_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         
         self.scroll_area.setWidget(self.pdf_label)
         layout.addWidget(self.scroll_area)

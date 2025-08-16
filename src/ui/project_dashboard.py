@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QListWidget, QListWidgetItem,
                              QTabWidget, QMenuBar, QStatusBar, QMessageBox,
                              QFileDialog, QSplitter, QTextEdit, QGroupBox, QDialog,
-                             QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox)
+                             QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox, QSizePolicy)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont, QIcon, QColor, QAction
 
@@ -434,7 +434,7 @@ class ProjectDashboard(QMainWindow):
             self.preview_viewer.setMinimumHeight(420)
         except Exception:
             pass
-        self.preview_viewer.setSizePolicy(self.preview_viewer.sizePolicy().Expanding, self.preview_viewer.sizePolicy().Expanding)
+        self.preview_viewer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         preview_layout.addWidget(self.preview_viewer)
 
         preview_group.setLayout(preview_layout)
@@ -507,8 +507,10 @@ class ProjectDashboard(QMainWindow):
         try:
             session = get_session()
             from models.drawing_sets import DrawingSet as _DrawingSet
+            from sqlalchemy.orm import selectinload as _selectinload
             drawing_sets = (
                 session.query(_DrawingSet)
+                .options(_selectinload(_DrawingSet.drawings))
                 .filter(_DrawingSet.project_id == self.project_id)
                 .order_by(_DrawingSet.created_date)
                 .all()
@@ -643,17 +645,21 @@ class ProjectDashboard(QMainWindow):
             
     def refresh_component_library(self):
         """Refresh the component library display"""
+        # If the library UI is not present (section removed to maximize space), skip updates
+        if not hasattr(self, 'library_list') or self.library_list is None:
+            return
+
         from data.components import STANDARD_COMPONENTS
         from data.materials import STANDARD_MATERIALS
-        
+
         self.library_list.clear()
-        
+
         # Add HVAC components
         self.library_list.addItem("🔧 HVAC Components:")
         for key, component in STANDARD_COMPONENTS.items():
             item_text = f"  • {component['name']}"
             self.library_list.addItem(item_text)
-            
+
         # Add acoustic materials
         self.library_list.addItem("🎵 Acoustic Materials:")
         material_count = len(STANDARD_MATERIALS)
@@ -676,17 +682,19 @@ class ProjectDashboard(QMainWindow):
             status_text = f"Analysis Status:\n\n"
             status_text += f"Spaces: {analyzed_spaces}/{total_spaces} analyzed\n"
             status_text += f"HVAC Paths: {total_paths} created\n\n"
-            
+
             if analyzed_spaces < total_spaces:
                 status_text += "⚠️ Some spaces need RT60 analysis\n"
             else:
                 status_text += "✅ All spaces analyzed\n"
-                
-            self.status_text.setText(status_text)
+
+            if hasattr(self, 'status_text') and self.status_text is not None:
+                self.status_text.setText(status_text)
             session.close()
             
         except Exception as e:
-            self.status_text.setText(f"Error loading status: {str(e)}")
+            if hasattr(self, 'status_text') and self.status_text is not None:
+                self.status_text.setText(f"Error loading status: {str(e)}")
             
     def update_status_bar(self):
         """Update the status bar"""
@@ -1478,7 +1486,13 @@ class ProjectDashboard(QMainWindow):
         try:
             session = get_session()
             from models.drawing_sets import DrawingSet as _DrawingSet
-            drawing_sets = session.query(_DrawingSet).filter(_DrawingSet.project_id == self.project_id).all()
+            from sqlalchemy.orm import selectinload as _selectinload
+            drawing_sets = (
+                session.query(_DrawingSet)
+                .options(_selectinload(_DrawingSet.drawings))
+                .filter(_DrawingSet.project_id == self.project_id)
+                .all()
+            )
             session.close()
             if len(drawing_sets) < 2:
                 QMessageBox.information(self, "Compare Sets", "At least two drawing sets are required for comparison.")

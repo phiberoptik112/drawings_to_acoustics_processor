@@ -15,6 +15,7 @@ from PySide6.QtGui import QColor
 from models import get_session
 from models.drawing_sets import DrawingSet, DrawingComparison, ChangeItem
 from drawing.drawing_comparison import DrawingComparisonEngine
+from sqlalchemy.orm import selectinload
 
 
 class ComparisonWorker(QThread):
@@ -59,8 +60,19 @@ class DrawingComparisonInterface(QMainWindow):
 	def load_drawing_sets(self):
 		session = get_session()
 		try:
-			self.base_set = session.query(DrawingSet).filter(DrawingSet.id == self.base_set_id).first()
-			self.compare_set = session.query(DrawingSet).filter(DrawingSet.id == self.compare_set_id).first()
+			# Eager-load drawings so counts can be accessed after session closes
+			self.base_set = (
+				session.query(DrawingSet)
+				.options(selectinload(DrawingSet.drawings))
+				.filter(DrawingSet.id == self.base_set_id)
+				.first()
+			)
+			self.compare_set = (
+				session.query(DrawingSet)
+				.options(selectinload(DrawingSet.drawings))
+				.filter(DrawingSet.id == self.compare_set_id)
+				.first()
+			)
 			if not self.base_set or not self.compare_set:
 				raise Exception("Could not load drawing sets")
 		finally:

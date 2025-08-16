@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt
 
 from models import get_session, Drawing
 from models.drawing_sets import DrawingSet
+from sqlalchemy.orm import selectinload
 
 
 class DrawingSetsDialog(QDialog):
@@ -35,8 +36,13 @@ class DrawingSetsDialog(QDialog):
 		"""Load project data"""
 		session = get_session()
 		try:
-			# Lazy-load only what we need
-			self.drawing_sets = session.query(DrawingSet).filter(DrawingSet.project_id == self.project_id).all()
+			# Eager-load drawings to avoid detached lazy-loads when session closes
+			self.drawing_sets = (
+				session.query(DrawingSet)
+				.options(selectinload(DrawingSet.drawings))
+				.filter(DrawingSet.project_id == self.project_id)
+				.all()
+			)
 			self.drawings = session.query(Drawing).filter(Drawing.project_id == self.project_id).all()
 		finally:
 			session.close()

@@ -242,12 +242,12 @@ class HVACPathDialog(QDialog):
         header_label = QLabel(title)
         header_label.setFont(QFont("Arial", 14, QFont.Bold))
         header_label.setAlignment(Qt.AlignCenter)
-        header_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        header_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(header_label)
         
         # Main content: tabs on the left + ASCII path diagram on the right
         self.main_splitter = QSplitter(Qt.Horizontal)
-        self.main_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.main_splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Tabs (left side)
         self.tabs = QTabWidget()
@@ -269,7 +269,7 @@ class HVACPathDialog(QDialog):
         self.analysis_tab_index = self.tabs.addTab(analysis_tab, "Analysis")
 
         # Ensure tabs expand with window
-        self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.main_splitter.addWidget(self.tabs)
 
         # Right side: NC summary + ASCII diagram panel
@@ -392,7 +392,7 @@ class HVACPathDialog(QDialog):
         self.diagram_text = PathDiagramText()
         self.diagram_text.setPlaceholderText("ASCII diagram will appear here when components/segments are defined.")
         self.diagram_text.line_clicked.connect(self.on_diagram_line_clicked)
-        self.diagram_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.diagram_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         content.addWidget(self.diagram_text)
 
         root_v.addLayout(content)
@@ -515,11 +515,11 @@ class HVACPathDialog(QDialog):
         self.results_text.setReadOnly(True)
         self.results_text.setHtml("<i>Click 'Calculate Noise' to analyze this path</i>")
         # Ensure the results area can grow to use vertical space
-        self.results_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.results_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         results_layout.addWidget(self.results_text)
         
         results_group.setLayout(results_layout)
-        results_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        results_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(results_group)
         
         # Analysis options
@@ -532,7 +532,7 @@ class HVACPathDialog(QDialog):
         
         options_group.setLayout(options_layout)
         # Keep options compact so results get the extra space
-        options_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        options_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         layout.addWidget(options_group)
         
         # Give most of the vertical space to the results group

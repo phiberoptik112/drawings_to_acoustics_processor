@@ -70,7 +70,7 @@ class ComponentLibraryDialog(QDialog):
         layout = QVBoxLayout()
 
         tabs = QTabWidget()
-        tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # Mechanical Units tab
         mech_tab = QWidget()
@@ -85,7 +85,7 @@ class ComponentLibraryDialog(QDialog):
         left_container = QWidget()
         left_v = QVBoxLayout(left_container)
         self.mechanical_list = QListWidget()
-        self.mechanical_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.mechanical_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         left_v.addWidget(self.mechanical_list)
         mech_split.addWidget(left_container)
 
@@ -101,7 +101,7 @@ class ComponentLibraryDialog(QDialog):
         self.band_order = ["63","125","250","500","1000","2000","4000","8000"]
         # New orientation: rows = [Inlet, Radiated, Outlet], columns = bands
         self.freq_table = QTableWidget(3, len(self.band_order))
-        self.freq_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.freq_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.freq_table.setHorizontalHeaderLabels(self.band_order)
         self.freq_table.setVerticalHeaderLabels(["Inlet", "Radiated", "Outlet"])
         for r in range(3):
@@ -113,7 +113,7 @@ class ComponentLibraryDialog(QDialog):
         self.freq_table.cellChanged.connect(self._on_freq_cell_changed)
         freq_v.addWidget(self.freq_table)
         freq_group.setLayout(freq_v)
-        freq_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        freq_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         # PDF preview group (right in right panel)
         preview_group = QGroupBox("File Preview (PDF)")

@@ -146,7 +146,7 @@ class HVACSegmentDialog(QDialog):
         
         # Organize vertically: Fitting -> Segment -> Fitting
         v_splitter = QSplitter(Qt.Vertical)
-        v_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        v_splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         # Upstream fitting
         upstream_panel = self.create_upstream_fitting_panel()
