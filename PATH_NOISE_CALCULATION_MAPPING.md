@@ -110,4 +110,15 @@
   - `src/calculations/hvac_noise_engine.py` (per-octave band pipeline; element effects; A-weighting; NC)
   - Room correction: `src/calculations/receiver_room_sound_correction_calculations.py` (7-band room LP)
 
-This mapping reflects current behavior and should make it clear where each per-octave-band value originates and how it flows from a source through path elements to the receiver space. For deeper issues, enable the suggested debug hooks to capture full spectra at each step.
+### Debug export (JSON/CSV) — how to enable and where files go
+- Toggle via environment variable: set `HVAC_DEBUG_EXPORT=1` (or `true/yes/on`).
+- When enabled, each call to `HVACPathCalculator.calculate_path_noise(...)` writes:
+  - JSON: full payload (source/terminal spectra, per-element spectra, geometry, NC/attenuation).
+  - CSV: one row per element with band columns for after/attenuation/generated.
+- Output directory: `~/Documents/AcousticAnalysis/debug_exports/project_<project_id>/`
+  - Filenames: `path_<id>_<name>_<YYYYMMDD_HHMMSS>.json` and `.csv`.
+- Implementation:
+  - See `HVACPathCalculator._debug_export_path_result(...)`.
+  - Uses engine bands `[63..8000]`; receiver correction stays 7-band separately.
+
+This mapping reflects current behavior and should make it clear where each per-octave-band value originates and how it flows from a source through path elements to the receiver space. For deeper issues, enable the debug export to capture full spectra at each step.
