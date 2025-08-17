@@ -28,11 +28,12 @@ class AnalysisThread(QThread):
     analysis_complete = Signal(dict)
     progress_update = Signal(str)
     
-    def __init__(self, path_ids, project_id):
+    def __init__(self, path_ids, project_id, debug=False):
         super().__init__()
         self.path_ids = path_ids
         self.project_id = project_id
         self.calculator = HVACPathCalculator()
+        self.debug = debug
         
     def run(self):
         try:
@@ -41,7 +42,7 @@ class AnalysisThread(QThread):
             for i, path_id in enumerate(self.path_ids):
                 self.progress_update.emit(f"Analyzing path {i+1}/{len(self.path_ids)}...")
                 
-                result = self.calculator.calculate_path_noise(path_id)
+                result = self.calculator.calculate_path_noise(path_id, debug=self.debug)
                 results[path_id] = result
                 
             self.analysis_complete.emit(results)
@@ -110,6 +111,11 @@ class HVACPathAnalysisDialog(QDialog):
         self.analyze_btn.setEnabled(False)
         button_layout.addWidget(self.analyze_btn)
         
+        # Debug mode toggle
+        self.debug_checkbox = QCheckBox("Debug calc mode")
+        self.debug_checkbox.setToolTip("Output per-element spectra and NC changes")
+        button_layout.addWidget(self.debug_checkbox)
+
         button_layout.addStretch()
         
         self.export_btn = QPushButton("Export Results")
@@ -417,7 +423,7 @@ class HVACPathAnalysisDialog(QDialog):
         
         # Start analysis thread
         path_ids = [path.id for path in self.selected_paths]
-        self.analysis_thread = AnalysisThread(path_ids, self.project_id)
+        self.analysis_thread = AnalysisThread(path_ids, self.project_id, debug=self.debug_checkbox.isChecked())
         self.analysis_thread.analysis_complete.connect(self.on_analysis_complete)
         self.analysis_thread.progress_update.connect(self.progress_dialog.setLabelText)
         self.analysis_thread.start()
@@ -486,6 +492,62 @@ class HVACPathAnalysisDialog(QDialog):
                 
                 for col in range(7):
                     self.results_table.item(row, col).setBackground(Qt.lightGray)
+
+        # If debug mode, render debug logs in detail panel
+        try:
+            if hasattr(self, 'debug_checkbox') and self.debug_checkbox.isChecked():
+                html_parts = []
+                for path_id, result in self.analysis_results.items():
+                    path = next((p for p in self.selected_paths if p.id == path_id), None)
+                    if not path:
+                        continue
+                    html_parts.append(self._format_debug_log_html(path, result))
+                if html_parts:
+                    self.detail_text.setHtml("".join(html_parts))
+        except Exception:
+            pass
+
+    def _format_debug_log_html(self, path_obj, result_obj):
+        try:
+            log = getattr(result_obj, 'debug_log', None)
+            if not log:
+                return f"<h5>Debug: {path_obj.name}</h5><i>No debug log available</i>"
+            rows = []
+            rows.append(f"<h5>Debug: {path_obj.name}</h5>")
+            rows.append("<table border='1' cellpadding='3'>")
+            rows.append("<tr><th>#</th><th>Type</th><th>dBA Before</th><th>dBA After</th><th>NC Before</th><th>NC After</th></tr>")
+            for step in log:
+                try:
+                    rows.append(
+                        f"<tr><td>{int(step.get('order', 0))}</td><td>{step.get('element_type','')}</td>"
+                        f"<td>{float(step.get('dba_before', 0.0)):.1f}</td>"
+                        f"<td>{float(step.get('dba_after', 0.0)):.1f}</td>"
+                        f"<td>{int(step.get('nc_before', 0))}</td>"
+                        f"<td>{int(step.get('nc_after', 0))}</td></tr>"
+                    )
+                    # Per-band details (63..8000 Hz)
+                    bands = [63,125,250,500,1000,2000,4000,8000]
+                    sb = step.get('spectrum_before') or []
+                    sa = step.get('spectrum_after') or []
+                    att = step.get('attenuation_spectrum') or []
+                    gen = step.get('generated_spectrum') or []
+                    def fmt_row(vals):
+                        return "".join([f"<td>{(float(vals[i]) if i < len(vals) and vals[i] is not None else 0.0):.1f}</td>" for i in range(8)])
+                    rows.append("<tr><td colspan='6'>")
+                    rows.append("<table border='0' cellpadding='2' style='margin-left:12px;'>")
+                    rows.append("<tr><th></th>" + "".join([f"<th>{b}</th>" for b in bands]) + "</tr>")
+                    rows.append("<tr><td>SPL before</td>" + fmt_row(sb) + "</tr>")
+                    rows.append("<tr><td>- Atten</td>" + fmt_row(att) + "</tr>")
+                    rows.append("<tr><td>+ Gen</td>" + fmt_row(gen) + "</tr>")
+                    rows.append("<tr><td>SPL after</td>" + fmt_row(sa) + "</tr>")
+                    rows.append("</table>")
+                    rows.append("</td></tr>")
+                except Exception:
+                    continue
+            rows.append("</table>")
+            return "".join(rows)
+        except Exception:
+            return f"<h5>Debug: {path_obj.name}</h5><i>Failed to render debug log</i>"
     
     def update_comparison(self):
         """Update the comparison table"""

@@ -2422,6 +2422,11 @@ class DrawingInterface(QMainWindow):
                     to_component=getattr(seg, 'to_component', None),
                     segment=seg,
                 )
+                try:
+                    # Keep the drawing overlay in sync when a segment is saved from the dialog
+                    dlg.segment_saved.connect(self._on_segment_saved)
+                except Exception:
+                    pass
                 dlg.exec()
         except Exception as e:
             QMessageBox.warning(self, "Edit Element", f"Failed to open editor:\n{e}")
@@ -2562,6 +2567,13 @@ class DrawingInterface(QMainWindow):
                                 # Attach DB ids for edit lookups
                                 seg['db_segment_id'] = segment.id
                                 seg['db_path_id'] = hvac_path.id
+                                # Also synchronize overlay label length with DB value
+                                try:
+                                    seg['length_real'] = float(getattr(segment, 'length', 0) or 0)
+                                    fmtr = self.drawing_overlay.scale_manager.format_distance
+                                    seg['length_formatted'] = fmtr(seg['length_real'])
+                                except Exception:
+                                    pass
                                 print(f"DEBUG: Found matching segment: {from_comp.get('component_type')} -> {to_comp.get('component_type')}")
                             found = True
                             break
@@ -2577,6 +2589,38 @@ class DrawingInterface(QMainWindow):
             
         except Exception as e:
             print(f"Error registering path elements for path {hvac_path.id}: {e}")
+
+    def _on_segment_saved(self, segment) -> None:
+        """After editing a segment in the dialog, update any registered overlay
+        segment to reflect the new length so UI values stay linked.
+        """
+        try:
+            if not self.drawing_overlay:
+                return
+            seg_id = getattr(segment, 'id', None)
+            if seg_id is None:
+                return
+            updated = False
+            for seg in self.drawing_overlay.segments:
+                try:
+                    if int(seg.get('db_segment_id')) == int(seg_id):
+                        new_len = float(getattr(segment, 'length', 0) or 0)
+                        seg['length_real'] = new_len
+                        fmtr = self.drawing_overlay.scale_manager.format_distance
+                        seg['length_formatted'] = fmtr(new_len)
+                        updated = True
+                        break
+                except Exception:
+                    continue
+            if updated:
+                # Ensure tools see the latest geometry/meta
+                try:
+                    self.drawing_overlay.update_segment_tool_components()
+                except Exception:
+                    pass
+                self.drawing_overlay.update()
+        except Exception:
+            pass
     
     def register_all_elements_to_path(self, path_id: int):
         """Register all currently drawn elements to the specified path"""
