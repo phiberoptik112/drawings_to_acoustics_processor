@@ -10,6 +10,12 @@ from models.hvac import HVACPath, HVACSegment, HVACComponent, SegmentFitting
 from models.mechanical import MechanicalUnit
 from data.components import STANDARD_COMPONENTS, STANDARD_FITTINGS
 from .noise_calculator import NoiseCalculator
+# Debug export imports
+import os
+from datetime import datetime
+import json as _json
+import csv as _csv
+from utils import get_user_data_directory
 
 
 @dataclass
@@ -34,6 +40,9 @@ class HVACPathCalculator:
     def __init__(self):
         """Initialize the HVAC path calculator"""
         self.noise_calculator = NoiseCalculator()
+        # Debug export switch via environment variable HVAC_DEBUG_EXPORT
+        env_val = str(os.environ.get("HVAC_DEBUG_EXPORT", "")).strip().lower()
+        self.debug_export_enabled = env_val in {"1", "true", "yes", "on"}
     
     def create_hvac_path_from_drawing(self, project_id: int, drawing_data: Dict) -> Optional[HVACPath]:
         """
@@ -215,6 +224,13 @@ class HVACPathCalculator:
             
             # Perform calculation
             calc_results = self.noise_calculator.calculate_hvac_path_noise(path_data, debug=debug)
+            
+            # Optional debug export
+            try:
+                if getattr(self, 'debug_export_enabled', False):
+                    self._debug_export_path_result(hvac_path, path_data, calc_results)
+            except Exception as e:
+                print(f"DEBUG_EXPORT: failed to export debug data for path {hvac_path.id}: {e}")
             
             # Update database with results
             if calc_results['calculation_valid']:
@@ -506,6 +522,138 @@ class HVACPathCalculator:
     def get_fitting_noise_adjustment(self, fitting_type: str) -> float:
         """Get standard noise adjustment for fitting type"""
         return STANDARD_FITTINGS.get(fitting_type, {}).get('noise_adjustment', 0.0)
+    
+    # --- Debug export helper ---
+    def _debug_export_path_result(self, hvac_path: HVACPath, path_data: Dict[str, Any], calc_results: Dict[str, Any]) -> None:
+        """Export per-path, per-element spectra and summary as JSON and CSV.
+        Controlled by HVAC_DEBUG_EXPORT env var (1/true/yes/on)."""
+        try:
+            # Prepare directory
+            base_dir = os.path.join(get_user_data_directory(), "debug_exports", f"project_{getattr(hvac_path, 'project_id', 'unknown')}")
+            os.makedirs(base_dir, exist_ok=True)
+            # Prepare filenames
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            raw_name = getattr(hvac_path, 'name', '') or f"path_{hvac_path.id}"
+            safe_name = ''.join(ch if (ch.isalnum() or ch in {'-', '_'}) else '_' for ch in raw_name)
+            json_path = os.path.join(base_dir, f"path_{hvac_path.id}_{safe_name}_{timestamp}.json")
+            csv_path = os.path.join(base_dir, f"path_{hvac_path.id}_{safe_name}_{timestamp}.csv")
+
+            # Frequency bands (engine standard)
+            bands = [63, 125, 250, 500, 1000, 2000, 4000, 8000]
+
+            # Build JSON payload
+            payload: Dict[str, Any] = {
+                'project_id': getattr(hvac_path, 'project_id', None),
+                'path_id': hvac_path.id,
+                'path_name': raw_name,
+                'timestamp': timestamp,
+                'frequency_bands_hz': bands,
+                'source': {
+                    'noise_dba': calc_results.get('source_noise'),
+                    'octave_band_levels': (path_data.get('source_component') or {}).get('octave_band_levels')
+                },
+                'terminal': {
+                    'noise_dba': calc_results.get('terminal_noise'),
+                    'octave_band_spectrum': calc_results.get('octave_band_spectrum')
+                },
+                'nc_rating': calc_results.get('nc_rating'),
+                'total_attenuation_dba': calc_results.get('total_attenuation_dba', calc_results.get('total_attenuation')),
+                'elements': []
+            }
+
+            segs: List[Dict[str, Any]] = path_data.get('segments', []) or []
+            elements: List[Dict[str, Any]] = calc_results.get('path_segments', []) or []
+            for elem in elements:
+                order = int(elem.get('element_order', -1))
+                etype = elem.get('element_type')
+                geometry: Optional[Dict[str, Any]] = None
+                # Map non-source, non-terminal elements to segment geometry by order-1
+                if etype != 'source' and order >= 1 and order - 1 < len(segs):
+                    s = segs[order - 1]
+                    geometry = {
+                        'length_ft': float(s.get('length', 0.0) or 0.0),
+                        'duct_shape': s.get('duct_shape'),
+                        'duct_type': s.get('duct_type'),
+                        'width_in': float(s.get('duct_width', 0.0) or 0.0),
+                        'height_in': float(s.get('duct_height', 0.0) or 0.0),
+                        'diameter_in': float(s.get('diameter', 0.0) or 0.0),
+                        'lining_in': float(s.get('lining_thickness', 0.0) or 0.0),
+                    }
+                payload['elements'].append({
+                    'element_order': order,
+                    'element_type': etype,
+                    'element_id': elem.get('element_id'),
+                    'noise_before_dba': elem.get('noise_before'),
+                    'noise_after_dba': elem.get('noise_after_dba', elem.get('noise_after')),
+                    'nc_rating': elem.get('nc_rating'),
+                    'attenuation_dba': elem.get('attenuation_dba'),
+                    'generated_dba': elem.get('generated_dba'),
+                    'attenuation_spectrum': elem.get('attenuation_spectrum'),
+                    'generated_spectrum': elem.get('generated_spectrum'),
+                    'noise_after_spectrum': elem.get('noise_after_spectrum'),
+                    'geometry': geometry,
+                })
+
+            # Write JSON
+            with open(json_path, 'w', encoding='utf-8') as jf:
+                _json.dump(payload, jf, indent=2)
+
+            # Write CSV (per-element row with band columns)
+            headers = [
+                'project_id', 'path_id', 'path_name', 'timestamp',
+                'element_order', 'element_type', 'element_id',
+                'noise_before_dba', 'noise_after_dba', 'attenuation_dba', 'generated_dba', 'nc_rating',
+                'length_ft', 'duct_shape', 'duct_type', 'width_in', 'height_in', 'diameter_in', 'lining_in'
+            ]
+            # Add band-specific columns
+            headers += [f"after_{b}" for b in bands]
+            headers += [f"att_{b}" for b in bands]
+            headers += [f"gen_{b}" for b in bands]
+
+            with open(csv_path, 'w', newline='', encoding='utf-8') as cf:
+                writer = _csv.DictWriter(cf, fieldnames=headers)
+                writer.writeheader()
+                for elem in payload['elements']:
+                    row = {
+                        'project_id': payload['project_id'],
+                        'path_id': payload['path_id'],
+                        'path_name': payload['path_name'],
+                        'timestamp': payload['timestamp'],
+                        'element_order': elem.get('element_order'),
+                        'element_type': elem.get('element_type'),
+                        'element_id': elem.get('element_id'),
+                        'noise_before_dba': elem.get('noise_before_dba'),
+                        'noise_after_dba': elem.get('noise_after_dba'),
+                        'attenuation_dba': elem.get('attenuation_dba'),
+                        'generated_dba': elem.get('generated_dba'),
+                        'nc_rating': elem.get('nc_rating'),
+                        'length_ft': (elem.get('geometry') or {}).get('length_ft'),
+                        'duct_shape': (elem.get('geometry') or {}).get('duct_shape'),
+                        'duct_type': (elem.get('geometry') or {}).get('duct_type'),
+                        'width_in': (elem.get('geometry') or {}).get('width_in'),
+                        'height_in': (elem.get('geometry') or {}).get('height_in'),
+                        'diameter_in': (elem.get('geometry') or {}).get('diameter_in'),
+                        'lining_in': (elem.get('geometry') or {}).get('lining_in'),
+                    }
+                    after = elem.get('noise_after_spectrum') or []
+                    att = elem.get('attenuation_spectrum') or []
+                    gen = elem.get('generated_spectrum') or []
+                    # Normalize to 8 values
+                    def _pad(x):
+                        if not isinstance(x, list):
+                            return [0.0] * 8
+                        return (list(x) + [0.0] * 8)[:8]
+                    after8 = _pad(after)
+                    att8 = _pad(att)
+                    gen8 = _pad(gen)
+                    for i, b in enumerate(bands):
+                        row[f"after_{b}"] = after8[i]
+                        row[f"att_{b}"] = att8[i]
+                        row[f"gen_{b}"] = gen8[i]
+                    writer.writerow(row)
+        except Exception as ex:
+            # Don't break main flow on debug export failures
+            print(f"DEBUG_EXPORT: Exception during export for path {getattr(hvac_path, 'id', '?')}: {ex}")
     
     def update_segment_properties(self, segment_id: int, properties: Dict) -> bool:
         """
