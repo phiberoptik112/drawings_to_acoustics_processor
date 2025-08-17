@@ -59,6 +59,8 @@ class PathResult:
     warnings: List[str]
     calculation_valid: bool
     error_message: Optional[str] = None
+    # Optional detailed debug log with per-element spectra and NC transitions
+    debug_log: Optional[List[Dict]] = None
 
 
 class HVACNoiseEngine:
@@ -95,7 +97,8 @@ class HVACNoiseEngine:
         self.unlined_rect_calc = None # UnlinedRectangularDuctCalculator() # TODO: Initialize this
         
     def calculate_path_noise(self, path_elements: List[PathElement], 
-                           path_id: str = "path_1") -> PathResult:
+                           path_id: str = "path_1",
+                           debug: bool = False) -> PathResult:
         """
         Calculate complete noise transmission through HVAC path
         
@@ -109,6 +112,7 @@ class HVACNoiseEngine:
         try:
             warnings_list = []
             element_results = []
+            debug_steps: List[Dict] = [] if debug else []
             
             # Validate path
             if not path_elements:
@@ -159,6 +163,20 @@ class HVACNoiseEngine:
                     'nc_rating': self._calculate_nc_rating(current_spectrum),
                 }
                 element_results.append(source_result)
+                if debug:
+                    debug_steps.append({
+                        'order': 0,
+                        'element_id': source_result['element_id'],
+                        'element_type': 'source',
+                        'spectrum_before': current_spectrum.copy(),
+                        'spectrum_after': current_spectrum.copy(),
+                        'attenuation_spectrum': [0.0] * 8,
+                        'generated_spectrum': [0.0] * 8,
+                        'dba_before': current_dba,
+                        'dba_after': current_dba,
+                        'nc_before': self._calculate_nc_rating(current_spectrum),
+                        'nc_after': self._calculate_nc_rating(current_spectrum),
+                    })
             except Exception:
                 pass
             
@@ -169,8 +187,10 @@ class HVACNoiseEngine:
                 if element.element_type == 'source':
                     continue  # Already processed
                 
-                # Capture noise before this element for legacy UI
+                # Capture noise before this element for legacy UI / debug
                 noise_before_dba = current_dba
+                spectrum_before = current_spectrum.copy()
+                nc_before = self._calculate_nc_rating(spectrum_before)
                 element_result = self._calculate_element_effect(element, current_spectrum, current_dba)
                 element_result['element_id'] = element.element_id
                 element_result['element_type'] = element.element_type
@@ -200,6 +220,7 @@ class HVACNoiseEngine:
                 
                 # Update A-weighted level
                 current_dba = self._calculate_dba_from_spectrum(current_spectrum)
+                nc_after = self._calculate_nc_rating(current_spectrum)
                 
                 # Provide legacy keys expected by UI
                 element_result['noise_before'] = noise_before_dba
@@ -208,12 +229,27 @@ class HVACNoiseEngine:
                 element_result['noise_after_spectrum'] = current_spectrum.copy()
                 # Include per-element NC rating for UI summary panels
                 try:
-                    element_result['nc_rating'] = self._calculate_nc_rating(current_spectrum)
+                    element_result['nc_rating'] = nc_after
                 except Exception:
                     # If NC calculation fails, omit but do not break pipeline
                     pass
                 
                 element_results.append(element_result)
+
+                if debug:
+                    debug_steps.append({
+                        'order': i,
+                        'element_id': element.element_id,
+                        'element_type': element.element_type,
+                        'spectrum_before': spectrum_before,
+                        'attenuation_spectrum': element_result.get('attenuation_spectrum'),
+                        'generated_spectrum': element_result.get('generated_spectrum'),
+                        'spectrum_after': current_spectrum.copy(),
+                        'dba_before': noise_before_dba,
+                        'dba_after': current_dba,
+                        'nc_before': nc_before,
+                        'nc_after': nc_after,
+                    })
                 
                 # Track total attenuation
                 if element_result.get('attenuation_dba'):
@@ -231,7 +267,8 @@ class HVACNoiseEngine:
                 octave_band_spectrum=current_spectrum,
                 element_results=element_results,
                 warnings=warnings_list,
-                calculation_valid=True
+                calculation_valid=True,
+                debug_log=debug_steps if debug else None
             )
             
         except Exception as e:
@@ -245,7 +282,8 @@ class HVACNoiseEngine:
                 element_results=[],
                 warnings=[],
                 calculation_valid=False,
-                error_message=str(e)
+                error_message=str(e),
+                debug_log=debug_steps if debug else None
             )
     
     def _calculate_element_effect(self, element: PathElement, 

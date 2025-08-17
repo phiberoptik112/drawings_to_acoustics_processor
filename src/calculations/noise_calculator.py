@@ -33,7 +33,7 @@ class NoiseCalculator:
         """Initialize the noise calculator"""
         self.hvac_engine = HVACNoiseEngine()
     
-    def calculate_hvac_path_noise(self, path_data: Dict) -> Dict:
+    def calculate_hvac_path_noise(self, path_data: Dict, debug: bool = False) -> Dict:
         """
         Calculate noise transmission through an HVAC path from source to terminal
         
@@ -51,7 +51,7 @@ class NoiseCalculator:
             path_elements = self._convert_path_data_to_elements(path_data)
             
             # Use the HVAC engine to calculate
-            result = self.hvac_engine.calculate_path_noise(path_elements)
+            result = self.hvac_engine.calculate_path_noise(path_elements, debug=debug)
             
             # Convert back to the expected format
             return self._convert_result_to_dict(result)
@@ -147,7 +147,8 @@ class NoiseCalculator:
             'calculation_valid': result.calculation_valid,
             'warnings': result.warnings,
             'error': result.error_message,
-            'octave_band_spectrum': result.octave_band_spectrum
+            'octave_band_spectrum': result.octave_band_spectrum,
+            'debug_log': getattr(result, 'debug_log', None)
         }
     
     def calculate_segment_attenuation(self, segment_data: Dict) -> Dict:

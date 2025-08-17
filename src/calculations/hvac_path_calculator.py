@@ -31,6 +31,7 @@ class PathAnalysisResult:
     segment_results: List[Dict]
     warnings: List[str]
     error_message: Optional[str] = None
+    debug_log: Optional[List[Dict]] = None
 
 
 class HVACPathCalculator:
@@ -197,7 +198,7 @@ class HVACPathCalculator:
             print(f"Error creating HVAC path: {e}")
             return None
     
-    def calculate_path_noise(self, path_id: int) -> PathAnalysisResult:
+    def calculate_path_noise(self, path_id: int, debug: bool = False) -> PathAnalysisResult:
         """
         Calculate noise for a specific HVAC path
         
@@ -222,7 +223,8 @@ class HVACPathCalculator:
                 raise ValueError("Could not build path data from database")
             
             # Perform calculation
-            calc_results = self.noise_calculator.calculate_hvac_path_noise(path_data)
+            calc_results = self.noise_calculator.calculate_hvac_path_noise(path_data, debug=debug)
+            
             # Optional debug export
             try:
                 if getattr(self, 'debug_export_enabled', False):
@@ -247,7 +249,8 @@ class HVACPathCalculator:
                 calculation_valid=calc_results['calculation_valid'],
                 segment_results=calc_results['path_segments'],
                 warnings=calc_results.get('warnings', []),
-                error_message=calc_results.get('error')
+                error_message=calc_results.get('error'),
+                debug_log=calc_results.get('debug_log')
             )
             
             session.close()
