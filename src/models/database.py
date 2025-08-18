@@ -15,7 +15,7 @@ try:
 except ImportError:
     # Fallback if utils not available
     def ensure_user_data_directory():
-        user_dir = os.path.expanduser("~/Documents/AcousticAnalysis")
+        user_dir = os.path.expanduser("~/Documents/drawings_to_acoustics_processor/debug_data")
         os.makedirs(user_dir, exist_ok=True)
         return user_dir
     

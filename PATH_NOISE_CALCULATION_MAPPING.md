@@ -115,7 +115,7 @@
 - When enabled, each call to `HVACPathCalculator.calculate_path_noise(...)` writes:
   - JSON: full payload (source/terminal spectra, per-element spectra, geometry, NC/attenuation).
   - CSV: one row per element with band columns for after/attenuation/generated.
-- Output directory: `~/Documents/AcousticAnalysis/debug_exports/project_<project_id>/`
+- Output directory: `~/Documents/drawings_to_acoustics_processor/debug_data/debug_exports/project_<project_id>/`
   - Filenames: `path_<id>_<name>_<YYYYMMDD_HHMMSS>.json` and `.csv`.
 - Implementation:
   - See `HVACPathCalculator._debug_export_path_result(...)`.

@@ -64,7 +64,7 @@ def get_user_data_directory():
     Returns:
         str: Absolute path to user data directory
     """
-    return os.path.expanduser("~/Documents/AcousticAnalysis")
+    return os.path.expanduser("~/Documents/drawings_to_acoustics_processor/debug_data")
 
 
 def ensure_user_data_directory():
