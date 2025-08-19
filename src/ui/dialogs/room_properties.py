@@ -375,7 +375,7 @@ class RoomPropertiesDialog(QDialog):
         """Calculate room volume and wall area"""
         if not self.rectangle_data or not self.scale_manager:
             return
-            
+        
         area_real = self.rectangle_data.get('area_real', 0)
         height = self.ceiling_height_spin.value()
         
@@ -386,37 +386,41 @@ class RoomPropertiesDialog(QDialog):
             self.volume_label.setText(volume_formatted)
             
             # Calculate wall area (perimeter × height)
-            width_real = self.rectangle_data.get('width_real', 0)
-            height_real = self.rectangle_data.get('height_real', 0)
-            
-            if width_real > 0 and height_real > 0:
-                perimeter = 2 * (width_real + height_real)
+            perimeter = self.rectangle_data.get('perimeter_real')
+            if not perimeter:
+                width_real = self.rectangle_data.get('width_real', 0)
+                height_real = self.rectangle_data.get('height_real', 0)
+                if width_real > 0 and height_real > 0:
+                    perimeter = 2 * (width_real + height_real)
+            if perimeter:
                 wall_area = perimeter * height
                 wall_area_formatted = self.scale_manager.format_area(wall_area)
                 self.wall_area_label.setText(wall_area_formatted)
                 
                 # Update calculations preview
                 self.update_calculations_preview()
-                
+
     def update_calculations_preview(self):
         """Update the calculations preview in the calculations tab"""
         if not self.rectangle_data or not self.scale_manager:
             return
-            
+        
         # Get surface areas
         floor_area = self.rectangle_data.get('area_real', 0)
         ceiling_area = floor_area
         height = self.ceiling_height_spin.value()
         
-        width_real = self.rectangle_data.get('width_real', 0)
-        height_real = self.rectangle_data.get('height_real', 0)
-        
-        if width_real > 0 and height_real > 0:
-            perimeter = 2 * (width_real + height_real)
+        perimeter = self.rectangle_data.get('perimeter_real')
+        if not perimeter:
+            width_real = self.rectangle_data.get('width_real', 0)
+            height_real = self.rectangle_data.get('height_real', 0)
+            if width_real > 0 and height_real > 0:
+                perimeter = 2 * (width_real + height_real)
+        if perimeter:
             wall_area = perimeter * height
         else:
             wall_area = 0
-            
+        
         # Update areas preview
         areas_text = f"Floor Area: {self.scale_manager.format_area(floor_area)}\n"
         areas_text += f"Ceiling Area: {self.scale_manager.format_area(ceiling_area)}\n"
