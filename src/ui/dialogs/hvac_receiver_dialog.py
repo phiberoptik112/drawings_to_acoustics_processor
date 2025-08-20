@@ -142,13 +142,66 @@ class HVACReceiverDialog(QDialog):
             dist_spin = QDoubleSpinBox()
             dist_spin.setRange(1.0, 100.0)
             dist_spin.setDecimals(1)
-            dist_spin.setValue(10.0)
+            # Load persisted distance if available
+            try:
+                dist_val = float(getattr(path, 'receiver_distance_ft', 0) or 0)
+                if dist_val <= 0:
+                    dist_val = 10.0
+            except Exception:
+                dist_val = 10.0
+            dist_spin.setValue(dist_val)
+            dist_spin.setProperty("path_id", path.id)
+            dist_spin.valueChanged.connect(self._on_distance_changed)
             self.table.setCellWidget(row, 4, dist_spin)
 
             # Method selection
             method_combo = QComboBox()
             method_combo.addItems(["Single Source (Eq27)", "Distributed Array (Eq29)"])
+            # Load persisted method if available
+            method = (getattr(path, 'receiver_method', '') or '').lower()
+            if method.startswith('dist'):
+                method_combo.setCurrentIndex(1)
+            else:
+                method_combo.setCurrentIndex(0)
+            method_combo.setProperty("path_id", path.id)
+            method_combo.currentIndexChanged.connect(self._on_method_changed)
             self.table.setCellWidget(row, 5, method_combo)
+
+    # --- Handlers to persist per-path receiver settings ---
+    def _on_distance_changed(self, value: float) -> None:
+        try:
+            widget = self.sender()
+            path_id = int(widget.property("path_id")) if widget else None
+            if not path_id:
+                return
+            session = get_session()
+            try:
+                db_path = session.query(HVACPath).filter(HVACPath.id == path_id).first()
+                if db_path:
+                    db_path.receiver_distance_ft = float(value)
+                    session.commit()
+            finally:
+                session.close()
+        except Exception:
+            pass
+
+    def _on_method_changed(self, idx: int) -> None:
+        try:
+            widget = self.sender()
+            path_id = int(widget.property("path_id")) if widget else None
+            if not path_id:
+                return
+            method_str = 'single' if idx == 0 else 'distributed'
+            session = get_session()
+            try:
+                db_path = session.query(HVACPath).filter(HVACPath.id == path_id).first()
+                if db_path:
+                    db_path.receiver_method = method_str
+                    session.commit()
+            finally:
+                session.close()
+        except Exception:
+            pass
 
     # --- Calculation ---
     def calculate_combined_noise(self) -> None:
@@ -189,6 +242,20 @@ class HVACReceiverDialog(QDialog):
                 method_combo = self.table.cellWidget(row, 5)
                 distance = float(dist_spin.value()) if isinstance(dist_spin, QDoubleSpinBox) else 10.0
                 method_text = method_combo.currentText() if isinstance(method_combo, QComboBox) else "Single Source (Eq27)"
+
+                # Persist current choices
+                try:
+                    session = get_session()
+                    try:
+                        db_path = session.query(HVACPath).filter(HVACPath.id == getattr(path, 'id', None)).first()
+                        if db_path:
+                            db_path.receiver_distance_ft = distance
+                            db_path.receiver_method = 'single' if method_text.startswith("Single") else 'distributed'
+                            session.commit()
+                    finally:
+                        session.close()
+                except Exception:
+                    pass
 
                 if method_text.startswith("Single"):
                     # Use Equation 27 for small rooms by band

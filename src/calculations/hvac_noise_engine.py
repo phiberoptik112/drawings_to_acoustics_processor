@@ -14,7 +14,8 @@ from .circular_duct_calculations import CircularDuctCalculator
 from .rectangular_duct_calculations import RectangularDuctCalculator
 from .flex_duct_calculations import FlexDuctCalculator
 from .elbow_turning_vane_generated_noise_calculations import ElbowTurningVaneCalculator
-from .junction_elbow_generated_noise_calculations import JunctionElbowNoiseCalculator
+from .junction_elbow_generated_noise_calculations import JunctionElbowNoiseCalculator, JunctionType
+from .rectangular_elbows_calculations import RectangularElbowsCalculator
 from .receiver_room_sound_correction_calculations import ReceiverRoomSoundCorrection
 # TODO: Create unlined_rectangular_duct_calculations.py
 # from .unlined_rectangular_duct_calculations import UnlinedRectangularDuctCalculator
@@ -44,6 +45,8 @@ class PathElement:
     # Noise properties
     source_noise_level: float = 0.0  # dB(A)
     octave_band_levels: Optional[List[float]] = None  # 8-band spectrum
+    # Optional fitting subtype hint (e.g., 'elbow_90', 'tee_branch', 'x_junction')
+    fitting_type: Optional[str] = None
 
 
 @dataclass
@@ -95,6 +98,7 @@ class HVACNoiseEngine:
         self.junction_calc = JunctionElbowNoiseCalculator()
         self.room_calc = ReceiverRoomSoundCorrection()
         self.unlined_rect_calc = None # UnlinedRectangularDuctCalculator() # TODO: Initialize this
+        self.rect_elbows_calc = RectangularElbowsCalculator()
         
     def calculate_path_noise(self, path_elements: List[PathElement], 
                            path_id: str = "path_1",
@@ -389,6 +393,24 @@ class HVACNoiseEngine:
         }
         
         try:
+            # Optional insertion loss due to elbow (rectangular elbows per ASHRAE tables)
+            # Apply only for rectangular ducts; circular elbow insertion loss model not integrated here
+            attenuation_spectrum: List[float] = [0.0] * 8
+            if (getattr(element, 'duct_shape', 'rectangular') != 'circular'):
+                lined = (element.lining_thickness or 0.0) > 0.0
+                # Determine elbow type from hints
+                elbow_type = 'square_with_vanes' if (element.num_vanes or 0) > 0 else 'square_no_vanes'
+                # Use width in inches; calculator expects per-frequency calls
+                for i, freq in enumerate(self.FREQUENCY_BANDS):
+                    attenuation_spectrum[i] = float(self.rect_elbows_calc.calculate_elbow_insertion_loss(
+                        frequency=freq,
+                        width=element.width or 0.0,
+                        elbow_type=elbow_type,
+                        lined=lined
+                    ) or 0.0)
+                result['attenuation_spectrum'] = attenuation_spectrum
+                result['attenuation_dba'] = self._calculate_dba_from_spectrum(attenuation_spectrum)
+
             if element.vane_chord_length > 0 and element.num_vanes > 0:
                 # Elbow with turning vanes
                 duct_area = self._calculate_duct_area(element)
@@ -404,16 +426,24 @@ class HVACNoiseEngine:
             else:
                 # Simple elbow - use junction calculator with elbow type
                 duct_area = self._calculate_duct_area(element)
-                # Use the junction calculator's spectrum method
+                # Choose junction/elbow type based on fitting hint
+                fit = (element.fitting_type or '').lower() if hasattr(element, 'fitting_type') else ''
+                jtype = JunctionType.ELBOW_90_NO_VANES
+                # Future: map radiused elbows if available
+                # Use the junction calculator's spectrum method with explicit type
                 spectrum_data = self.junction_calc.calculate_junction_noise_spectrum(
-                    element.flow_rate, duct_area, element.flow_rate, duct_area
+                    branch_flow_rate=element.flow_rate,
+                    branch_cross_sectional_area=duct_area,
+                    main_flow_rate=element.flow_rate,
+                    main_cross_sectional_area=duct_area,
+                    junction_type=jtype
                 )
-                # Extract elbow spectrum from results
-                if 'elbow_90_no_vanes' in spectrum_data:
-                    elbow_spectrum = spectrum_data['elbow_90_no_vanes']
-                    for i, freq in enumerate(self.FREQUENCY_BANDS):
-                        if str(freq) in elbow_spectrum:
-                            result['generated_spectrum'][i] = elbow_spectrum[str(freq)]
+                # For elbows, use the main duct spectrum per Eq (4.25)
+                elbow_spectrum = spectrum_data.get('main_duct') or {}
+                for i, freq in enumerate(self.FREQUENCY_BANDS):
+                    band_key = f"{freq}Hz"
+                    if band_key in elbow_spectrum:
+                        result['generated_spectrum'][i] = elbow_spectrum[band_key]
             
             # Calculate A-weighted generated noise
             result['generated_dba'] = self._calculate_dba_from_spectrum(result['generated_spectrum'])
@@ -434,16 +464,28 @@ class HVACNoiseEngine:
         
         try:
             duct_area = self._calculate_duct_area(element)
-            # Use the junction calculator's spectrum method
+            # Use the junction calculator's spectrum method with explicit type
+            fit = (element.fitting_type or '').lower() if hasattr(element, 'fitting_type') else ''
+            jtype = JunctionType.T_JUNCTION
+            if 'x' in fit or 'cross' in fit:
+                jtype = JunctionType.X_JUNCTION
+            elif 'branch' in fit:
+                jtype = JunctionType.BRANCH_TAKEOFF_90
+            elif 'tee' in fit or 't_' in fit:
+                jtype = JunctionType.T_JUNCTION
             spectrum_data = self.junction_calc.calculate_junction_noise_spectrum(
-                element.flow_rate, duct_area, element.flow_rate, duct_area
+                branch_flow_rate=element.flow_rate,
+                branch_cross_sectional_area=duct_area,
+                main_flow_rate=element.flow_rate,
+                main_cross_sectional_area=duct_area,
+                junction_type=jtype
             )
-            # Extract T-junction spectrum from results
-            if 't_junction' in spectrum_data:
-                junction_spectrum = spectrum_data['t_junction']
-                for i, freq in enumerate(self.FREQUENCY_BANDS):
-                    if str(freq) in junction_spectrum:
-                        result['generated_spectrum'][i] = junction_spectrum[str(freq)]
+            # For junctions, use main duct spectrum per Eq (4.24)
+            junction_spectrum = spectrum_data.get('main_duct') or {}
+            for i, freq in enumerate(self.FREQUENCY_BANDS):
+                band_key = f"{freq}Hz"
+                if band_key in junction_spectrum:
+                    result['generated_spectrum'][i] = junction_spectrum[band_key]
             
             # Calculate A-weighted generated noise
             result['generated_dba'] = self._calculate_dba_from_spectrum(result['generated_spectrum'])
@@ -555,21 +597,27 @@ class HVACNoiseEngine:
             return 10 * math.log10(combined_linear)
     
     def _calculate_nc_rating(self, spectrum: List[float]) -> int:
-        """Calculate NC rating from octave band spectrum"""
-        # Find the highest NC curve that the spectrum doesn't exceed
-        for nc_rating in sorted(self.NC_CURVES.keys(), reverse=True):
+        """Calculate NC rating from octave band spectrum
+        
+        NC rating is defined as the lowest NC curve that fully contains the
+        measured octave-band spectrum (i.e., the minimum rating for which no
+        band exceeds the curve limit). Iterate in ascending order to find the
+        first curve not exceeded.
+        """
+        for nc_rating in sorted(self.NC_CURVES.keys()):
             nc_curve = self.NC_CURVES[nc_rating]
             exceeds = False
-            
+
             for i, level in enumerate(spectrum):
                 if i < len(nc_curve) and level > nc_curve[i]:
                     exceeds = True
                     break
-            
+
             if not exceeds:
                 return nc_rating
-        
-        return 65  # Default to highest NC rating if all exceeded
+
+        # If every curve is exceeded, return the highest rating
+        return max(self.NC_CURVES.keys())
     
     def get_nc_description(self, nc_rating: int) -> str:
         """Get description of NC rating"""

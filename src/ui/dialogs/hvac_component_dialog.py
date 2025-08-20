@@ -258,12 +258,21 @@ class HVACComponentDialog(QDialog):
         select_btn.clicked.connect(accept_selection)
         cancel_btn.clicked.connect(chooser.reject)
 
-        # Save-on-close behavior: if a unit is currently selected when the chooser closes,
-        # persist the in-dialog edits so users don't have to click Update explicitly.
+        # Save-on-close behavior: apply currently highlighted item even if user closes the chooser
+        # without clicking Select. This ensures the latest visible choice is used.
         def on_close_result(result: int):
-            # If the dialog was accepted, _apply_mechanical_unit already persisted when editing
-            # via _apply_mechanical_unit's immediate save; if rejected, do nothing.
-            pass
+            try:
+                item = listw.currentItem()
+                if item is None:
+                    return
+                unit = item.data(Qt.UserRole)
+                if unit is None:
+                    return
+                # Apply selection (this also persists immediately when editing)
+                self._apply_mechanical_unit(unit)
+            except Exception:
+                # Non-fatal; user can still explicitly select or update
+                pass
         chooser.finished.connect(on_close_result)
 
         chooser.exec()
@@ -433,14 +442,22 @@ class HVACComponentDialog(QDialog):
             session = get_session()
             
             if self.is_editing:
-                # Update existing component
-                self.component.name = name
-                self.component.component_type = self.type_combo.currentText()
-                self.component.x_position = self.x_spin.value()
-                self.component.y_position = self.y_spin.value()
-                self.component.noise_level = self.noise_spin.value()
-                
+                # Update existing component using a DB-attached instance to ensure persistence
+                db_comp = session.query(HVACComponent).filter(HVACComponent.id == self.component.id).first()
+                if not db_comp:
+                    raise RuntimeError("Component not found")
+                db_comp.name = name
+                db_comp.component_type = self.type_combo.currentText()
+                db_comp.x_position = self.x_spin.value()
+                db_comp.y_position = self.y_spin.value()
+                db_comp.noise_level = self.noise_spin.value()
                 session.commit()
+                # Mirror saved values back into the in-memory object used by the UI
+                self.component.name = db_comp.name
+                self.component.component_type = db_comp.component_type
+                self.component.x_position = db_comp.x_position
+                self.component.y_position = db_comp.y_position
+                self.component.noise_level = db_comp.noise_level
                 component = self.component
             else:
                 # Create new component

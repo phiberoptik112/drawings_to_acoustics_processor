@@ -87,6 +87,11 @@ class NoiseCalculator:
         for i, segment in enumerate(segments):
             element_type = self._determine_element_type(segment)
             
+            # Normalize duct shape nomenclature ('round' -> 'circular')
+            shape = segment.get('duct_shape', 'rectangular')
+            if isinstance(shape, str) and shape.lower() == 'round':
+                shape = 'circular'
+
             element = PathElement(
                 element_type=element_type,
                 element_id=f'segment_{i+1}',
@@ -94,7 +99,7 @@ class NoiseCalculator:
                 width=segment.get('duct_width', 12.0),
                 height=segment.get('duct_height', 8.0),
                 diameter=segment.get('diameter', 0.0),
-                duct_shape=segment.get('duct_shape', 'rectangular'),
+                duct_shape=shape,
                 duct_type=segment.get('duct_type', 'sheet_metal'),
                 lining_thickness=segment.get('lining_thickness', 0.0),
                 flow_rate=segment.get('flow_rate', 0.0),
@@ -103,7 +108,8 @@ class NoiseCalculator:
                 vane_chord_length=segment.get('vane_chord_length', 0.0),
                 num_vanes=segment.get('num_vanes', 0),
                 room_volume=segment.get('room_volume', 0.0),
-                room_absorption=segment.get('room_absorption', 0.0)
+                room_absorption=segment.get('room_absorption', 0.0),
+                fitting_type=segment.get('fitting_type')
             )
             elements.append(element)
         
@@ -125,10 +131,13 @@ class NoiseCalculator:
         """Determine the element type based on segment properties"""
         if segment.get('duct_type') == 'flexible':
             return 'flex_duct'
-        elif segment.get('fitting_type') == 'elbow':
-            return 'elbow'
-        elif segment.get('fitting_type') == 'junction':
-            return 'junction'
+        # Map specific fitting names to general types
+        ft = (segment.get('fitting_type') or '').lower()
+        if ft:
+            if ft.startswith('elbow'):
+                return 'elbow'
+            if ('tee' in ft) or ('junction' in ft) or ('branch' in ft):
+                return 'junction'
         else:
             return 'duct'
     

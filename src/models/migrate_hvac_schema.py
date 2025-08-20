@@ -62,6 +62,9 @@ def ensure_hvac_schema():
                 ("modified_date", "DATETIME"),
                 # New association columns (idempotent)
                 ("primary_source_id", "INTEGER"),
+                # Receiver analysis preferences
+                ("receiver_distance_ft", "REAL"),
+                ("receiver_method", "TEXT"),
             ],
         )
 

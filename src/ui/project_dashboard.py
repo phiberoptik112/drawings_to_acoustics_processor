@@ -23,6 +23,7 @@ from models import (
     DrawingElement,
 )
 from models.hvac import HVACSegment
+from models.hvac import SegmentFitting
 from sqlalchemy.orm import selectinload
 from ui.drawing_interface import DrawingInterface
 from ui.drawing_panel import DrawingPanel
@@ -77,6 +78,12 @@ class ProjectDashboard(QMainWindow):
         
         # Main layout
         main_layout = QVBoxLayout()
+        # Keep top chrome compact so center content gets vertical space
+        try:
+            main_layout.setContentsMargins(6, 4, 6, 6)
+            main_layout.setSpacing(6)
+        except Exception:
+            pass
         
         # Project info header
         self.create_project_header(main_layout)
@@ -151,26 +158,58 @@ class ProjectDashboard(QMainWindow):
         help_menu.addAction('About', self.show_about)
         
     def create_project_header(self, layout):
-        """Create project information header"""
+        """Create a compact project information header (single line)."""
         header_widget = QWidget()
         header_layout = QHBoxLayout()
+        try:
+            header_layout.setContentsMargins(6, 2, 6, 2)
+            header_layout.setSpacing(8)
+        except Exception:
+            pass
         
-        # Project title and info
+        # Project title and optional description on one row
         title_label = QLabel(self.project.name)
-        title_label.setFont(QFont("Arial", 16, QFont.Bold))
-        title_label.setStyleSheet("color: #ffffff; margin: 10px;")
+        try:
+            title_label.setFont(QFont("Arial", 13, QFont.Bold))
+        except Exception:
+            pass
+        title_label.setStyleSheet("color: #ffffff; margin: 0px;")
         
-        description_label = QLabel(self.project.description or "No description")
-        description_label.setStyleSheet("color: #ffffff; margin: 10px;")
+        # Only show description if it exists and isn't a placeholder
+        desc_text = (self.project.description or "").strip()
+        show_desc = bool(desc_text and desc_text.lower() != "no description")
+        if show_desc:
+            description_label = QLabel(desc_text)
+            description_label.setStyleSheet("color: #cfcfcf; margin: 0px;")
+            try:
+                description_label.setWordWrap(False)
+            except Exception:
+                pass
         
-        info_layout = QVBoxLayout()
-        info_layout.addWidget(title_label)
-        info_layout.addWidget(description_label)
+        # Inline layout: Title — Description
+        info_row = QHBoxLayout()
+        try:
+            info_row.setContentsMargins(0, 0, 0, 0)
+            info_row.setSpacing(8)
+        except Exception:
+            pass
+        info_row.addWidget(title_label)
+        if show_desc:
+            sep = QLabel("—")
+            sep.setStyleSheet("color: #9a9a9a;")
+            info_row.addWidget(sep)
+            info_row.addWidget(description_label)
         
-        header_layout.addLayout(info_layout)
+        header_layout.addLayout(info_row)
         header_layout.addStretch()
         
         header_widget.setLayout(header_layout)
+        # Cap the header height so it doesn't steal vertical space
+        try:
+            header_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+            header_widget.setMaximumHeight(32)
+        except Exception:
+            pass
         layout.addWidget(header_widget)
         
     def apply_dark_list_style(self, list_widget: QListWidget) -> None:
@@ -330,10 +369,14 @@ class ProjectDashboard(QMainWindow):
         
         duplicate_btn = QPushButton("Duplicate")
         duplicate_btn.clicked.connect(self.duplicate_space)
+
+        delete_space_btn = QPushButton("Delete")
+        delete_space_btn.clicked.connect(self.delete_space)
         
         button_layout.addWidget(new_space_btn)
         button_layout.addWidget(edit_space_btn)
         button_layout.addWidget(duplicate_btn)
+        button_layout.addWidget(delete_space_btn)
         button_layout.addStretch()
         
         layout.addLayout(button_layout)
@@ -904,12 +947,27 @@ class ProjectDashboard(QMainWindow):
 
             try:
                 # Start cleanup in a single transaction
-                # 1) Delete HVAC segments that reference components on this drawing
+                # 1) Delete HVAC segment fittings for segments tied to components on this drawing
                 if component_ids:
-                    session.query(HVACSegment).filter(
-                        (HVACSegment.from_component_id.in_(component_ids))
-                        | (HVACSegment.to_component_id.in_(component_ids))
-                    ).delete(synchronize_session=False)
+                    segment_ids = [
+                        sid for (sid,) in session.query(HVACSegment.id)
+                        .filter(
+                            (HVACSegment.from_component_id.in_(component_ids))
+                            | (HVACSegment.to_component_id.in_(component_ids))
+                        )
+                        .all()
+                    ]
+
+                    if segment_ids:
+                        # Delete fittings first to satisfy FK constraints
+                        session.query(SegmentFitting).filter(
+                            SegmentFitting.segment_id.in_(segment_ids)
+                        ).delete(synchronize_session=False)
+
+                        # Then delete the segments themselves
+                        session.query(HVACSegment).filter(
+                            HVACSegment.id.in_(segment_ids)
+                        ).delete(synchronize_session=False)
 
                 # 2) Delete HVAC components on this drawing
                 session.query(HVACComponent).filter(HVACComponent.drawing_id == drawing_id).delete(
@@ -1069,6 +1127,75 @@ class ProjectDashboard(QMainWindow):
     def duplicate_space(self):
         """Duplicate the selected space"""
         QMessageBox.information(self, "Duplicate Space", "Space duplication will be implemented.")
+    
+    def delete_space(self):
+        """Delete the selected space and detach dependent records"""
+        try:
+            current_item = self.spaces_list.currentItem()
+            if not current_item:
+                QMessageBox.information(self, "Delete Space", "Select a space to delete.")
+                return
+            space_id = current_item.data(Qt.UserRole)
+            if space_id is None:
+                QMessageBox.information(self, "Delete Space", "Select a valid space to delete.")
+                return
+
+            session = get_session()
+            space = session.query(Space).filter(Space.id == space_id).first()
+            if not space:
+                session.close()
+                QMessageBox.warning(self, "Delete Space", "Selected space not found.")
+                return
+
+            # Gather dependency counts for confirmation
+            hvac_count = session.query(HVACPath).filter(HVACPath.target_space_id == space_id).count()
+            boundaries_count = session.query(RoomBoundary).filter(RoomBoundary.space_id == space_id).count()
+
+            confirm_text = (
+                f"Delete space '{space.name}'?\n\n"
+                f"This will:\n"
+                f"• Delete {boundaries_count} room boundary(ies) linked to this space\n"
+                f"• Detach {hvac_count} HVAC path(s) currently targeting this space\n"
+                f"• Remove RT60 results and surface materials stored for this space"
+            )
+
+            reply = QMessageBox.question(
+                self,
+                "Confirm Delete",
+                confirm_text,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                session.close()
+                return
+
+            try:
+                # Detach HVAC paths that reference this space
+                session.query(HVACPath).filter(HVACPath.target_space_id == space_id).update(
+                    {HVACPath.target_space_id: None}, synchronize_session=False
+                )
+
+                # Delete the space (cascades remove related orphan rows per model config)
+                session.delete(space)
+                session.commit()
+            except Exception as e:
+                session.rollback()
+                session.close()
+                QMessageBox.critical(self, "Delete Space", f"Failed to delete space:\n{e}")
+                return
+
+            session.close()
+
+            # Refresh UI elements
+            self.refresh_spaces()
+            self.refresh_hvac_paths()
+            self.update_analysis_status()
+            self.update_status_bar()
+
+            QMessageBox.information(self, "Delete Space", f"Space '{space.name}' deleted.")
+        except Exception as e:
+            QMessageBox.critical(self, "Delete Space", f"Unexpected error:\n{e}")
         
     def new_hvac_path(self):
         """Create a new HVAC path using the HVACPathDialog"""

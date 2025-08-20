@@ -7,6 +7,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass
 from models import get_session
 from models.hvac import HVACPath, HVACSegment, HVACComponent, SegmentFitting
+from sqlalchemy.orm import selectinload
 from models.mechanical import MechanicalUnit
 from data.components import STANDARD_COMPONENTS, STANDARD_FITTINGS
 from .noise_calculator import NoiseCalculator
@@ -316,6 +317,33 @@ class HVACPathCalculator:
             Path data dictionary for noise calculation
         """
         try:
+            # Always refetch the path with eager-loaded relationships to avoid
+            # lazy-loading on detached instances coming from the UI layer.
+            try:
+                path_id = getattr(hvac_path, 'id', None) if not isinstance(hvac_path, int) else int(hvac_path)
+                if path_id is None:
+                    raise ValueError("HVACPath id is required to build path data")
+                _sess = get_session()
+                try:
+                    hvac_path = (
+                        _sess.query(HVACPath)
+                        .options(
+                            selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
+                            selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                            selectinload(HVACPath.segments).selectinload(HVACSegment.fittings),
+                            selectinload(HVACPath.primary_source),
+                        )
+                        .filter(HVACPath.id == path_id)
+                        .first()
+                    )
+                finally:
+                    try:
+                        _sess.close()
+                    except Exception:
+                        pass
+            except Exception:
+                # Fall through and hope provided object is usable
+                pass
             path_data = {
                 'source_component': {},
                 'terminal_component': {},
@@ -328,68 +356,74 @@ class HVACPathCalculator:
             
             # Ensure segments are ordered by actual connectivity
             try:
-                preferred_source_id = getattr(getattr(hvac_path, 'primary_source', None), 'id', None)
+                # Use primary_source_id directly to avoid triggering a lazy-load
+                preferred_source_id = getattr(hvac_path, 'primary_source_id', None)
                 segments = self._order_segments_by_connectivity(list(segments), preferred_source_component_id=preferred_source_id)
             except Exception as e:
                 print(f"DEBUG: Using stored segment order; connectivity ordering failed: {e}")
 
-            # Get source: prefer selected MechanicalUnit (primary_source), otherwise first segment's from_component
-            unit = None
-            # Case 1: Relationship points to HVACComponent (schema FK) – try to look up MechanicalUnit by id if present
+            # Get source: prefer explicit HVACComponent relationship; fallback to MechanicalUnit id (legacy),
+            # otherwise use the first segment's from_component.
+            source_comp = None
             try:
-                if getattr(hvac_path, 'primary_source_id', None):
-                    # Attempt to resolve a MechanicalUnit with the same id (stored by the dialog)
-                    sess2 = get_session()
-                    try:
-                        mu = sess2.query(MechanicalUnit).filter(MechanicalUnit.id == hvac_path.primary_source_id).first()
-                        unit = mu if mu is not None else None
-                    finally:
-                        try:
-                            sess2.close()
-                        except Exception:
-                            pass
+                source_comp = getattr(hvac_path, 'primary_source', None)
             except Exception:
-                unit = None
+                source_comp = None
 
-            # Case 2: If relationship actually references a MechanicalUnit-like object (defensive)
-            if unit is None and hvac_path.primary_source is not None:
-                obj = hvac_path.primary_source
-                if hasattr(obj, 'unit_type') or hasattr(obj, 'outlet_levels_json'):
-                    unit = obj  # Treat as MechanicalUnit-like
-
-            if unit is not None:
-                # Parse outlet spectrum if available
-                octave_bands = None
-                try:
-                    import json
-                    ob = getattr(unit, 'outlet_levels_json', None) or getattr(unit, 'inlet_levels_json', None) or getattr(unit, 'radiated_levels_json', None)
-                    if ob:
-                        data = json.loads(ob)
-                        order = ["63","125","250","500","1000","2000","4000","8000"]
-                        octave_bands = [float(data.get(k, 0) or 0) for k in order]
-                except Exception:
-                    octave_bands = None
-                # Derive A-weighted level from spectrum if present
-                noise_level = None
-                if octave_bands:
-                    try:
-                        noise_level = self.noise_calculator.hvac_engine._calculate_dba_from_spectrum(octave_bands)
-                    except Exception:
-                        pass
-                noise_level = noise_level or getattr(unit, 'base_noise_dba', None) or 50.0
+            if source_comp is not None:
                 path_data['source_component'] = {
-                    'component_type': getattr(unit, 'unit_type', None) or 'unit',
-                    'noise_level': noise_level,
-                    'octave_band_levels': octave_bands,
+                    'component_type': source_comp.component_type,
+                    'noise_level': source_comp.noise_level or self.get_component_noise_level(source_comp.component_type)
                 }
             else:
-                first_segment = segments[0]
-                if first_segment.from_component:
-                    comp = first_segment.from_component
+                # Backward compatibility: interpret primary_source_id as MechanicalUnit id if no component is linked
+                unit = None
+                try:
+                    if getattr(hvac_path, 'primary_source_id', None):
+                        sess2 = get_session()
+                        try:
+                            unit = sess2.query(MechanicalUnit).filter(MechanicalUnit.id == hvac_path.primary_source_id).first()
+                        finally:
+                            try:
+                                sess2.close()
+                            except Exception:
+                                pass
+                except Exception:
+                    unit = None
+
+                if unit is not None:
+                    # Parse outlet spectrum if available
+                    octave_bands = None
+                    try:
+                        import json
+                        ob = getattr(unit, 'outlet_levels_json', None) or getattr(unit, 'inlet_levels_json', None) or getattr(unit, 'radiated_levels_json', None)
+                        if ob:
+                            data = json.loads(ob)
+                            order = ["63","125","250","500","1000","2000","4000","8000"]
+                            octave_bands = [float(data.get(k, 0) or 0) for k in order]
+                    except Exception:
+                        octave_bands = None
+                    # Derive A-weighted level from spectrum if present
+                    noise_level = None
+                    if octave_bands:
+                        try:
+                            noise_level = self.noise_calculator.hvac_engine._calculate_dba_from_spectrum(octave_bands)
+                        except Exception:
+                            pass
+                    noise_level = noise_level or getattr(unit, 'base_noise_dba', None) or 50.0
                     path_data['source_component'] = {
-                        'component_type': comp.component_type,
-                        'noise_level': comp.noise_level or self.get_component_noise_level(comp.component_type)
+                        'component_type': getattr(unit, 'unit_type', None) or 'unit',
+                        'noise_level': noise_level,
+                        'octave_band_levels': octave_bands,
                     }
+                else:
+                    first_segment = segments[0]
+                    if first_segment.from_component:
+                        comp = first_segment.from_component
+                        path_data['source_component'] = {
+                            'component_type': comp.component_type,
+                            'noise_level': comp.noise_level or self.get_component_noise_level(comp.component_type)
+                        }
             
             # Get terminal component (to last segment)
             last_segment = segments[-1]
@@ -413,6 +447,23 @@ class HVACPathCalculator:
                     'lining_thickness': getattr(segment, 'lining_thickness', 0) or 0,
                     'fittings': []
                 }
+                # Provide default flow data if missing: assume 800 fpm typical duct velocity
+                try:
+                    if (segment_data['duct_shape'] or '').lower() == 'rectangular':
+                        width_ft = (segment_data['duct_width'] or 0.0) / 12.0
+                        height_ft = (segment_data['duct_height'] or 0.0) / 12.0
+                        area_ft2 = max(0.0, width_ft * height_ft)
+                    else:
+                        diameter_in = segment_data.get('diameter', 0.0) or 0.0
+                        radius_ft = (diameter_in / 2.0) / 12.0
+                        area_ft2 = max(0.0, 3.141592653589793 * radius_ft * radius_ft)
+                    # Use 800 fpm if velocity/flow not stored
+                    default_velocity_fpm = 800.0
+                    segment_data['flow_velocity'] = getattr(segment, 'flow_velocity', None) or default_velocity_fpm
+                    segment_data['flow_rate'] = getattr(segment, 'flow_rate', None) or (area_ft2 * default_velocity_fpm)
+                except Exception:
+                    # If geometry invalid, leave flow fields absent
+                    pass
                 
                 # Add fittings
                 for fitting in segment.fittings:
@@ -423,19 +474,24 @@ class HVACPathCalculator:
                     }
                     segment_data['fittings'].append(fitting_data)
 
-                # Derive a high-level fitting_type for engine element inference
-                # Map any elbow_* fitting to 'elbow', any tee_* to 'junction'
+                # Derive a fitting_type for engine element inference
+                # Prefer the first specific fitting name (e.g., 'elbow_90', 'tee_branch') if available;
+                # fallback to high-level 'elbow' or 'junction'
                 fitting_types = [f.get('fitting_type', '') for f in segment_data['fittings']]
                 inferred_type = None
+                specific_type = None
                 for ft in fitting_types:
                     lower_ft = (ft or '').lower()
+                    if not specific_type and lower_ft:
+                        specific_type = lower_ft
                     if lower_ft.startswith('elbow'):
                         inferred_type = 'elbow'
-                        break
+                        # still keep specific type recorded
                     if 'tee' in lower_ft or 'junction' in lower_ft:
-                        inferred_type = 'junction'
-                        # keep searching for elbow only if needed; junction is acceptable
-                if inferred_type:
+                        inferred_type = inferred_type or 'junction'
+                if specific_type:
+                    segment_data['fitting_type'] = specific_type
+                elif inferred_type:
                     segment_data['fitting_type'] = inferred_type
                 
                 path_data['segments'].append(segment_data)

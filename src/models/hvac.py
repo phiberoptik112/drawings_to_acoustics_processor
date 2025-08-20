@@ -67,6 +67,10 @@ class HVACPath(Base):
     created_date = Column(DateTime, default=datetime.utcnow)
     modified_date = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
+    # Receiver analysis preferences (per-path)
+    receiver_distance_ft = Column(Float)  # Preferred receiver distance (ft) for Eq27
+    receiver_method = Column(String(50))  # 'single' or 'distributed'
+    
     # Relationships
     project = relationship("Project", back_populates="hvac_paths")
     target_space = relationship("Space", back_populates="hvac_paths")
