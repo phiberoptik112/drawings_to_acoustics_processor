@@ -2382,6 +2382,8 @@ class DrawingInterface(QMainWindow):
                             session.close()
                     except Exception:
                         pass
+                print("DEBUG[DrawingInterface]: Opening HVACComponentDialog for component id=", getattr(comp, 'id', None),
+                      " name=", getattr(comp, 'name', None))
                 dlg = HVACComponentDialog(self, self.project_id, self.drawing.id if self.drawing else None, comp)
                 dlg.exec()
                 return

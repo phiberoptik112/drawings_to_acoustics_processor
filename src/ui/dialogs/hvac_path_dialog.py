@@ -1157,14 +1157,34 @@ class HVACPathDialog(QDialog):
     
     def calculate_path_noise(self):
         """Calculate noise for the current path"""
-        if not self.components or not self.segments:
-            QMessageBox.warning(self, "Incomplete Path", 
-                               "Need components and segments to calculate noise.")
-            return
-        
         try:
-            # Build path data for calculation
-            # Prefer library-selected Mechanical Unit spectrum if available
+            # If we have a persisted path, prefer the database-backed calculator so that
+            # selections like primary source Mechanical Unit (set from the Component dialog)
+            # are honored in the analysis.
+            if self.path_id and not self.drawing_components:
+                res = self.path_calculator.calculate_path_noise(int(self.path_id))
+                results = {
+                    'calculation_valid': bool(res.calculation_valid),
+                    'source_noise': float(res.source_noise or 0.0),
+                    'terminal_noise': float(res.terminal_noise or 0.0),
+                    'total_attenuation': float(res.total_attenuation or 0.0),
+                    'nc_rating': int(res.nc_rating or 0),
+                    'path_segments': list(res.segment_results or []),
+                    'path_elements': list(res.segment_results or []),
+                    'warnings': list(res.warnings or []),
+                }
+                self._last_element_results = results['path_elements']
+                self.display_analysis_results(results)
+                self.update_nc_summary(results)
+                return
+
+            # In-memory preview for unsaved/new paths
+            if not self.components or not self.segments:
+                QMessageBox.warning(self, "Incomplete Path", 
+                                   "Need components and segments to calculate noise.")
+                return
+
+            # Build path data for calculation (unchanged logic for new/unsaved paths)
             source_payload = {
                 'component_type': getattr(self.components[0], 'component_type', 'unit'),
                 'noise_level': (self.source_noise_dba if isinstance(self.source_noise_dba, (int, float)) else getattr(self.components[0], 'noise_level', 50.0))
@@ -1180,8 +1200,7 @@ class HVACPathDialog(QDialog):
                 },
                 'segments': []
             }
-            
-            # Add segments
+
             for segment in self.segments:
                 segment_data = {
                     'length': segment.length,
@@ -1194,8 +1213,7 @@ class HVACPathDialog(QDialog):
                     'lining_thickness': getattr(segment, 'lining_thickness', 0) or 0,
                     'fittings': []
                 }
-                
-                # Add fittings
+
                 first_fitting_type = None
                 for fitting in getattr(segment, 'fittings', []) or []:
                     fitting_data = {
@@ -1205,24 +1223,16 @@ class HVACPathDialog(QDialog):
                     segment_data['fittings'].append(fitting_data)
                     if not first_fitting_type and getattr(fitting, 'fitting_type', None):
                         first_fitting_type = fitting.fitting_type
-                # Promote primary fitting type to segment for engine element typing
                 if first_fitting_type:
                     segment_data['fitting_type'] = first_fitting_type
-                
+
                 path_data['segments'].append(segment_data)
-            
-            # Calculate noise
+
             results = self.path_calculator.noise_calculator.calculate_hvac_path_noise(path_data)
-            # Store for contextual lookups when editing components
-            try:
-                self._last_element_results = results.get('path_elements', results.get('path_segments', [])) or []
-            except Exception:
-                self._last_element_results = []
-            
-            # Display results in Analysis tab and NC summary
+            self._last_element_results = results.get('path_elements', results.get('path_segments', [])) or []
             self.display_analysis_results(results)
             self.update_nc_summary(results)
-            
+
         except Exception as e:
             QMessageBox.critical(self, "Calculation Error", f"Failed to calculate noise:\n{str(e)}")
     

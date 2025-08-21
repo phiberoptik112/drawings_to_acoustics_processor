@@ -276,10 +276,15 @@ class HVACComponentDialog(QDialog):
                 # Non-fatal; user can still explicitly select or update
                 pass
         chooser.finished.connect(on_close_result)
-
+        print("DEBUG[HVACComponentDialog]: Opening Mechanical Unit chooser (project_id=",
+              self.project_id, ") with count=", len(units))
         chooser.exec()
 
     def _apply_mechanical_unit(self, unit: MechanicalUnit) -> None:
+        try:
+            print(f"DEBUG[HVACComponentDialog]: Applying Mechanical Unit id={getattr(unit,'id',None)} name='{getattr(unit,'name',None)}' unit_type='{getattr(unit,'unit_type',None)}'")
+        except Exception:
+            pass
         # Set name
         self.name_edit.setText(unit.name or "")
         # Map unit_type to internal component types
@@ -320,6 +325,7 @@ class HVACComponentDialog(QDialog):
             self.inlet_label.setText(f"Inlet:    {fmt(inlet)}")
             self.radiated_label.setText(f"Radiated: {fmt(radiated)}")
             self.outlet_label.setText(f"Outlet:   {fmt(outlet)}")
+            print("DEBUG[HVACComponentDialog]: Parsed bands inlet=", inlet, "radiated=", radiated, "outlet=", outlet)
             # Remember selection for persistence on save
             try:
                 self._selected_mech_unit_id = int(getattr(unit, 'id', 0) or 0) or None
@@ -336,6 +342,7 @@ class HVACComponentDialog(QDialog):
                 self.use_standard_cb.setChecked(False)
                 self.noise_spin.setEnabled(True)
                 self.noise_spin.setValue(max(0.0, float(dba)))
+                print(f"DEBUG[HVACComponentDialog]: Set base noise from spectrum -> {dba:.1f} dB(A)")
                 # If editing an existing component, persist immediately so closing the window keeps changes
                 if self.is_editing and self.component is not None:
                     try:
@@ -346,6 +353,8 @@ class HVACComponentDialog(QDialog):
                             db_comp.component_type = self.type_combo.currentText()
                             db_comp.noise_level = float(self.noise_spin.value())
                             session.commit()
+                            print("DEBUG[HVACComponentDialog]: Immediate component save after unit apply:",
+                                  {"id": db_comp.id, "name": db_comp.name, "type": db_comp.component_type, "noise": db_comp.noise_level})
                             # Also mirror into in-memory object so UI reflects save
                             self.component.name = db_comp.name
                             self.component.component_type = db_comp.component_type
@@ -366,6 +375,7 @@ class HVACComponentDialog(QDialog):
                                         first_seg = sorted(p.segments, key=lambda s: getattr(s, 'segment_order', 0))[0]
                                         if getattr(first_seg, 'from_component_id', None) == db_comp.id:
                                             p.primary_source_id = self._selected_mech_unit_id
+                                            print(f"DEBUG[HVACComponentDialog]: Linked path id={p.id} primary_source_id -> MechanicalUnit id {self._selected_mech_unit_id}")
                                     session.commit()
                             except Exception:
                                 pass
@@ -455,6 +465,61 @@ class HVACComponentDialog(QDialog):
             self.noise_spin.setValue(self.component.noise_level)
             self.use_standard_cb.setChecked(False)
             self.noise_spin.setEnabled(True)
+        # Try to restore frequency preview from a Mechanical Unit association on any path
+        try:
+            session = get_session()
+            db_comp = session.query(HVACComponent).filter(HVACComponent.id == self.component.id).first()
+            if db_comp:
+                paths = (
+                    session.query(HVACPath)
+                    .join(HVACSegment, HVACSegment.hvac_path_id == HVACPath.id)
+                    .filter((HVACSegment.from_component_id == db_comp.id) | (HVACSegment.to_component_id == db_comp.id))
+                    .all()
+                )
+                for p in paths:
+                    if not p.segments:
+                        continue
+                    first_seg = sorted(p.segments, key=lambda s: getattr(s, 'segment_order', 0))[0]
+                    if getattr(first_seg, 'from_component_id', None) != db_comp.id:
+                        continue  # only treat this component as a source
+                    mu_id = getattr(p, 'primary_source_id', None)
+                    if mu_id:
+                        try:
+                            unit = session.query(MechanicalUnit).filter(MechanicalUnit.id == mu_id).first()
+                        except Exception:
+                            unit = None
+                        if unit is not None:
+                            print(f"DEBUG[HVACComponentDialog]: Restoring preview from Mechanical Unit id={mu_id} via path id={p.id}")
+                            # Reuse the same rendering helpers
+                            import json
+                            def parse_row(js):
+                                if not js:
+                                    return None
+                                try:
+                                    data = json.loads(js)
+                                except Exception:
+                                    return None
+                                order = ["63","125","250","500","1000","2000","4000","8000"]
+                                return [float(data.get(k)) if data.get(k) not in (None, "") else None for k in order]
+                            inlet = parse_row(getattr(unit, 'inlet_levels_json', None))
+                            radiated = parse_row(getattr(unit, 'radiated_levels_json', None))
+                            outlet = parse_row(getattr(unit, 'outlet_levels_json', None))
+                            def fmt(vals):
+                                if not vals:
+                                    return "—"
+                                return ", ".join("" if v is None else f"{float(v):.0f}" for v in vals)
+                            self.inlet_label.setText(f"Inlet:    {fmt(inlet)}")
+                            self.radiated_label.setText(f"Radiated: {fmt(radiated)}")
+                            self.outlet_label.setText(f"Outlet:   {fmt(outlet)}")
+                            self._selected_mech_unit_id = int(mu_id)
+                            break
+            session.close()
+        except Exception as e:
+            try:
+                session.close()
+            except Exception:
+                pass
+            print("DEBUG[HVACComponentDialog]: Failed to restore Mechanical Unit preview:", e)
     
     def save_component(self):
         """Save the HVAC component"""
@@ -472,12 +537,14 @@ class HVACComponentDialog(QDialog):
                 db_comp = session.query(HVACComponent).filter(HVACComponent.id == self.component.id).first()
                 if not db_comp:
                     raise RuntimeError("Component not found")
+                print("DEBUG[HVACComponentDialog]: Saving existing component", {"id": db_comp.id, "prev_name": db_comp.name, "prev_type": db_comp.component_type, "prev_noise": db_comp.noise_level})
                 db_comp.name = name
                 db_comp.component_type = self.type_combo.currentText()
                 db_comp.x_position = self.x_spin.value()
                 db_comp.y_position = self.y_spin.value()
                 db_comp.noise_level = self.noise_spin.value()
                 session.commit()
+                print("DEBUG[HVACComponentDialog]: Saved component", {"id": db_comp.id, "name": db_comp.name, "type": db_comp.component_type, "noise": db_comp.noise_level})
                 # Mirror saved values back into the in-memory object used by the UI
                 self.component.name = db_comp.name
                 self.component.component_type = db_comp.component_type
@@ -487,6 +554,7 @@ class HVACComponentDialog(QDialog):
                 # If user imported a Mechanical Unit in this edit, propagate association to any paths
                 try:
                     if self._selected_mech_unit_id:
+                        print(f"DEBUG[HVACComponentDialog]: Propagating Mechanical Unit id {self._selected_mech_unit_id} to paths for component id {db_comp.id}")
                         paths = (
                             session.query(HVACPath)
                             .join(HVACSegment, HVACSegment.hvac_path_id == HVACPath.id)
@@ -499,9 +567,10 @@ class HVACComponentDialog(QDialog):
                             first_seg = sorted(p.segments, key=lambda s: getattr(s, 'segment_order', 0))[0]
                             if getattr(first_seg, 'from_component_id', None) == db_comp.id:
                                 p.primary_source_id = self._selected_mech_unit_id
+                                print(f"DEBUG[HVACComponentDialog]: Updated path id={p.id} primary_source_id -> MechanicalUnit id {self._selected_mech_unit_id}")
                         session.commit()
-                except Exception:
-                    pass
+                except Exception as e:
+                    print("DEBUG[HVACComponentDialog]: Failed to update paths with Mechanical Unit:", e)
                 component = self.component
             else:
                 # Create new component
@@ -517,6 +586,7 @@ class HVACComponentDialog(QDialog):
                 
                 session.add(component)
                 session.commit()
+                print("DEBUG[HVACComponentDialog]: Created new component", {"id": component.id, "name": component.name, "type": component.component_type})
             
             session.close()
             
