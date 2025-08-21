@@ -455,6 +455,8 @@ class RoomBoundary(Base):
     
     # Calculated real-world dimensions
     calculated_area = Column(Float)  # Square feet based on scale
+    # Optional polygon support (JSON-serialized points)
+    polygon_points = Column(Text)
     
     # Relationships
     space = relationship("Space", back_populates="room_boundaries")

@@ -16,6 +16,7 @@ class ToolType(Enum):
     COMPONENT = "component"
     SEGMENT = "segment"
     MEASURE = "measure"
+    POLYGON = "polygon"
 
 
 class DrawingTool(QObject):
@@ -575,6 +576,114 @@ class MeasureTool(DrawingTool):
             painter.drawText(mid_x + 5, mid_y - 5, f"📏 {length_pixels:.0f}px")
 
 
+class PolygonTool(DrawingTool):
+    """Tool for drawing polygonal spaces by placing vertices"""
+
+    def __init__(self):
+        super().__init__()
+        self.pen = QPen(QColor(0, 120, 215), 2, Qt.SolidLine)
+        self.fill_brush = QBrush(QColor(0, 120, 215, 30))
+        self.vertex_pen = QPen(QColor(0, 120, 215), 1, Qt.SolidLine)
+        self.vertex_brush = QBrush(QColor(0, 120, 215))
+        self.vertices = []  # list[QPoint]
+        self._closed = False
+
+    def start(self, point):
+        self.active = True
+        self.vertices = [QPoint(point.x(), point.y())]
+        self.start_point = point
+        self.current_point = point
+        self._closed = False
+
+    def add_vertex(self, point):
+        if not self.active:
+            self.start(point)
+            return
+        # Avoid duplicate consecutive points
+        if self.vertices:
+            last = self.vertices[-1]
+            if last.x() == point.x() and last.y() == point.y():
+                return
+        self.vertices.append(QPoint(point.x(), point.y()))
+        self.current_point = point
+        self.updated.emit()
+
+    def update(self, point):
+        # For live preview of the last edge
+        if self.active:
+            self.current_point = point
+            self.updated.emit()
+
+    def cancel(self):
+        super().cancel()
+        self.vertices = []
+        self._closed = False
+
+    def _compute_bounds(self):
+        if not self.vertices:
+            return None
+        xs = [p.x() for p in self.vertices]
+        ys = [p.y() for p in self.vertices]
+        x = min(xs)
+        y = min(ys)
+        w = max(1, max(xs) - x)
+        h = max(1, max(ys) - y)
+        return QRect(x, y, w, h)
+
+    def get_result(self):
+        # Only produce a result when we have a closed polygon with >= 3 vertices
+        if not self.vertices or len(self.vertices) < 3:
+            return None
+        bounds = self._compute_bounds()
+        # Serialize points
+        points = [{'x': int(p.x()), 'y': int(p.y())} for p in self.vertices]
+        return {
+            'type': 'polygon',
+            'points': points,
+            'x': int(bounds.x()) if isinstance(bounds, QRect) else 0,
+            'y': int(bounds.y()) if isinstance(bounds, QRect) else 0,
+            'width': int(bounds.width()) if isinstance(bounds, QRect) else 0,
+            'height': int(bounds.height()) if isinstance(bounds, QRect) else 0,
+            'bounds': bounds
+        }
+
+    def finish(self, point):
+        # Close and emit if valid
+        if not self.active:
+            return
+        # If user clicks close to the first vertex, snap and close
+        try:
+            if self.vertices and point:
+                first = self.vertices[0]
+                dx = point.x() - first.x()
+                dy = point.y() - first.y()
+                if (dx * dx + dy * dy) ** 0.5 <= 10:
+                    # snap last to first
+                    self.vertices[-1] = QPoint(first.x(), first.y())
+        except Exception:
+            pass
+        self.active = False
+        result = self.get_result()
+        if result:
+            self.finished.emit(result)
+
+    def draw_preview(self, painter):
+        if not self.active:
+            return
+        pts = self.vertices.copy()
+        if self.current_point and (not pts or (pts and (pts[-1].x() != self.current_point.x() or pts[-1].y() != self.current_point.y()))):
+            # Add a transient edge to cursor
+            pts.append(self.current_point)
+        if len(pts) >= 2:
+            painter.setPen(self.pen)
+            for i in range(len(pts) - 1):
+                painter.drawLine(pts[i], pts[i + 1])
+        # Draw vertices
+        painter.setPen(self.vertex_pen)
+        painter.setBrush(self.vertex_brush)
+        for p in self.vertices:
+            painter.drawEllipse(p.x() - 3, p.y() - 3, 6, 6)
+
 class DrawingToolManager(QObject):
     """Manages drawing tools and their state"""
     
@@ -588,7 +697,8 @@ class DrawingToolManager(QObject):
             ToolType.RECTANGLE: RectangleTool(),
             ToolType.COMPONENT: ComponentTool(),
             ToolType.SEGMENT: SegmentTool(),
-            ToolType.MEASURE: MeasureTool()
+            ToolType.MEASURE: MeasureTool(),
+            ToolType.POLYGON: PolygonTool()
         }
         
         self.current_tool_type = ToolType.RECTANGLE

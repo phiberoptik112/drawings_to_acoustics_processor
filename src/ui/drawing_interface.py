@@ -195,6 +195,13 @@ class DrawingInterface(QMainWindow):
         toolbar.addAction(seg_action)
         self.tool_group.addButton(toolbar.widgetForAction(seg_action))
 
+        # Polygon tool
+        poly_action = QAction('🔷 Polygon', self)
+        poly_action.setCheckable(True)
+        poly_action.triggered.connect(lambda: self.set_drawing_tool(ToolType.POLYGON))
+        toolbar.addAction(poly_action)
+        self.tool_group.addButton(toolbar.widgetForAction(poly_action))
+
         # Edit/Select tool
         edit_action = QAction('✏️ Edit', self)
         edit_action.setCheckable(True)
@@ -576,6 +583,10 @@ class DrawingInterface(QMainWindow):
             area_text = element_data.get('area_formatted', '')
             item = QListWidgetItem(f"🔲 Rectangle - {area_text}")
             item.setData(Qt.UserRole, element_data)  # Store element data
+        elif element_type == 'polygon':
+            area_text = element_data.get('area_formatted', '')
+            item = QListWidgetItem(f"🔷 Polygon - {area_text}")
+            item.setData(Qt.UserRole, element_data)
         elif element_type == 'component':
             comp_type = element_data.get('component_type', 'unknown')
             item = QListWidgetItem(f"🔧 {comp_type.upper()}")
@@ -612,6 +623,7 @@ class DrawingInterface(QMainWindow):
             summary = self.drawing_overlay.get_elements_summary()
             
             text = f"Rectangles: {summary['rectangles']}\n"
+            text += f"Polygons: {summary.get('polygons', 0)}\n"
             text += f"Components: {summary['components']}\n" 
             text += f"Segments: {summary['segments']}\n"
             text += f"Measurements: {summary['measurements']}\n\n"
@@ -920,11 +932,11 @@ class DrawingInterface(QMainWindow):
             element_type = element_data.get('type') if element_data else None
             
             # Enable appropriate buttons
-            self.create_room_btn.setEnabled(element_type == 'rectangle')
+            self.create_room_btn.setEnabled(element_type in ['rectangle', 'polygon'])
             self.create_path_btn.setEnabled(element_type in ['component', 'segment'])
             self.delete_element_btn.setEnabled(True)
             
-            if element_type == 'rectangle':
+            if element_type in ['rectangle', 'polygon']:
                 self.selected_rectangle = element_data
             elif element_type in ['component', 'segment']:
                 self.selected_hvac_element = element_data
@@ -940,7 +952,7 @@ class DrawingInterface(QMainWindow):
         item = self.elements_list.itemAt(position)
         if not item:
             return
-            
+        
         element_data = item.data(Qt.UserRole)
         element_type = element_data.get('type') if element_data else None
         
@@ -948,13 +960,16 @@ class DrawingInterface(QMainWindow):
         
         menu = QMenu(self)
         
-        if element_type == 'rectangle':
+        if element_type in ['rectangle', 'polygon']:
             create_room_action = menu.addAction("🏠 Create Room/Space")
-            create_room_action.triggered.connect(lambda: self.create_room_from_rectangle(element_data))
+            if element_type == 'rectangle':
+                create_room_action.triggered.connect(lambda: self.create_room_from_rectangle(element_data))
+            else:
+                create_room_action.triggered.connect(lambda: self.create_room_from_polygon(element_data))
         elif element_type in ['component', 'segment']:
             create_path_action = menu.addAction("🔀 Create HVAC Path")
             create_path_action.triggered.connect(lambda: self.create_path_from_element(element_data))
-            
+        
         menu.addSeparator()
         delete_action = menu.addAction("🗑️ Delete Element")
         delete_action.triggered.connect(lambda: self.delete_element(item))
@@ -964,7 +979,10 @@ class DrawingInterface(QMainWindow):
     def create_room_from_selected(self):
         """Create room from selected rectangle"""
         if self.selected_rectangle:
-            self.create_room_from_rectangle(self.selected_rectangle)
+            if self.selected_rectangle.get('type') == 'polygon':
+                self.create_room_from_polygon(self.selected_rectangle)
+            else:
+                self.create_room_from_rectangle(self.selected_rectangle)
     
     def create_path_from_selected(self):
         """Create HVAC path from selected component or segment"""
@@ -1292,22 +1310,40 @@ class DrawingInterface(QMainWindow):
                 space.calculated_rt60 = rt60_results['rt60']
                 calculated_rt60 = rt60_results['rt60']
                 
-            # Create room boundary record
-            rectangle_data = space_data.get('rectangle_data', {})
-            if rectangle_data and self.drawing:
-                boundary = RoomBoundary(
-                    space_id=space.id,
-                    drawing_id=self.drawing.id,
-                    page_number=self.current_page_number,
-                    x_position=rectangle_data.get('x', 0),
-                    y_position=rectangle_data.get('y', 0),
-                    width=rectangle_data.get('width', 0),
-                    height=rectangle_data.get('height', 0),
-                    calculated_area=rectangle_data.get('area_real', 0)
-                )
+            # Create room boundary record (rectangle or polygon)
+            shape_data = space_data.get('rectangle_data', {})
+            if shape_data and self.drawing:
+                if shape_data.get('type') == 'polygon':
+                    import json
+                    x = int(shape_data.get('x', 0) or 0)
+                    y = int(shape_data.get('y', 0) or 0)
+                    w = int(shape_data.get('width', 1) or 1)
+                    h = int(shape_data.get('height', 1) or 1)
+                    boundary = RoomBoundary(
+                        space_id=space.id,
+                        drawing_id=self.drawing.id,
+                        page_number=self.current_page_number,
+                        x_position=x,
+                        y_position=y,
+                        width=w,
+                        height=h,
+                        calculated_area=shape_data.get('area_real', 0),
+                        polygon_points=json.dumps(shape_data.get('points', []))
+                    )
+                else:
+                    boundary = RoomBoundary(
+                        space_id=space.id,
+                        drawing_id=self.drawing.id,
+                        page_number=self.current_page_number,
+                        x_position=shape_data.get('x', 0),
+                        y_position=shape_data.get('y', 0),
+                        width=shape_data.get('width', 0),
+                        height=shape_data.get('height', 0),
+                        calculated_area=shape_data.get('area_real', 0)
+                    )
                 
                 session.add(boundary)
-                
+            
             session.commit()
             session.close()
             
@@ -1342,7 +1378,7 @@ class DrawingInterface(QMainWindow):
             
             # Update rectangle to show it's now a space
             self.update_elements_after_space_creation(space_data['name'])
-            
+        
         except Exception as e:
             if session is not None:
                 session.rollback()
@@ -1356,7 +1392,7 @@ class DrawingInterface(QMainWindow):
             item = self.elements_list.item(i)
             element_data = item.data(Qt.UserRole)
             
-            if element_data and element_data.get('type') == 'rectangle':
+            if element_data and element_data.get('type') in ['rectangle', 'polygon']:
                 # Check if this is the rectangle we just converted
                 if element_data == self.selected_rectangle:
                     # Update item text to show it's now a space
@@ -1371,11 +1407,18 @@ class DrawingInterface(QMainWindow):
         
         # Update drawing overlay to show visual changes
         if self.drawing_overlay and self.selected_rectangle:
-            for rect_data in self.drawing_overlay.rectangles:
-                if rect_data == self.selected_rectangle:
-                    rect_data['converted_to_space'] = True
-                    rect_data['space_name'] = space_name
-                    break
+            if self.selected_rectangle.get('type') == 'polygon':
+                for poly in self.drawing_overlay.polygons:
+                    if poly == self.selected_rectangle:
+                        poly['converted_to_space'] = True
+                        poly['space_name'] = space_name
+                        break
+            else:
+                for rect_data in self.drawing_overlay.rectangles:
+                    if rect_data == self.selected_rectangle:
+                        rect_data['converted_to_space'] = True
+                        rect_data['space_name'] = space_name
+                        break
             
             # Trigger repaint to show the rectangle in green with space name
             self.drawing_overlay.update()
@@ -2742,3 +2785,16 @@ class DrawingInterface(QMainWindow):
         self.save_drawing_to_db()
         self.finished.emit()
         event.accept()
+
+    def create_room_from_polygon(self, polygon_data):
+        """Create a room/space from polygon data"""
+        if not polygon_data:
+            QMessageBox.warning(self, "Error", "No polygon data available.")
+            return
+        try:
+            # Reuse RoomPropertiesDialog; it reads area/perimeter generically
+            dialog = RoomPropertiesDialog(self, polygon_data, self.scale_manager)
+            dialog.space_created.connect(self.handle_space_created)
+            dialog.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create room properties dialog:\n{str(e)}")
