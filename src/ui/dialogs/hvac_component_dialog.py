@@ -11,7 +11,7 @@ from PySide6.QtGui import QFont
 
 from models import get_session
 from models.mechanical import MechanicalUnit
-from models.hvac import HVACComponent
+from models.hvac import HVACComponent, HVACPath, HVACSegment
 from data.components import STANDARD_COMPONENTS
 from calculations.hvac_noise_engine import HVACNoiseEngine
 
@@ -27,6 +27,8 @@ class HVACComponentDialog(QDialog):
         self.drawing_id = drawing_id
         self.component = component  # Existing component for editing
         self.is_editing = component is not None
+        # Track a selected Mechanical Unit from the chooser so we can persist on save
+        self._selected_mech_unit_id = None
         
         self.init_ui()
         if self.is_editing:
@@ -318,6 +320,11 @@ class HVACComponentDialog(QDialog):
             self.inlet_label.setText(f"Inlet:    {fmt(inlet)}")
             self.radiated_label.setText(f"Radiated: {fmt(radiated)}")
             self.outlet_label.setText(f"Outlet:   {fmt(outlet)}")
+            # Remember selection for persistence on save
+            try:
+                self._selected_mech_unit_id = int(getattr(unit, 'id', 0) or 0) or None
+            except Exception:
+                self._selected_mech_unit_id = None
 
             # Choose best available row to compute A-weighted seed (prefer Outlet)
             engine = HVACNoiseEngine()
@@ -343,6 +350,25 @@ class HVACComponentDialog(QDialog):
                             self.component.name = db_comp.name
                             self.component.component_type = db_comp.component_type
                             self.component.noise_level = db_comp.noise_level
+                            # If this component is source for any paths, associate selected Mechanical Unit to paths
+                            try:
+                                if self._selected_mech_unit_id:
+                                    paths = (
+                                        session.query(HVACPath)
+                                        .join(HVACSegment, HVACSegment.hvac_path_id == HVACPath.id)
+                                        .filter((HVACSegment.from_component_id == db_comp.id) | (HVACSegment.to_component_id == db_comp.id))
+                                        .all()
+                                    )
+                                    for p in paths:
+                                        # Consider this component the source if it appears as the 'from' on the first segment
+                                        if not p.segments:
+                                            continue
+                                        first_seg = sorted(p.segments, key=lambda s: getattr(s, 'segment_order', 0))[0]
+                                        if getattr(first_seg, 'from_component_id', None) == db_comp.id:
+                                            p.primary_source_id = self._selected_mech_unit_id
+                                    session.commit()
+                            except Exception:
+                                pass
                         session.close()
                     except Exception:
                         # Non-fatal; user can still click Update to save
@@ -458,6 +484,24 @@ class HVACComponentDialog(QDialog):
                 self.component.x_position = db_comp.x_position
                 self.component.y_position = db_comp.y_position
                 self.component.noise_level = db_comp.noise_level
+                # If user imported a Mechanical Unit in this edit, propagate association to any paths
+                try:
+                    if self._selected_mech_unit_id:
+                        paths = (
+                            session.query(HVACPath)
+                            .join(HVACSegment, HVACSegment.hvac_path_id == HVACPath.id)
+                            .filter((HVACSegment.from_component_id == db_comp.id) | (HVACSegment.to_component_id == db_comp.id))
+                            .all()
+                        )
+                        for p in paths:
+                            if not p.segments:
+                                continue
+                            first_seg = sorted(p.segments, key=lambda s: getattr(s, 'segment_order', 0))[0]
+                            if getattr(first_seg, 'from_component_id', None) == db_comp.id:
+                                p.primary_source_id = self._selected_mech_unit_id
+                        session.commit()
+                except Exception:
+                    pass
                 component = self.component
             else:
                 # Create new component

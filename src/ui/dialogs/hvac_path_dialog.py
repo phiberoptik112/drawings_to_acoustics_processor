@@ -1436,9 +1436,25 @@ class HVACPathDialog(QDialog):
         if not self.is_editing or not self.path:
             return
             
+        # Safely resolve path name without triggering lazy-load on a detached instance
+        try:
+            name_str = str(getattr(self.path, 'name'))
+        except Exception:
+            name_str = None
+        if not name_str:
+            try:
+                session = get_session()
+                try:
+                    dbp = session.query(HVACPath).filter(HVACPath.id == (self.path_id or getattr(self.path, 'id', None))).first()
+                    name_str = getattr(dbp, 'name', 'this path') if dbp else 'this path'
+                finally:
+                    session.close()
+            except Exception:
+                name_str = 'this path'
+
         reply = QMessageBox.question(
             self, "Delete Path",
-            f"Are you sure you want to delete '{self.path.name}'?\n\n"
+            f"Are you sure you want to delete '{name_str}'?\n\n"
             "This will also remove all segments and fittings associated with this path.",
             QMessageBox.Yes | QMessageBox.No
         )
@@ -1446,7 +1462,13 @@ class HVACPathDialog(QDialog):
         if reply == QMessageBox.Yes:
             try:
                 session = get_session()
-                session.delete(self.path)
+                # Delete using a session-bound instance to avoid DetachedInstanceError
+                db_path = session.query(HVACPath).filter(HVACPath.id == (self.path_id or getattr(self.path, 'id', None))).first()
+                if not db_path:
+                    session.close()
+                    QMessageBox.warning(self, "Delete Path", "Selected path could not be found in the database.")
+                    return
+                session.delete(db_path)
                 session.commit()
                 session.close()
                 

@@ -2331,21 +2331,48 @@ class DrawingInterface(QMainWindow):
                         comp = session.query(HVACComponent).filter(HVACComponent.id == db_id).first()
                         session.close()
                     else:
-                        # Fallback lookup by position/type within this drawing
+                        # Fallback lookup by position/type within this drawing; if not found,
+                        # relax matching to nearest component within a small pixel tolerance.
                         session = get_session()
                         from models.hvac import HVACComponent as _HC
-                        comp = (
-                            session.query(_HC)
-                            .filter(
-                                _HC.project_id == self.project_id,
-                                _HC.drawing_id == (self.drawing.id if self.drawing else None),
-                                _HC.x_position == element.get('x'),
-                                _HC.y_position == element.get('y'),
-                                _HC.component_type == element.get('component_type')
+                        try:
+                            comp = (
+                                session.query(_HC)
+                                .filter(
+                                    _HC.project_id == self.project_id,
+                                    _HC.drawing_id == (self.drawing.id if self.drawing else None),
+                                    _HC.x_position == element.get('x'),
+                                    _HC.y_position == element.get('y'),
+                                    _HC.component_type == element.get('component_type')
+                                )
+                                .first()
                             )
-                            .first()
-                        )
-                        session.close()
+                            if comp is None:
+                                # Relax: search by proximity (<= 12 px) on same drawing and project
+                                ex = float(element.get('x') or 0)
+                                ey = float(element.get('y') or 0)
+                                candidates = (
+                                    session.query(_HC)
+                                    .filter(
+                                        _HC.project_id == self.project_id,
+                                        _HC.drawing_id == (self.drawing.id if self.drawing else None)
+                                    )
+                                    .all()
+                                )
+                                best = None
+                                best_dist = 999999.0
+                                for c in candidates:
+                                    dx = float(getattr(c, 'x_position', 0.0) or 0.0) - ex
+                                    dy = float(getattr(c, 'y_position', 0.0) or 0.0) - ey
+                                    d = abs(dx) + abs(dy)
+                                    if d < best_dist:
+                                        best = c
+                                        best_dist = d
+                                # Accept if within tolerance (12 px manhattan)
+                                if best is not None and best_dist <= 12.0:
+                                    comp = best
+                        finally:
+                            session.close()
                     if comp is None:
                         QMessageBox.information(self, "Edit Component", "No saved component found at this location.")
                         return
@@ -2379,8 +2406,9 @@ class DrawingInterface(QMainWindow):
                             .first()
                         )
                     else:
+                        # Fallback: find segment on this path whose endpoints are nearest to the clicked overlay endpoints
                         from models.hvac import HVACSegment as _HS
-                        seg = (
+                        segments = (
                             session.query(_HS)
                             .options(
                                 selectinload(_HS.from_component),
@@ -2388,9 +2416,28 @@ class DrawingInterface(QMainWindow):
                                 selectinload(_HS.fittings),
                             )
                             .filter(_HS.hvac_path_id == element.get('db_path_id'))
-                            .order_by(_HS.segment_order.asc())
-                            .first()
+                            .all()
                         )
+                        best = None
+                        best_dist = 999999.0
+                        tol = 12.0
+                        ex_f = element.get('from_component') or {}
+                        ex_t = element.get('to_component') or {}
+                        fx = float(ex_f.get('x') or 0)
+                        fy = float(ex_f.get('y') or 0)
+                        tx = float(ex_t.get('x') or 0)
+                        ty = float(ex_t.get('y') or 0)
+                        for s in segments:
+                            if not (s.from_component and s.to_component):
+                                continue
+                            d1 = abs(float(getattr(s.from_component, 'x_position', 0.0)) - fx) + abs(float(getattr(s.from_component, 'y_position', 0.0)) - fy)
+                            d2 = abs(float(getattr(s.to_component, 'x_position', 0.0)) - tx) + abs(float(getattr(s.to_component, 'y_position', 0.0)) - ty)
+                            d = d1 + d2
+                            if d < best_dist:
+                                best = s
+                                best_dist = d
+                        if best is not None and best_dist <= (2 * tol):
+                            seg = best
                     if seg is None:
                         QMessageBox.information(self, "Edit Segment", "No saved segment found here.")
                         return
@@ -2548,20 +2595,24 @@ class DrawingInterface(QMainWindow):
                     if not found:
                         print(f"DEBUG: No match found for to_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
                 
-                # Match segments (this is more complex as we need to find segments between matching components)
+                # Match segments (robust: allow small pixel tolerance on endpoints)
                 if segment.from_component and segment.to_component:
                     print(f"DEBUG: Looking for segment from {segment.from_component.component_type} to {segment.to_component.component_type}")
                     found = False
+                    tol = 12.0  # pixels
+                    fx = float(segment.from_component.x_position or 0.0)
+                    fy = float(segment.from_component.y_position or 0.0)
+                    tx = float(segment.to_component.x_position or 0.0)
+                    ty = float(segment.to_component.y_position or 0.0)
                     for seg in drawing_segments:
-                        # Check if this segment connects the same components
+                        # Check if this segment connects the same components (within tolerance)
                         from_comp = seg.get('from_component')
                         to_comp = seg.get('to_component')
-                        
-                        if (from_comp and to_comp and
-                            from_comp.get('x') == segment.from_component.x_position and
-                            from_comp.get('y') == segment.from_component.y_position and
-                            to_comp.get('x') == segment.to_component.x_position and
-                            to_comp.get('y') == segment.to_component.y_position):
+                        if not (from_comp and to_comp):
+                            continue
+                        d1 = abs(float(from_comp.get('x') or 0) - fx) + abs(float(from_comp.get('y') or 0) - fy)
+                        d2 = abs(float(to_comp.get('x') or 0) - tx) + abs(float(to_comp.get('y') or 0) - ty)
+                        if d1 <= tol and d2 <= tol:
                             if seg not in path_segments:
                                 path_segments.append(seg)
                                 # Attach DB ids for edit lookups
@@ -2574,11 +2625,11 @@ class DrawingInterface(QMainWindow):
                                     seg['length_formatted'] = fmtr(seg['length_real'])
                                 except Exception:
                                     pass
-                                print(f"DEBUG: Found matching segment: {from_comp.get('component_type')} -> {to_comp.get('component_type')}")
+                                print(f"DEBUG: Found matching segment (tol {tol}px): {from_comp.get('component_type')} -> {to_comp.get('component_type')}")
                             found = True
                             break
                     if not found:
-                        print(f"DEBUG: No matching segment found for {segment.from_component.component_type} -> {segment.to_component.component_type}")
+                        print(f"DEBUG: No matching segment found (with tolerance) for {segment.from_component.component_type} -> {segment.to_component.component_type}")
             
             # Register the found elements
             if path_components or path_segments:
