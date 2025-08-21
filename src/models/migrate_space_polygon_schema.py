@@ -1,7 +1,7 @@
 """
 Idempotent migration: ensure polygon_points column exists on room_boundaries.
 """
-from sqlalchemy import inspect, Column, Text
+from sqlalchemy import inspect, Column, Text, text
 from sqlalchemy.exc import OperationalError
 from .database import engine
 
@@ -16,7 +16,8 @@ def ensure_space_polygon_schema():
 			return
 		# Add column
 		with engine.connect() as conn:
-			conn.execute("ALTER TABLE room_boundaries ADD COLUMN polygon_points TEXT")
+			conn.execute(text("ALTER TABLE room_boundaries ADD COLUMN polygon_points TEXT"))
+			conn.commit()
 	except OperationalError:
 		# SQLite older versions may error if column exists; ignore
 		pass

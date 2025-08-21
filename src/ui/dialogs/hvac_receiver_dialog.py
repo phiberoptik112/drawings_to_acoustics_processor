@@ -3,17 +3,18 @@ HVAC Receiver Analysis Dialog - Per-space receiver configuration and background 
 """
 
 from typing import List
+import json
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QDoubleSpinBox, QComboBox,
-    QTextEdit, QGroupBox, QWidget, QMessageBox
+    QTextEdit, QGroupBox, QWidget, QMessageBox, QSplitter
 )
 from PySide6.QtCore import Qt
 
 from models import get_session
 from models.space import Space
-from models.hvac import HVACPath, HVACSegment
+from models.hvac import HVACPath, HVACSegment, HVACReceiverResult
 from sqlalchemy.orm import selectinload
 
 from calculations.hvac_path_calculator import HVACPathCalculator
@@ -34,6 +35,7 @@ class HVACReceiverDialog(QDialog):
         self.path_calculator = HVACPathCalculator()
         self.room_calc = ReceiverRoomSoundCorrection()
         self.engine = HVACNoiseEngine()
+        self._latest_results = None  # Stored after successful calculation
 
         self._load_space()
         self._init_ui()
@@ -101,16 +103,44 @@ class HVACReceiverDialog(QDialog):
         da_group.setLayout(da_form)
         layout.addWidget(da_group)
 
-        # Results
+        # Results + History (split view)
+        splitter = QSplitter(Qt.Horizontal)
+
+        # Left: current calculation results
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
-        layout.addWidget(self.results_text)
+        splitter.addWidget(self.results_text)
+
+        # Right: saved calculations history
+        history_group = QGroupBox("Saved Calculations")
+        history_vbox = QVBoxLayout()
+        self.history_table = QTableWidget(0, 12)
+        self.history_table.setHorizontalHeaderLabels([
+            "Date", "dB(A)", "NC", "Target", "Meets",
+            "63", "125", "250", "500", "1000", "2000", "4000",
+        ])
+        h_header = self.history_table.horizontalHeader()
+        h_header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        for col in range(1, 12):
+            h_header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        history_vbox.addWidget(self.history_table)
+        history_group.setLayout(history_vbox)
+        splitter.addWidget(history_group)
+
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+
+        layout.addWidget(splitter)
 
         # Buttons
         btn_row = QHBoxLayout()
         self.calc_btn = QPushButton("Calculate Combined Noise")
         self.calc_btn.clicked.connect(self.calculate_combined_noise)
         btn_row.addWidget(self.calc_btn)
+        self.save_btn = QPushButton("Save Calculation Results")
+        self.save_btn.setEnabled(False)
+        self.save_btn.clicked.connect(self.save_calculation_results)
+        btn_row.addWidget(self.save_btn)
         btn_row.addStretch()
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
@@ -118,6 +148,8 @@ class HVACReceiverDialog(QDialog):
         layout.addLayout(btn_row)
 
         self.setLayout(layout)
+        # Populate saved history table initially
+        self._refresh_history_table()
 
     def _populate_table(self) -> None:
         self.table.setRowCount(len(self.paths))
@@ -217,6 +249,9 @@ class HVACReceiverDialog(QDialog):
             # Energy sum per band (7 bands up to 4000 Hz)
             combined_energy = [0.0] * 7
 
+            # Keep track of parameters used per-path for saving
+            used_path_params = []
+
             for row, path in enumerate(self.paths):
                 # Get latest spectrum at terminal for this path
                 result = self.path_calculator.calculate_path_noise(path.id)
@@ -279,6 +314,12 @@ class HVACReceiverDialog(QDialog):
                 for i in range(min(7, len(lp_bands))):
                     combined_energy[i] += 10 ** (lp_bands[i] / 10.0)
 
+                used_path_params.append({
+                    'path_id': getattr(path, 'id', None),
+                    'method': 'single' if method_text.startswith('Single') else 'distributed',
+                    'distance_ft': distance,
+                })
+
             # Convert back to dB spectrum
             combined_spectrum_7 = [0.0] * 7
             for i, energy in enumerate(combined_energy):
@@ -308,7 +349,108 @@ class HVACReceiverDialog(QDialog):
 
             self.results_text.setHtml(html)
 
+            # Store latest results for saving and enable button
+            self._latest_results = {
+                'target_nc': target_nc,
+                'nc_rating': nc_rating,
+                'total_dba': float(total_dba),
+                'meets_target': bool(meets),
+                'spectrum_7': combined_spectrum_7,
+                'room_volume': room_volume,
+                'distributed_ceiling_height': float(self.ceiling_height_spin.value()),
+                'distributed_floor_area_per_diffuser': float(self.floor_area_spin.value()),
+                'path_parameters': used_path_params,
+            }
+            self.save_btn.setEnabled(True)
+
         except Exception as e:
             QMessageBox.critical(self, "Calculation Error", f"Failed to calculate combined noise:\n{str(e)}")
 
+
+    def save_calculation_results(self) -> None:
+        """Persist the latest calculation results to the database."""
+        try:
+            if not self._latest_results:
+                QMessageBox.information(self, "Save Results", "Run a calculation first.")
+                return
+
+            data = self._latest_results
+            spectrum = data.get('spectrum_7') or [0.0] * 7
+
+            session = get_session()
+            try:
+                rec = HVACReceiverResult(
+                    space_id=self.space_id,
+                    target_nc=float(data.get('target_nc') or 0.0),
+                    nc_rating=float(data.get('nc_rating') or 0.0),
+                    total_dba=float(data.get('total_dba') or 0.0),
+                    meets_target=bool(data.get('meets_target')),
+                    lp_63=float(spectrum[0] if len(spectrum) > 0 else 0.0),
+                    lp_125=float(spectrum[1] if len(spectrum) > 1 else 0.0),
+                    lp_250=float(spectrum[2] if len(spectrum) > 2 else 0.0),
+                    lp_500=float(spectrum[3] if len(spectrum) > 3 else 0.0),
+                    lp_1000=float(spectrum[4] if len(spectrum) > 4 else 0.0),
+                    lp_2000=float(spectrum[5] if len(spectrum) > 5 else 0.0),
+                    lp_4000=float(spectrum[6] if len(spectrum) > 6 else 0.0),
+                    room_volume=float(data.get('room_volume') or 0.0),
+                    distributed_ceiling_height=float(data.get('distributed_ceiling_height') or 0.0),
+                    distributed_floor_area_per_diffuser=float(data.get('distributed_floor_area_per_diffuser') or 0.0),
+                    path_parameters_json=json.dumps(data.get('path_parameters') or []),
+                )
+                session.add(rec)
+
+                # Optionally update space NC summary
+                try:
+                    space = session.query(Space).filter(Space.id == self.space_id).first()
+                    if space:
+                        space.calculated_nc = float(data.get('nc_rating') or 0.0)
+                except Exception:
+                    pass
+
+                session.commit()
+            finally:
+                session.close()
+
+            QMessageBox.information(self, "Save Results", "HVAC receiver results saved.")
+            self._refresh_history_table()
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save results:\n{str(e)}")
+
+    # --- History table ---
+    def _refresh_history_table(self) -> None:
+        try:
+            session = get_session()
+            try:
+                rows = (
+                    session.query(HVACReceiverResult)
+                    .filter(HVACReceiverResult.space_id == self.space_id)
+                    .order_by(HVACReceiverResult.calculation_date.desc())
+                    .all()
+                )
+            finally:
+                session.close()
+
+            self.history_table.setRowCount(len(rows))
+            for r, rec in enumerate(rows):
+                date_str = str(getattr(rec, 'calculation_date', '') or '')
+                items = [
+                    QTableWidgetItem(date_str),
+                    QTableWidgetItem(f"{float(getattr(rec, 'total_dba', 0.0)):.1f}"),
+                    QTableWidgetItem(f"NC-{int(getattr(rec, 'nc_rating', 0) or 0)}"),
+                    QTableWidgetItem(f"NC-{int(getattr(rec, 'target_nc', 0) or 0)}"),
+                    QTableWidgetItem("Yes" if getattr(rec, 'meets_target', False) else "No"),
+                    QTableWidgetItem(f"{float(getattr(rec, 'lp_63', 0.0)):.1f}"),
+                    QTableWidgetItem(f"{float(getattr(rec, 'lp_125', 0.0)):.1f}"),
+                    QTableWidgetItem(f"{float(getattr(rec, 'lp_250', 0.0)):.1f}"),
+                    QTableWidgetItem(f"{float(getattr(rec, 'lp_500', 0.0)):.1f}"),
+                    QTableWidgetItem(f"{float(getattr(rec, 'lp_1000', 0.0)):.1f}"),
+                    QTableWidgetItem(f"{float(getattr(rec, 'lp_2000', 0.0)):.1f}"),
+                    QTableWidgetItem(f"{float(getattr(rec, 'lp_4000', 0.0)):.1f}"),
+                ]
+                for c, it in enumerate(items):
+                    it.setFlags(it.flags() ^ Qt.ItemIsEditable)
+                    self.history_table.setItem(r, c, it)
+        except Exception:
+            # Non-fatal UI helper
+            pass
 

@@ -446,9 +446,16 @@ class SegmentTool(DrawingTool):
             print(f"DEBUG: get_result - no start or current point")
             return None
             
-        # Calculate length
+        # Calculate length (with axis snapping)
         x1, y1 = self.start_point.x(), self.start_point.y()
         x2, y2 = self.current_point.x(), self.current_point.y()
+        dx = x2 - x1
+        dy = y2 - y1
+        # Snap to axis if nearly horizontal/vertical (10px tolerance)
+        if abs(dx) < 10 and abs(dy) >= 10:
+            x2 = x1
+        elif abs(dy) < 10 and abs(dx) >= 10:
+            y2 = y1
         length_pixels = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
         
         print(f"DEBUG: get_result - length_pixels: {length_pixels}")
@@ -651,38 +658,86 @@ class PolygonTool(DrawingTool):
         # Close and emit if valid
         if not self.active:
             return
-        # If user clicks close to the first vertex, snap and close
-        try:
-            if self.vertices and point:
+        
+        # Add the final point if it's not too close to the last vertex
+        if point and self.vertices:
+            last = self.vertices[-1]
+            dx = point.x() - last.x()
+            dy = point.y() - last.y()
+            distance = (dx * dx + dy * dy) ** 0.5
+            
+            # If clicking close to first vertex, close the polygon
+            if len(self.vertices) >= 3:
                 first = self.vertices[0]
-                dx = point.x() - first.x()
-                dy = point.y() - first.y()
-                if (dx * dx + dy * dy) ** 0.5 <= 10:
-                    # snap last to first
-                    self.vertices[-1] = QPoint(first.x(), first.y())
-        except Exception:
-            pass
+                dx_first = point.x() - first.x()
+                dy_first = point.y() - first.y()
+                distance_to_first = (dx_first * dx_first + dy_first * dy_first) ** 0.5
+                
+                if distance_to_first <= 15:  # Close tolerance
+                    print("DEBUG: Closing polygon by snapping to first vertex")
+                    self._closed = True
+                else:
+                    # Add final point if not too close to last
+                    if distance > 5:
+                        self.vertices.append(QPoint(point.x(), point.y()))
+                        print(f"DEBUG: Added final vertex, total vertices: {len(self.vertices)}")
+        
         self.active = False
         result = self.get_result()
         if result:
+            print(f"DEBUG: PolygonTool emitting result with {len(result.get('points', []))} points")
             self.finished.emit(result)
+        else:
+            print("DEBUG: PolygonTool - no valid result to emit")
 
     def draw_preview(self, painter):
         if not self.active:
             return
         pts = self.vertices.copy()
-        if self.current_point and (not pts or (pts and (pts[-1].x() != self.current_point.x() or pts[-1].y() != self.current_point.y()))):
-            # Add a transient edge to cursor
-            pts.append(self.current_point)
+        
+        # Add preview line to current mouse position
+        if self.current_point and len(pts) > 0:
+            last = pts[-1]
+            if last.x() != self.current_point.x() or last.y() != self.current_point.y():
+                painter.setPen(QPen(QColor(0, 120, 215, 128), 1, Qt.DashLine))
+                painter.drawLine(last, self.current_point)
+                
+                # Show closing line if near first vertex
+                if len(pts) >= 3:
+                    first = pts[0]
+                    dx = self.current_point.x() - first.x()
+                    dy = self.current_point.y() - first.y()
+                    if (dx * dx + dy * dy) ** 0.5 <= 15:
+                        painter.setPen(QPen(QColor(255, 0, 0), 2, Qt.SolidLine))
+                        painter.drawLine(self.current_point, first)
+        
+        # Draw the polygon edges
         if len(pts) >= 2:
             painter.setPen(self.pen)
             for i in range(len(pts) - 1):
                 painter.drawLine(pts[i], pts[i + 1])
-        # Draw vertices
+                
+        # If we have enough points, show filled preview
+        if len(pts) >= 3:
+            from PySide6.QtGui import QPolygon
+            polygon = QPolygon(pts)
+            painter.setPen(self.pen)
+            painter.setBrush(self.fill_brush)
+            painter.drawPolygon(polygon)
+        
+        # Draw vertices as circles
         painter.setPen(self.vertex_pen)
         painter.setBrush(self.vertex_brush)
-        for p in self.vertices:
-            painter.drawEllipse(p.x() - 3, p.y() - 3, 6, 6)
+        for i, p in enumerate(self.vertices):
+            # First vertex is larger and red
+            if i == 0 and len(self.vertices) >= 3:
+                painter.setPen(QPen(QColor(255, 0, 0), 2))
+                painter.setBrush(QBrush(QColor(255, 0, 0)))
+                painter.drawEllipse(p.x() - 4, p.y() - 4, 8, 8)
+            else:
+                painter.setPen(self.vertex_pen)
+                painter.setBrush(self.vertex_brush)
+                painter.drawEllipse(p.x() - 3, p.y() - 3, 6, 6)
 
 class DrawingToolManager(QObject):
     """Manages drawing tools and their state"""

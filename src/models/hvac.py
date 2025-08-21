@@ -201,3 +201,46 @@ class SilencerPlacementAnalysis(Base):
     
     def __repr__(self):
         return f"<SilencerPlacementAnalysis(id={self.id}, path_id={self.path_id})>"
+
+
+class HVACReceiverResult(Base):
+    """Per-space HVAC receiver background noise results.
+
+    Stores the combined 7-band sound pressure level at the receiver, along with
+    NC rating and calculation parameters used by the receiver dialog.
+    """
+    __tablename__ = 'hvac_receiver_results'
+
+    id = Column(Integer, primary_key=True)
+    space_id = Column(Integer, ForeignKey('spaces.id'), nullable=False)
+    calculation_date = Column(DateTime, default=datetime.utcnow)
+
+    # Overall results
+    target_nc = Column(Float)
+    nc_rating = Column(Float)
+    total_dba = Column(Float)
+    meets_target = Column(Boolean, default=False)
+
+    # Receiver spectrum (7 bands: 63..4000 Hz)
+    lp_63 = Column(Float, default=0.0)
+    lp_125 = Column(Float, default=0.0)
+    lp_250 = Column(Float, default=0.0)
+    lp_500 = Column(Float, default=0.0)
+    lp_1000 = Column(Float, default=0.0)
+    lp_2000 = Column(Float, default=0.0)
+    lp_4000 = Column(Float, default=0.0)
+
+    # Parameters used
+    room_volume = Column(Float)
+    distributed_ceiling_height = Column(Float)
+    distributed_floor_area_per_diffuser = Column(Float)
+    path_parameters_json = Column(Text)  # JSON: [{path_id, method, distance_ft}, ...]
+
+    # Relationships
+    space = relationship("Space", back_populates="receiver_results")
+
+    def __repr__(self):
+        return (
+            f"<HVACReceiverResult(id={self.id}, space_id={self.space_id}, "
+            f"nc={self.nc_rating}, dBA={self.total_dba})>"
+        )

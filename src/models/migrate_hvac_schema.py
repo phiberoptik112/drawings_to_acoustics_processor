@@ -128,6 +128,35 @@ def ensure_hvac_schema():
             # If tables don't exist yet, metadata.create_all will create them.
             pass
 
+        # hvac_receiver_results additions
+        try:
+            _ensure_columns(
+                session,
+                "hvac_receiver_results",
+                [
+                    ("space_id", "INTEGER"),
+                    ("calculation_date", "DATETIME"),
+                    ("target_nc", "REAL"),
+                    ("nc_rating", "REAL"),
+                    ("total_dba", "REAL"),
+                    ("meets_target", "INTEGER DEFAULT 0"),
+                    ("lp_63", "REAL"),
+                    ("lp_125", "REAL"),
+                    ("lp_250", "REAL"),
+                    ("lp_500", "REAL"),
+                    ("lp_1000", "REAL"),
+                    ("lp_2000", "REAL"),
+                    ("lp_4000", "REAL"),
+                    ("room_volume", "REAL"),
+                    ("distributed_ceiling_height", "REAL"),
+                    ("distributed_floor_area_per_diffuser", "REAL"),
+                    ("path_parameters_json", "TEXT"),
+                ],
+            )
+        except Exception:
+            # Table may not exist yet; it will be created on fresh DBs
+            pass
+
         session.commit()
     except Exception:
         session.rollback()

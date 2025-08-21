@@ -11,12 +11,11 @@ import sys
 
 # Import utilities for deployment detection
 try:
-	from utils import ensure_user_data_directory, is_bundled_executable, log_environment_info
+    from utils import ensure_user_data_directory, is_bundled_executable, log_environment_info
 except ImportError:
-<<<<<<< Current (Your changes)
     # Fallback if utils not available
     def ensure_user_data_directory():
-        user_dir = os.path.expanduser("~/Documents/AcousticAnalysis/")
+        user_dir = os.path.expanduser("~/Documents/drawings_to_acoustics_processor/debug_data")
         os.makedirs(user_dir, exist_ok=True)
         return user_dir
     
@@ -25,19 +24,6 @@ except ImportError:
     
     def log_environment_info():
         print(f"Database initialization - Bundled: {is_bundled_executable()}")
-=======
-	# Fallback if utils not available
-	def ensure_user_data_directory():
-		user_dir = os.path.expanduser("~/Documents/drawings_to_acoustics_processor/debug_data")
-		os.makedirs(user_dir, exist_ok=True)
-		return user_dir
-	
-	def is_bundled_executable():
-		return getattr(sys, 'frozen', False)
-	
-	def log_environment_info():
-		print(f"Database initialization - Bundled: {is_bundled_executable()}")
->>>>>>> Incoming (Background Agent changes)
 
 # Create base class for declarative models
 Base = declarative_base()

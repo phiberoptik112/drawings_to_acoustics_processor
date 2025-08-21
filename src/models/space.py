@@ -74,6 +74,8 @@ class Space(Base):
     # Enhanced RT60 relationships
     surface_instances = relationship("RoomSurfaceInstance", back_populates="space", cascade="all, delete-orphan")
     rt60_results = relationship("RT60CalculationResult", back_populates="space", cascade="all, delete-orphan")
+    # HVAC receiver results
+    receiver_results = relationship("HVACReceiverResult", back_populates="space", cascade="all, delete-orphan")
     
     # New surface materials relationship
     surface_materials = relationship("SpaceSurfaceMaterial", back_populates="space", cascade="all, delete-orphan", order_by="SpaceSurfaceMaterial.order_index")
