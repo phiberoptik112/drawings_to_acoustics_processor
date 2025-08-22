@@ -98,6 +98,12 @@ class Space(Base):
         if self.rt60_results:
             return max(self.rt60_results, key=lambda r: r.calculation_date)
         return None
+
+    def get_latest_receiver_result(self):
+        """Get the most recent HVAC receiver background noise result"""
+        if getattr(self, 'receiver_results', None):
+            return max(self.receiver_results, key=lambda r: r.calculation_date)
+        return None
     
     def get_total_surface_area(self):
         """Calculate total surface area from all surface instances"""

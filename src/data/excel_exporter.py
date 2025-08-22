@@ -18,7 +18,7 @@ except ImportError:
     EXCEL_AVAILABLE = False
 
 from models import get_session, Project, Space, Drawing
-from models.hvac import HVACPath, HVACComponent, HVACSegment
+from models.hvac import HVACPath, HVACComponent, HVACSegment, HVACReceiverResult
 from calculations import HVACPathCalculator, NCRatingAnalyzer
 
 
@@ -91,6 +91,7 @@ class ExcelExporter:
             # Create sheets based on options
             if options.include_spaces:
                 self.create_spaces_sheet(wb, project, session, options)
+                self.create_receiver_history_sheet(wb, project, session)
             
             if options.include_hvac_paths:
                 self.create_hvac_paths_sheet(wb, project, session, options)
@@ -225,6 +226,7 @@ class ExcelExporter:
         headers = [
             "Space Name", "Description", "Floor Area (sf)", "Ceiling Height (ft)",
             "Volume (cf)", "Wall Area (sf)", "Target RT60 (s)", "Calculated RT60 (s)",
+            "Latest Receiver NC", "Latest Receiver dB(A)",
             "Ceiling Material", "Wall Material", "Floor Material"
         ]
         
@@ -236,6 +238,9 @@ class ExcelExporter:
         # Data rows
         for space in spaces:
             row += 1
+            latest_rec = space.get_latest_receiver_result() if hasattr(space, 'get_latest_receiver_result') else None
+            latest_nc = getattr(latest_rec, 'nc_rating', None)
+            latest_dba = getattr(latest_rec, 'total_dba', None)
             data = [
                 space.name,
                 space.description or "",
@@ -245,6 +250,8 @@ class ExcelExporter:
                 space.wall_area or 0,
                 space.target_rt60 or 0,
                 space.calculated_rt60 or 0,
+                (int(latest_nc) if latest_nc is not None else None),
+                (float(latest_dba) if latest_dba is not None else None),
                 space.ceiling_material or "",
                 space.wall_material or "",
                 space.floor_material or ""
@@ -281,6 +288,48 @@ class ExcelExporter:
                         if col == 4 and status == "Outside Tolerance":
                             cell.fill = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")
         
+        self.auto_size_columns(ws)
+
+    def create_receiver_history_sheet(self, wb, project, session):
+        """Create sheet listing all saved receiver calculations for each space."""
+        ws = wb.create_sheet("Receiver Noise History")
+        headers = [
+            "Space", "Date", "dB(A)", "NC", "Target", "Meets",
+            "63", "125", "250", "500", "1000", "2000", "4000",
+        ]
+        for col, header in enumerate(headers, 1):
+            ws.cell(row=1, column=col, value=header)
+            self.apply_header_style(ws, f'{get_column_letter(col)}1')
+
+        row = 2
+        spaces = session.query(Space).filter(Space.project_id == project.id).all()
+        for space in spaces:
+            recs = (
+                session.query(HVACReceiverResult)
+                .filter(HVACReceiverResult.space_id == space.id)
+                .order_by(HVACReceiverResult.calculation_date.desc())
+                .all()
+            )
+            for rec in recs:
+                data = [
+                    space.name,
+                    rec.calculation_date.strftime("%Y-%m-%d %H:%M") if rec.calculation_date else "",
+                    float(rec.total_dba or 0.0),
+                    int(rec.nc_rating or 0),
+                    int(rec.target_nc or 0),
+                    "Yes" if rec.meets_target else "No",
+                    float(rec.lp_63 or 0.0),
+                    float(rec.lp_125 or 0.0),
+                    float(rec.lp_250 or 0.0),
+                    float(rec.lp_500 or 0.0),
+                    float(rec.lp_1000 or 0.0),
+                    float(rec.lp_2000 or 0.0),
+                    float(rec.lp_4000 or 0.0),
+                ]
+                for col, value in enumerate(data, 1):
+                    ws.cell(row=row, column=col, value=value)
+                row += 1
+
         self.auto_size_columns(ws)
     
     def create_hvac_paths_sheet(self, wb, project, session, options):
