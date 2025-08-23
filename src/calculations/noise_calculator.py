@@ -1,11 +1,11 @@
 """
 HVAC Noise Calculator - Calculate mechanical background noise levels and NC ratings
+Revised to work with the unified HVAC noise engine
 """
 
 import math
 from typing import Dict, List, Tuple, Optional
-from data.components import STANDARD_COMPONENTS, STANDARD_FITTINGS
-from .nc_rating_analyzer import NCRatingAnalyzer, OctaveBandData
+from .hvac_noise_engine import HVACNoiseEngine, PathElement, PathResult
 
 
 class NoiseCalculator:
@@ -31,9 +31,9 @@ class NoiseCalculator:
     
     def __init__(self):
         """Initialize the noise calculator"""
-        self.nc_analyzer = NCRatingAnalyzer()
+        self.hvac_engine = HVACNoiseEngine()
     
-    def calculate_hvac_path_noise(self, path_data: Dict) -> Dict:
+    def calculate_hvac_path_noise(self, path_data: Dict, debug: bool = False) -> Dict:
         """
         Calculate noise transmission through an HVAC path from source to terminal
         
@@ -47,82 +47,14 @@ class NoiseCalculator:
             Dictionary with calculation results
         """
         try:
-            results = {
-                'source_noise': 0.0,
-                'terminal_noise': 0.0,
-                'total_attenuation': 0.0,
-                'path_segments': [],
-                'nc_rating': 0,
-                'calculation_valid': False,
-                'warnings': []
-            }
+            # Convert path_data to PathElement objects
+            path_elements = self._convert_path_data_to_elements(path_data)
             
-            # Get source noise level
-            source_component = path_data.get('source_component', {})
-            source_type = source_component.get('component_type', '')
+            # Use the HVAC engine to calculate
+            result = self.hvac_engine.calculate_path_noise(path_elements, debug=debug)
             
-            if source_type in STANDARD_COMPONENTS:
-                results['source_noise'] = STANDARD_COMPONENTS[source_type]['noise_level']
-            else:
-                results['source_noise'] = source_component.get('noise_level', 50.0)
-                results['warnings'].append(f"Unknown component type '{source_type}', using default noise level")
-            
-            # Calculate attenuation through each segment
-            segments = path_data.get('segments', [])
-            current_noise = results['source_noise']
-            total_attenuation = 0.0
-            
-            for i, segment in enumerate(segments):
-                segment_result = self.calculate_segment_attenuation(segment)
-                segment_result['segment_number'] = i + 1
-                segment_result['noise_before'] = current_noise
-                
-                # Apply attenuation
-                current_noise -= segment_result['total_attenuation']
-                current_noise += segment_result['fitting_additions']
-                
-                segment_result['noise_after'] = current_noise
-                total_attenuation += segment_result['total_attenuation']
-                
-                results['path_segments'].append(segment_result)
-            
-            # Account for terminal component
-            terminal_component = path_data.get('terminal_component', {})
-            terminal_type = terminal_component.get('component_type', '')
-            
-            if terminal_type in STANDARD_COMPONENTS:
-                terminal_noise = STANDARD_COMPONENTS[terminal_type]['noise_level']
-                # For terminal units, add their noise to the path noise
-                if terminal_noise > 0:
-                    current_noise = self.combine_noise_sources(current_noise, terminal_noise)
-            
-            results['terminal_noise'] = current_noise
-            results['total_attenuation'] = total_attenuation
-            
-            # Calculate NC rating with enhanced analysis
-            results['nc_rating'] = self.calculate_nc_rating(current_noise)
-            
-            # Enhanced NC analysis if available
-            octave_data = self.nc_analyzer.estimate_octave_bands_from_dba(current_noise, "typical_hvac")
-            nc_analysis = self.nc_analyzer.analyze_octave_band_data(octave_data)
-            results['detailed_nc_analysis'] = {
-                'octave_bands': nc_analysis.octave_band_levels.to_list(),
-                'overall_dba': nc_analysis.overall_dba,
-                'nc_description': self.nc_analyzer.get_nc_description(nc_analysis.nc_rating),
-                'warnings': nc_analysis.warnings
-            }
-            
-            # Validation
-            if results['source_noise'] > 0 and len(segments) > 0:
-                results['calculation_valid'] = True
-            
-            # Add warnings for unusual results
-            if current_noise > 70:
-                results['warnings'].append("High noise level - consider additional attenuation")
-            elif current_noise < 15:
-                results['warnings'].append("Very low noise level - verify calculations")
-            
-            return results
+            # Convert back to the expected format
+            return self._convert_result_to_dict(result)
             
         except Exception as e:
             return {
@@ -135,6 +67,99 @@ class NoiseCalculator:
                 'error': str(e)
             }
     
+    def _convert_path_data_to_elements(self, path_data: Dict) -> List[PathElement]:
+        """Convert legacy path data format to PathElement objects"""
+        elements = []
+        
+        # Add source element
+        source_component = path_data.get('source_component', {})
+        if source_component:
+            source_element = PathElement(
+                element_type='source',
+                element_id='source_1',
+                source_noise_level=source_component.get('noise_level', 50.0),
+                octave_band_levels=source_component.get('octave_band_levels')
+            )
+            elements.append(source_element)
+        
+        # Add segments
+        segments = path_data.get('segments', [])
+        for i, segment in enumerate(segments):
+            element_type = self._determine_element_type(segment)
+            
+            # Normalize duct shape nomenclature ('round' -> 'circular')
+            shape = segment.get('duct_shape', 'rectangular')
+            if isinstance(shape, str) and shape.lower() == 'round':
+                shape = 'circular'
+
+            element = PathElement(
+                element_type=element_type,
+                element_id=f'segment_{i+1}',
+                length=segment.get('length', 0.0),
+                width=segment.get('duct_width', 12.0),
+                height=segment.get('duct_height', 8.0),
+                diameter=segment.get('diameter', 0.0),
+                duct_shape=shape,
+                duct_type=segment.get('duct_type', 'sheet_metal'),
+                lining_thickness=segment.get('lining_thickness', 0.0),
+                flow_rate=segment.get('flow_rate', 0.0),
+                flow_velocity=segment.get('flow_velocity', 0.0),
+                pressure_drop=segment.get('pressure_drop', 0.0),
+                vane_chord_length=segment.get('vane_chord_length', 0.0),
+                num_vanes=segment.get('num_vanes', 0),
+                room_volume=segment.get('room_volume', 0.0),
+                room_absorption=segment.get('room_absorption', 0.0),
+                fitting_type=segment.get('fitting_type')
+            )
+            elements.append(element)
+        
+        # Add terminal element
+        terminal_component = path_data.get('terminal_component', {})
+        if terminal_component:
+            terminal_element = PathElement(
+                element_type='terminal',
+                element_id='terminal_1',
+                source_noise_level=terminal_component.get('noise_level', 0.0),
+                room_volume=terminal_component.get('room_volume', 0.0),
+                room_absorption=terminal_component.get('room_absorption', 0.0)
+            )
+            elements.append(terminal_element)
+        
+        return elements
+    
+    def _determine_element_type(self, segment: Dict) -> str:
+        """Determine the element type based on segment properties"""
+        if segment.get('duct_type') == 'flexible':
+            return 'flex_duct'
+        # Map specific fitting names to general types
+        ft = (segment.get('fitting_type') or '').lower()
+        if ft:
+            if ft.startswith('elbow'):
+                return 'elbow'
+            if ('tee' in ft) or ('junction' in ft) or ('branch' in ft):
+                return 'junction'
+        else:
+            return 'duct'
+    
+    def _convert_result_to_dict(self, result: PathResult) -> Dict:
+        """Convert PathResult to legacy dictionary format"""
+        # Provide both legacy and new keys for compatibility
+        return {
+            'source_noise': result.source_noise_dba,
+            'terminal_noise': result.terminal_noise_dba,
+            'total_attenuation': result.total_attenuation_dba,
+            'total_attenuation_dba': result.total_attenuation_dba,
+            'path_segments': result.element_results,
+            # Convenience alias for UI naming: elements can be components, fittings, or segments
+            'path_elements': result.element_results,
+            'nc_rating': result.nc_rating,
+            'calculation_valid': result.calculation_valid,
+            'warnings': result.warnings,
+            'error': result.error_message,
+            'octave_band_spectrum': result.octave_band_spectrum,
+            'debug_log': getattr(result, 'debug_log', None)
+        }
+    
     def calculate_segment_attenuation(self, segment_data: Dict) -> Dict:
         """
         Calculate noise attenuation for a single duct segment
@@ -145,44 +170,40 @@ class NoiseCalculator:
         Returns:
             Dictionary with attenuation calculations
         """
-        result = {
-            'distance_loss': 0.0,
-            'duct_loss': 0.0,
-            'fitting_additions': 0.0,
-            'total_attenuation': 0.0
-        }
+        # Convert to PathElement and use the engine
+        element = PathElement(
+            element_type=self._determine_element_type(segment_data),
+            element_id='temp_segment',
+            length=segment_data.get('length', 0.0),
+            width=segment_data.get('duct_width', 12.0),
+            height=segment_data.get('duct_height', 8.0),
+            diameter=segment_data.get('diameter', 0.0),
+            duct_shape=segment_data.get('duct_shape', 'rectangular'),
+            duct_type=segment_data.get('duct_type', 'sheet_metal'),
+            lining_thickness=segment_data.get('lining_thickness', 0.0),
+            flow_rate=segment_data.get('flow_rate', 0.0),
+            flow_velocity=segment_data.get('flow_velocity', 0.0),
+            pressure_drop=segment_data.get('pressure_drop', 0.0),
+            vane_chord_length=segment_data.get('vane_chord_length', 0.0),
+            num_vanes=segment_data.get('num_vanes', 0)
+        )
         
-        try:
-            # Distance attenuation (6 dB per doubling of distance)
-            length = segment_data.get('length', 0)
-            if length > 0:
-                # Use 3 dB per doubling for ducted systems (vs 6 dB for free field)
-                reference_distance = 10  # feet
-                if length > reference_distance:
-                    result['distance_loss'] = 3 * math.log2(length / reference_distance)
-            
-            # Duct attenuation
-            result['duct_loss'] = self.calculate_duct_attenuation(segment_data)
-            
-            # Fitting noise additions
-            fittings = segment_data.get('fittings', [])
-            fitting_total = 0.0
-            
-            for fitting in fittings:
-                fitting_type = fitting.get('fitting_type', '')
-                if fitting_type in STANDARD_FITTINGS:
-                    fitting_total += STANDARD_FITTINGS[fitting_type]['noise_adjustment']
-                else:
-                    fitting_total += fitting.get('noise_adjustment', 0.0)
-            
-            result['fitting_additions'] = fitting_total
-            result['total_attenuation'] = result['distance_loss'] + result['duct_loss']
-            
-            return result
-            
-        except Exception as e:
-            result['error'] = str(e)
-            return result
+        # Create a dummy input spectrum
+        input_spectrum = [50.0] * 8
+        input_dba = 50.0
+        
+        # Calculate effect
+        effect = self.hvac_engine._calculate_element_effect(element, input_spectrum, input_dba)
+        
+        # Convert to legacy format
+        return {
+            'distance_loss': 0.0,  # Not calculated in new engine
+            'duct_loss': effect.get('attenuation_dba', 0.0),
+            'fitting_additions': effect.get('generated_dba', 0.0),
+            'total_attenuation': (effect.get('attenuation_dba', 0.0) - effect.get('generated_dba', 0.0)),
+            'attenuation_spectrum': effect.get('attenuation_spectrum'),
+            'generated_spectrum': effect.get('generated_spectrum')
+        }
     
     def calculate_duct_attenuation(self, segment_data: Dict) -> float:
         """
@@ -194,50 +215,8 @@ class NoiseCalculator:
         Returns:
             Attenuation in dB
         """
-        try:
-            length = segment_data.get('length', 0)
-            duct_type = segment_data.get('duct_type', 'sheet_metal')
-            duct_shape = segment_data.get('duct_shape', 'rectangular')
-            insulation = segment_data.get('insulation', None)
-            
-            if length <= 0:
-                return 0.0
-            
-            # Base attenuation rates (dB per 100 feet)
-            attenuation_rates = {
-                'sheet_metal': {
-                    'rectangular': 1.0,
-                    'round': 0.8
-                },
-                'fiberglass': {
-                    'rectangular': 8.0,
-                    'round': 6.0
-                },
-                'fabric': {
-                    'rectangular': 12.0,
-                    'round': 10.0
-                }
-            }
-            
-            # Get base rate
-            base_rate = attenuation_rates.get(duct_type, {}).get(duct_shape, 1.0)
-            
-            # Apply insulation multiplier
-            insulation_multiplier = 1.0
-            if insulation:
-                if 'fiberglass' in insulation.lower():
-                    insulation_multiplier = 2.0
-                elif 'foam' in insulation.lower():
-                    insulation_multiplier = 1.5
-            
-            # Calculate attenuation
-            attenuation = (base_rate * insulation_multiplier * length) / 100.0
-            
-            # Limit maximum attenuation to reasonable values
-            return min(attenuation, 30.0)
-            
-        except Exception:
-            return 0.0
+        result = self.calculate_segment_attenuation(segment_data)
+        return result.get('duct_loss', 0.0)
     
     def calculate_nc_rating(self, noise_level: float) -> int:
         """
@@ -317,23 +296,7 @@ class NoiseCalculator:
         Returns:
             Description string
         """
-        descriptions = {
-            15: "Very quiet - Private offices, libraries",
-            20: "Quiet - Executive offices, conference rooms", 
-            25: "Moderately quiet - Open offices, classrooms",
-            30: "Moderate - General offices, retail spaces",
-            35: "Moderately noisy - Restaurants, lobbies",
-            40: "Noisy - Cafeterias, gymnasiums",
-            45: "Very noisy - Workshops, mechanical rooms",
-            50: "Extremely noisy - Industrial spaces",
-            55: "Unacceptable for most occupied spaces",
-            60: "Unacceptable for occupied spaces",
-            65: "Hearing protection recommended"
-        }
-        
-        # Find closest NC rating
-        closest_nc = min(descriptions.keys(), key=lambda x: abs(x - nc_rating))
-        return descriptions.get(closest_nc, "Unknown criteria")
+        return self.hvac_engine.get_nc_description(nc_rating)
     
     def validate_path_data(self, path_data: Dict) -> Tuple[bool, List[str]]:
         """
@@ -345,44 +308,11 @@ class NoiseCalculator:
         Returns:
             Tuple of (is_valid, list_of_warnings)
         """
-        warnings = []
-        is_valid = True
-        
-        # Check source component
-        source_component = path_data.get('source_component')
-        if not source_component:
-            warnings.append("No source component specified")
-            is_valid = False
-        
-        # Check segments
-        segments = path_data.get('segments', [])
-        if not segments:
-            warnings.append("No segments in path")
-            is_valid = False
-        
-        for i, segment in enumerate(segments):
-            segment_num = i + 1
-            
-            # Check segment length
-            length = segment.get('length', 0)
-            if length <= 0:
-                warnings.append(f"Segment {segment_num}: Invalid length ({length})")
-            elif length > 500:
-                warnings.append(f"Segment {segment_num}: Very long segment ({length} ft)")
-            
-            # Check duct dimensions
-            width = segment.get('duct_width', 0)
-            height = segment.get('duct_height', 0)
-            
-            if width <= 0 or height <= 0:
-                warnings.append(f"Segment {segment_num}: Missing duct dimensions")
-        
-        # Check terminal component
-        terminal_component = path_data.get('terminal_component')
-        if not terminal_component:
-            warnings.append("No terminal component specified")
-        
-        return is_valid, warnings
+        try:
+            path_elements = self._convert_path_data_to_elements(path_data)
+            return self.hvac_engine.validate_path_elements(path_elements)
+        except Exception as e:
+            return False, [f"Validation error: {str(e)}"]
     
     def analyze_space_nc_compliance(self, noise_level: float, space_type: str, target_nc: Optional[int] = None) -> Dict:
         """
@@ -397,33 +327,25 @@ class NoiseCalculator:
             Dictionary with compliance analysis
         """
         try:
-            # Estimate octave band data from overall level
-            octave_data = self.nc_analyzer.estimate_octave_bands_from_dba(noise_level, "typical_hvac")
+            # Estimate octave band spectrum from A-weighted level
+            estimated_spectrum = self.hvac_engine._estimate_spectrum_from_dba(noise_level)
             
-            # Perform NC analysis
-            nc_analysis = self.nc_analyzer.analyze_octave_band_data(octave_data, target_nc)
+            # Calculate NC rating
+            nc_rating = self.hvac_engine._calculate_nc_rating(estimated_spectrum)
             
-            # Compare to standards
-            standards_comparison = self.nc_analyzer.compare_to_standards(nc_analysis.nc_rating, space_type)
-            
-            # Get recommendations if needed
-            recommendations = []
-            if target_nc and nc_analysis.nc_rating > target_nc:
-                recommendations = self.nc_analyzer.recommend_noise_control(nc_analysis, target_nc)
-            elif not nc_analysis.meets_criteria:
-                recommendations = self.nc_analyzer.recommend_noise_control(nc_analysis, standards_comparison['maximum_nc'])
+            # Determine if meets target
+            meets_target = True
+            if target_nc and nc_rating > target_nc:
+                meets_target = False
             
             return {
                 'measured_noise_dba': noise_level,
-                'nc_rating': nc_analysis.nc_rating,
-                'octave_band_levels': nc_analysis.octave_band_levels.to_list(),
+                'nc_rating': nc_rating,
+                'octave_band_levels': estimated_spectrum,
                 'space_type': space_type,
-                'standards_comparison': standards_comparison,
-                'meets_target': nc_analysis.meets_criteria,
-                'exceedances': nc_analysis.exceedances,
-                'recommendations': recommendations,
-                'warnings': nc_analysis.warnings,
-                'nc_description': self.nc_analyzer.get_nc_description(nc_analysis.nc_rating)
+                'meets_target': meets_target,
+                'nc_description': self.hvac_engine.get_nc_description(nc_rating),
+                'recommendations': self._get_recommendations(nc_rating, target_nc) if not meets_target else []
             }
             
         except Exception as e:
@@ -433,3 +355,22 @@ class NoiseCalculator:
                 'nc_rating': self.calculate_nc_rating(noise_level),
                 'analysis_failed': True
             }
+    
+    def _get_recommendations(self, current_nc: int, target_nc: Optional[int]) -> List[str]:
+        """Get noise control recommendations"""
+        recommendations = []
+        
+        if target_nc and current_nc > target_nc:
+            improvement_needed = current_nc - target_nc
+            
+            if improvement_needed <= 5:
+                recommendations.append("Consider adding duct lining or acoustic treatment")
+            elif improvement_needed <= 10:
+                recommendations.append("Add duct lining and consider silencers")
+                recommendations.append("Review duct routing to minimize fittings")
+            else:
+                recommendations.append("Significant noise reduction required")
+                recommendations.append("Consider multiple noise control measures")
+                recommendations.append("Review entire HVAC system design")
+        
+        return recommendations

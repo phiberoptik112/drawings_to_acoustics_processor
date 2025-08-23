@@ -27,6 +27,9 @@ class Drawing(Base):
     width_pixels = Column(Float)   # PDF page width in pixels
     height_pixels = Column(Float)  # PDF page height in pixels
     
+    # Link to drawing set (optional)
+    drawing_set_id = Column(Integer, ForeignKey('drawing_sets.id'), nullable=True)
+    
     created_date = Column(DateTime, default=datetime.utcnow)
     modified_date = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -35,6 +38,7 @@ class Drawing(Base):
     spaces = relationship("Space", back_populates="drawing")  # Direct relationship to spaces
     room_boundaries = relationship("RoomBoundary", back_populates="drawing", cascade="all, delete-orphan")
     hvac_components = relationship("HVACComponent", back_populates="drawing", cascade="all, delete-orphan")
+    drawing_set = relationship("DrawingSet", back_populates="drawings")
     
     def __repr__(self):
         return f"<Drawing(id={self.id}, name='{self.name}', project_id={self.project_id})>"

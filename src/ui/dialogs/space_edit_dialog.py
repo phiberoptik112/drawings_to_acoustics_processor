@@ -53,7 +53,7 @@ class MaterialSearchWidget(QWidget):
         self.materials_list = QListWidget()
         self.materials_list.setMinimumHeight(150)
         self.materials_list.setMaximumHeight(300)  # Increased from 150
-        self.materials_list.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.materials_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.materials_list.itemDoubleClicked.connect(self.add_selected_material)
         layout.addWidget(self.materials_list)
         
@@ -205,7 +205,7 @@ class MaterialListWidget(QWidget):
         # Configure table
         self.materials_table.setMinimumHeight(80)
         self.materials_table.setMaximumHeight(200)
-        self.materials_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.materials_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.materials_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.materials_table.itemSelectionChanged.connect(self.update_remove_button)
         

@@ -20,6 +20,7 @@ from ui.dialogs.hvac_component_dialog import HVACComponentDialog
 from ui.dialogs.hvac_segment_dialog import HVACSegmentDialog
 from ui.dialogs.hvac_path_dialog import HVACPathDialog
 from ui.dialogs.hvac_path_analysis_dialog import HVACPathAnalysisDialog
+from sqlalchemy.orm import selectinload
 
 
 class HVACManagementWidget(QWidget):
@@ -265,6 +266,22 @@ class HVACManagementWidget(QWidget):
         widget = QWidget()
         layout = QVBoxLayout()
         
+        # Associations (Primary Source and Receiver Room)
+        assoc_group = QGroupBox("Path Associations")
+        assoc_layout = QHBoxLayout()
+        self.source_combo = QComboBox()
+        self.receiver_combo = QComboBox()
+        self.save_assoc_btn = QPushButton("Save Associations")
+        assoc_layout.addWidget(QLabel("Primary Source:"))
+        assoc_layout.addWidget(self.source_combo)
+        assoc_layout.addSpacing(12)
+        assoc_layout.addWidget(QLabel("Receiver Room:"))
+        assoc_layout.addWidget(self.receiver_combo)
+        assoc_layout.addStretch()
+        assoc_layout.addWidget(self.save_assoc_btn)
+        assoc_group.setLayout(assoc_layout)
+        layout.addWidget(assoc_group)
+
         # Analysis results
         analysis_group = QGroupBox("Path Analysis")
         analysis_layout = QVBoxLayout()
@@ -306,6 +323,9 @@ class HVACManagementWidget(QWidget):
         
         layout.addStretch()
         widget.setLayout(layout)
+
+        # Wire actions
+        self.save_assoc_btn.clicked.connect(self.save_path_associations)
         return widget
         
     def create_summary_tab(self):
@@ -342,10 +362,20 @@ class HVACManagementWidget(QWidget):
         try:
             session = get_session()
             
-            # Load paths
-            paths = session.query(HVACPath).filter(
-                HVACPath.project_id == self.project_id
-            ).all()
+            # Load paths with required relationships eagerly to avoid lazy-load after session close
+            paths = (
+                session.query(HVACPath)
+                .options(
+                    selectinload(HVACPath.target_space),
+                    selectinload(HVACPath.primary_source),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                    # Eagerly load fittings to avoid detached lazy-load errors in dialogs
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.fittings),
+                )
+                .filter(HVACPath.project_id == self.project_id)
+                .all()
+            )
             
             self.paths_list.clear()
             for path in paths:
@@ -369,13 +399,59 @@ class HVACManagementWidget(QWidget):
                 item.setData(Qt.UserRole, component)
                 self.components_list.addItem(item)
             
+            # Load spaces
+            spaces = session.query(Space).filter(Space.project_id == self.project_id).all()
             session.close()
             
             # Update summary
             self.update_summary()
+
+            # Populate combos
+            self.populate_source_receiver_combos(components, spaces)
             
         except Exception as e:
             print(f"Error loading HVAC data: {e}")
+
+    def populate_source_receiver_combos(self, components, spaces):
+        self.source_combo.clear()
+        for comp in components:
+            self.source_combo.addItem(f"{comp.name} ({comp.component_type})", comp.id)
+        self.receiver_combo.clear()
+        for sp in spaces:
+            self.receiver_combo.addItem(sp.name, sp.id)
+        # Default current selections for selected path
+        if self.current_path:
+            if getattr(self.current_path, 'primary_source_id', None):
+                idx = self.source_combo.findData(self.current_path.primary_source_id)
+                if idx >= 0:
+                    self.source_combo.setCurrentIndex(idx)
+            if getattr(self.current_path, 'target_space_id', None):
+                idx = self.receiver_combo.findData(self.current_path.target_space_id)
+                if idx >= 0:
+                    self.receiver_combo.setCurrentIndex(idx)
+
+    def save_path_associations(self):
+        if not self.current_path:
+            QMessageBox.information(self, "Save Associations", "Select a path first.")
+            return
+        session = get_session()
+        try:
+            db_path = session.query(HVACPath).filter(HVACPath.id == self.current_path.id).first()
+            if not db_path:
+                QMessageBox.warning(self, "Save Associations", "Path not found in database.")
+                return
+            db_path.primary_source_id = self.source_combo.currentData()
+            db_path.target_space_id = self.receiver_combo.currentData()
+            session.commit()
+            # Update current object for UI display
+            self.current_path.primary_source_id = db_path.primary_source_id
+            self.current_path.target_space_id = db_path.target_space_id
+            QMessageBox.information(self, "Save Associations", "Associations saved.")
+        except Exception as e:
+            session.rollback()
+            QMessageBox.critical(self, "Save Associations", f"Failed to save: {e}")
+        finally:
+            session.close()
     
     def refresh_data(self):
         """Refresh data from database"""
@@ -668,7 +744,7 @@ class HVACManagementWidget(QWidget):
             if result.calculation_valid:
                 html += f"<p><b>Source Noise:</b> {result.source_noise:.1f} dB(A)<br>"
                 html += f"<b>Terminal Noise:</b> {result.terminal_noise:.1f} dB(A)<br>"
-                html += f"<b>Total Attenuation:</b> {result.total_attenuation:.1f} dB<br>"
+                html += f"<b>Total Attenuation:</b> {float(getattr(result, 'total_attenuation', 0) or 0):.1f} dB<br>"
                 html += f"<b>NC Rating:</b> NC-{result.nc_rating:.0f}</p>"
                 
                 # Segment breakdown

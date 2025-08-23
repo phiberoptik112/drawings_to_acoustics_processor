@@ -5,8 +5,8 @@ PDF Viewer component using PyMuPDF for displaying architectural drawings
 import fitz  # PyMuPDF
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QScrollArea, QPushButton, QSlider, QComboBox,
-                             QMessageBox, QSizePolicy)
-from PySide6.QtCore import Qt, Signal, QRect
+                             QMessageBox, QSizePolicy, QRubberBand)
+from PySide6.QtCore import Qt, Signal, QRect, QPoint, QSize, QTimer
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor
 import os
 
@@ -31,8 +31,13 @@ class PDFViewer(QWidget):
         self.page_width = 0
         self.page_height = 0
         self.pixmap = None
+        # Selection state
+        self._rubber_band = None
+        self._origin = QPoint()
+        self.selection_rect_pdf = None  # (x0,y0,x1,y1) in PDF coords at 100%
         
         self.init_ui()
+        self.selection_mode = 'free'  # 'free' | 'column' | 'row'
         
     def init_ui(self):
         """Initialize the user interface"""
@@ -50,9 +55,12 @@ class PDFViewer(QWidget):
         # PDF display label
         self.pdf_label = QLabel()
         self.pdf_label.setAlignment(Qt.AlignCenter)
-        self.pdf_label.setStyleSheet("border: 1px solid #ccc; background-color: white;")
+        # Dark-friendly canvas border; keep PDF rendering neutral
+        self.pdf_label.setStyleSheet("border: 1px solid #3a3a3a; background-color: #1e1e1e;")
         self.pdf_label.mousePressEvent = self.mouse_press_event
-        self.pdf_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.pdf_label.mouseMoveEvent = self.mouse_move_event
+        self.pdf_label.mouseReleaseEvent = self.mouse_release_event
+        self.pdf_label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         
         self.scroll_area.setWidget(self.pdf_label)
         layout.addWidget(self.scroll_area)
@@ -67,7 +75,8 @@ class PDFViewer(QWidget):
     def create_toolbar(self):
         """Create the PDF viewer toolbar"""
         toolbar = QWidget()
-        toolbar.setStyleSheet("background-color: #ecf0f1; padding: 5px;")
+        # Dark mode toolbar background
+        toolbar.setStyleSheet("background-color: #2a2a2a; padding: 5px; border: 1px solid #3a3a3a;")
         layout = QHBoxLayout()
         
         # Page navigation
@@ -80,9 +89,11 @@ class PDFViewer(QWidget):
         self.next_btn.setEnabled(False)
         
         self.page_label = QLabel("Page: 0/0")
+        self.page_label.setStyleSheet("color: #e0e0e0;")
         
         # Zoom controls
         zoom_label = QLabel("Zoom:")
+        zoom_label.setStyleSheet("color: #e0e0e0;")
         self.zoom_slider = QSlider(Qt.Horizontal)
         self.zoom_slider.setRange(25, 400)  # 25% to 400%
         self.zoom_slider.setValue(100)
@@ -302,7 +313,70 @@ class PDFViewer(QWidget):
             # Emit both coordinate systems
             self.coordinates_clicked.emit(pdf_x, pdf_y)  # For PDF-based operations
             self.screen_coordinates_clicked.emit(screen_x, screen_y)  # For scale calculations
+            # Start selection rectangle
+            if self._rubber_band is None:
+                self._rubber_band = QRubberBand(QRubberBand.Rectangle, self.pdf_label)
+            self._origin = QPoint(screen_x, screen_y)
+            # Start with a 1x1 rectangle at the origin
+            self._rubber_band.setGeometry(QRect(self._origin, QSize(1, 1)))
+            self._rubber_band.show()
             
+    def mouse_move_event(self, event):
+        if self._rubber_band and self.pixmap:
+            current = QPoint(event.x(), event.y())
+            rect = QRect(self._origin, current).normalized()
+            self._rubber_band.setGeometry(rect)
+
+    def mouse_release_event(self, event):
+        if self._rubber_band and self.pixmap:
+            rect = self._rubber_band.geometry()
+            # Convert to PDF coords (normalize by zoom)
+            x0 = rect.left() / self.zoom_factor
+            y0 = rect.top() / self.zoom_factor
+            x1 = rect.right() / self.zoom_factor
+            y1 = rect.bottom() / self.zoom_factor
+            # Constrain selection to row or column if mode requests
+            try:
+                page = self.pdf_document[self.current_page]
+                width = page.rect.width
+                height = page.rect.height
+            except Exception:
+                page = None
+                width = height = None
+            if self.selection_mode == 'column' and height is not None:
+                y0, y1 = 0.0, float(height)
+            elif self.selection_mode == 'row' and width is not None:
+                x0, x1 = 0.0, float(width)
+            self.selection_rect_pdf = (x0, y0, x1, y1)
+            # Notify listeners that a selection is available
+            try:
+                # Reuse screen_coordinates_clicked to avoid new signal explosion
+                self.screen_coordinates_clicked.emit(rect.left(), rect.top())
+            except Exception:
+                pass
+            # Show constrained overlay rectangle (adjusted) for visual feedback
+            # Convert constrained PDF rect back to widget pixels
+            sx0 = int(x0 * self.zoom_factor)
+            sy0 = int(y0 * self.zoom_factor)
+            sx1 = int(x1 * self.zoom_factor)
+            sy1 = int(y1 * self.zoom_factor)
+            overlay_rect = QRect(QPoint(sx0, sy0), QPoint(sx1, sy1)).normalized()
+            self._rubber_band.setGeometry(overlay_rect)
+            self._rubber_band.show()
+            # Auto-hide after a short delay to avoid leftover bands
+            QTimer.singleShot(1200, self._rubber_band.hide)
+
+    # Public API
+    def set_selection_mode(self, mode: str):
+        if mode not in ('free', 'column', 'row'):
+            mode = 'free'
+        self.selection_mode = mode
+        # Update status label
+        try:
+            self.status_label.setText(f"Page {self.current_page + 1}/{len(self.pdf_document)} - {int(self.zoom_factor*100)}% - mode: {self.selection_mode}")
+        except Exception:
+            pass
+
     def get_page_dimensions(self):
         """Get current page dimensions in PDF units"""
         if not self.pdf_document:
@@ -323,3 +397,54 @@ class PDFViewer(QWidget):
             self.pdf_label.setText("No PDF loaded")
             self.status_label.setText("No PDF loaded")
             self.update_page_navigation()
+         
+    def zoom_to_rect(self, x: int, y: int, w: int, h: int, padding_ratio: float = 0.15) -> None:
+        """Zoom and scroll to fit the given PDF-space rectangle in view.
+        The coordinates (x, y, w, h) are in PDF units at 100% zoom.
+        """
+        try:
+            if not self.pdf_document or w is None or h is None:
+                return
+            # Guard against zero-sized rectangles
+            w = max(int(w), 1)
+            h = max(int(h), 1)
+            # Compute padded rectangle size
+            pad_w = int(w * (1.0 + 2.0 * padding_ratio))
+            pad_h = int(h * (1.0 + 2.0 * padding_ratio))
+            # Available viewport
+            vp_w = max(1, self.scroll_area.viewport().width() - 20)
+            vp_h = max(1, self.scroll_area.viewport().height() - 20)
+            # Determine zoom to fit padded rect
+            zoom_width = vp_w / float(pad_w)
+            zoom_height = vp_h / float(pad_h)
+            new_zoom = max(0.25, min(4.0, min(zoom_width, zoom_height)))
+            # Apply zoom (emits scale_changed and renders page)
+            self.set_zoom(new_zoom)
+            # Center on the rect center at current zoom
+            cx_pdf = x + (w // 2)
+            cy_pdf = y + (h // 2)
+            self.center_on_point(cx_pdf, cy_pdf)
+        except Exception:
+            # Fail silently in UI helper
+            pass
+         
+    def center_on_point(self, x: int, y: int) -> None:
+        """Scroll to center the given PDF-space point (x, y) with the current zoom."""
+        try:
+            if not self.pdf_document:
+                return
+            # Convert to screen pixels with current zoom
+            sx = int(x * self.zoom_factor)
+            sy = int(y * self.zoom_factor)
+            # Center inside viewport
+            hbar = self.scroll_area.horizontalScrollBar()
+            vbar = self.scroll_area.verticalScrollBar()
+            vp_w = self.scroll_area.viewport().width()
+            vp_h = self.scroll_area.viewport().height()
+            target_x = max(0, sx - vp_w // 2)
+            target_y = max(0, sy - vp_h // 2)
+            hbar.setValue(target_x)
+            vbar.setValue(target_y)
+        except Exception:
+            # Best-effort only
+            pass

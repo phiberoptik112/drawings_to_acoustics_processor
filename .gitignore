@@ -75,3 +75,4 @@ resources/
 # Test outputs
 test_output/
 debug/
+debug_data/

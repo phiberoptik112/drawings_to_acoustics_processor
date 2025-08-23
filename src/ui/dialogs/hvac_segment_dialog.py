@@ -7,13 +7,15 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QMessageBox, QSpinBox, QCheckBox, QTableWidget,
                              QTableWidgetItem, QHeaderView, QListWidget,
-                             QListWidgetItem, QSplitter)
+                             QListWidgetItem, QSplitter, QWidget, QSizePolicy)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from models import get_session
 from models.hvac import HVACSegment, SegmentFitting
 from data.components import STANDARD_FITTINGS
+from calculations.hvac_path_calculator import HVACPathCalculator
+from calculations.noise_calculator import NoiseCalculator
 
 
 class FittingTableWidget(QTableWidget):
@@ -111,6 +113,11 @@ class HVACSegmentDialog(QDialog):
         self.segment = segment  # Existing segment for editing
         self.is_editing = segment is not None
         
+        # Calculators for context-aware fitting calculations
+        self.path_calculator = HVACPathCalculator()
+        self.noise_calc = NoiseCalculator()
+        self.noise_engine = self.noise_calc.hvac_engine
+        
         self.init_ui()
         if self.is_editing:
             self.load_segment_data()
@@ -137,20 +144,26 @@ class HVACSegmentDialog(QDialog):
             connection_label.setStyleSheet("background-color: #f0f0f0; padding: 8px; border-radius: 4px;")
             layout.addWidget(connection_label)
         
-        # Main content in splitter
-        splitter = QSplitter(Qt.Horizontal)
+        # Organize vertically: Fitting -> Segment -> Fitting
+        v_splitter = QSplitter(Qt.Vertical)
+        v_splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
-        # Left panel - Segment properties
-        left_panel = self.create_segment_properties_panel()
-        splitter.addWidget(left_panel)
+        # Upstream fitting
+        upstream_panel = self.create_upstream_fitting_panel()
+        v_splitter.addWidget(upstream_panel)
         
-        # Right panel - Fittings
-        right_panel = self.create_fittings_panel()
-        splitter.addWidget(right_panel)
+        # Segment properties
+        middle_panel = self.create_segment_properties_panel()
+        v_splitter.addWidget(middle_panel)
         
-        # Set splitter proportions
-        splitter.setSizes([400, 300])
-        layout.addWidget(splitter)
+        # Downstream fitting
+        downstream_panel = self.create_downstream_fitting_panel()
+        v_splitter.addWidget(downstream_panel)
+        
+        v_splitter.setSizes([220, 380, 220])
+        layout.addWidget(v_splitter)
+        layout.setStretch(0, 0)
+        layout.setStretch(1, 1)
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -174,6 +187,18 @@ class HVACSegmentDialog(QDialog):
         
         layout.addLayout(button_layout)
         self.setLayout(layout)
+        
+        # Initial context compute
+        try:
+            self.refresh_context()
+        except Exception:
+            pass
+
+        # Apply endpoint fitting constraints based on connected component types
+        try:
+            self._apply_endpoint_fitting_constraints()
+        except Exception:
+            pass
         
     def create_segment_properties_panel(self):
         """Create the segment properties panel"""
@@ -205,7 +230,7 @@ class HVACSegmentDialog(QDialog):
         
         # Duct shape
         self.shape_combo = QComboBox()
-        self.shape_combo.addItems(["rectangular", "round"])
+        self.shape_combo.addItems(["rectangular", "circular"])  # use 'circular' to match engine
         self.shape_combo.currentTextChanged.connect(self.on_duct_shape_changed)
         duct_layout.addRow("Duct Shape:", self.shape_combo)
         
@@ -221,16 +246,29 @@ class HVACSegmentDialog(QDialog):
         self.height_spin.setSuffix(" in")
         self.height_spin.setDecimals(1)
         duct_layout.addRow("Height:", self.height_spin)
+
+        # Diameter for circular ducts
+        self.diameter_spin = QDoubleSpinBox()
+        self.diameter_spin.setRange(1, 120)
+        self.diameter_spin.setSuffix(" in")
+        self.diameter_spin.setDecimals(1)
+        duct_layout.addRow("Diameter:", self.diameter_spin)
         
         # Duct type
         self.duct_type_combo = QComboBox()
         self.duct_type_combo.addItems(["sheet_metal", "fiberglass", "flexible"])
         duct_layout.addRow("Duct Type:", self.duct_type_combo)
         
-        # Insulation
+        # Lining material and thickness
         self.insulation_combo = QComboBox()
         self.insulation_combo.addItems(["none", "fiberglass", "foam", "mineral_wool"])
-        duct_layout.addRow("Insulation:", self.insulation_combo)
+        duct_layout.addRow("Lining Material:", self.insulation_combo)
+
+        self.lining_thickness_spin = QDoubleSpinBox()
+        self.lining_thickness_spin.setRange(0, 6)
+        self.lining_thickness_spin.setDecimals(1)
+        self.lining_thickness_spin.setSuffix(" in")
+        duct_layout.addRow("Lining Thickness:", self.lining_thickness_spin)
         
         duct_group.setLayout(duct_layout)
         layout.addWidget(duct_group)
@@ -263,56 +301,342 @@ class HVACSegmentDialog(QDialog):
         acoustic_group.setLayout(acoustic_layout)
         layout.addWidget(acoustic_group)
         
+        # React to changes that affect downstream context
+        self.length_spin.valueChanged.connect(self.on_segment_changed)
+        self.shape_combo.currentTextChanged.connect(self.on_segment_changed)
+        self.width_spin.valueChanged.connect(self.on_segment_changed)
+        self.height_spin.valueChanged.connect(self.on_segment_changed)
+        self.diameter_spin.valueChanged.connect(self.on_segment_changed)
+        self.duct_type_combo.currentTextChanged.connect(self.on_segment_changed)
+        self.insulation_combo.currentTextChanged.connect(self.on_segment_changed)
+        self.lining_thickness_spin.valueChanged.connect(self.on_segment_changed)
+        self.order_spin.valueChanged.connect(self.on_segment_changed)
+        
         panel.setLayout(layout)
         return panel
         
-    def create_fittings_panel(self):
-        """Create the fittings management panel"""
+    def create_upstream_fitting_panel(self):
+        """Create panel for the fitting before the segment"""
         panel = QWidget()
-        layout = QVBoxLayout()
+        layout = QFormLayout()
         
-        # Fittings header
-        fittings_label = QLabel("Duct Fittings")
-        fittings_label.setFont(QFont("Arial", 12, QFont.Bold))
-        layout.addWidget(fittings_label)
+        header = QLabel("Upstream Fitting")
+        header.setFont(QFont("Arial", 12, QFont.Bold))
+        header.setAlignment(Qt.AlignLeft)
+        box = QVBoxLayout()
+        box.addWidget(header)
         
-        # Add fitting button
-        add_fitting_btn = QPushButton("Add Fitting")
-        add_fitting_btn.clicked.connect(self.add_fitting)
-        layout.addWidget(add_fitting_btn)
+        inner = QWidget()
+        inner_layout = QFormLayout()
         
-        # Fittings table
-        self.fittings_table = FittingTableWidget()
-        layout.addWidget(self.fittings_table)
+        self.up_fitting_combo = QComboBox()
+        self.up_fitting_combo.addItem("none")
+        self.up_fitting_combo.addItems(list(STANDARD_FITTINGS.keys()))
+        self.up_fitting_combo.currentTextChanged.connect(self.on_upstream_fitting_changed)
+        inner_layout.addRow("Fitting Type:", self.up_fitting_combo)
         
-        # Fitting library
-        library_group = QGroupBox("Fitting Library")
-        library_layout = QVBoxLayout()
+        self.upstream_noise_label = QLabel("Upstream: — dB(A)")
+        inner_layout.addRow("Context Noise:", self.upstream_noise_label)
         
-        self.library_list = QListWidget()
-        self.library_list.setMaximumHeight(150)
-        self.library_list.itemDoubleClicked.connect(self.add_fitting_from_library)
+        self.up_auto_label = QLabel("Auto gen: — dB")
+        inner_layout.addRow("Auto Generated:", self.up_auto_label)
         
-        # Populate library
-        for fitting_type in STANDARD_FITTINGS.keys():
-            item = QListWidgetItem(fitting_type)
-            item.setData(Qt.UserRole, fitting_type)
-            self.library_list.addItem(item)
+        self.up_use_auto_chk = QCheckBox("Use auto")
+        self.up_use_auto_chk.setChecked(True)
+        self.up_use_auto_chk.stateChanged.connect(self.on_upstream_use_auto_changed)
+        self.up_adjust_spin = QDoubleSpinBox()
+        self.up_adjust_spin.setRange(-20, 20)
+        self.up_adjust_spin.setDecimals(1)
+        self.up_adjust_spin.setSuffix(" dB")
+        self.up_adjust_spin.setEnabled(False)
+        self.up_adjust_spin.valueChanged.connect(self.on_upstream_adjust_changed)
+        auto_row = QHBoxLayout()
+        auto_row.addWidget(self.up_use_auto_chk)
+        auto_row.addWidget(self.up_adjust_spin)
+        auto_container = QWidget()
+        auto_container.setLayout(auto_row)
+        inner_layout.addRow("Adjustment:", auto_container)
         
-        library_layout.addWidget(self.library_list)
-        library_group.setLayout(library_layout)
-        layout.addWidget(library_group)
-        
-        panel.setLayout(layout)
+        inner.setLayout(inner_layout)
+        box.addWidget(inner)
+        panel.setLayout(box)
         return panel
+    
+    def create_downstream_fitting_panel(self):
+        """Create panel for the fitting after the segment"""
+        panel = QWidget()
+        box = QVBoxLayout()
+        header = QLabel("Downstream Fitting")
+        header.setFont(QFont("Arial", 12, QFont.Bold))
+        header.setAlignment(Qt.AlignLeft)
+        box.addWidget(header)
+        
+        inner = QWidget()
+        layout = QFormLayout()
+        
+        self.down_fitting_combo = QComboBox()
+        self.down_fitting_combo.addItem("none")
+        self.down_fitting_combo.addItems(list(STANDARD_FITTINGS.keys()))
+        self.down_fitting_combo.currentTextChanged.connect(self.on_downstream_fitting_changed)
+        layout.addRow("Fitting Type:", self.down_fitting_combo)
+        
+        self.downstream_noise_label = QLabel("After Segment: — dB(A)")
+        layout.addRow("Context Noise:", self.downstream_noise_label)
+        
+        self.down_auto_label = QLabel("Auto gen: — dB")
+        layout.addRow("Auto Generated:", self.down_auto_label)
+        
+        self.down_use_auto_chk = QCheckBox("Use auto")
+        self.down_use_auto_chk.setChecked(True)
+        self.down_use_auto_chk.stateChanged.connect(self.on_downstream_use_auto_changed)
+        self.down_adjust_spin = QDoubleSpinBox()
+        self.down_adjust_spin.setRange(-20, 20)
+        self.down_adjust_spin.setDecimals(1)
+        self.down_adjust_spin.setSuffix(" dB")
+        self.down_adjust_spin.setEnabled(False)
+        self.down_adjust_spin.valueChanged.connect(self.on_downstream_adjust_changed)
+        auto_row = QHBoxLayout()
+        auto_row.addWidget(self.down_use_auto_chk)
+        auto_row.addWidget(self.down_adjust_spin)
+        auto_container = QWidget()
+        auto_container.setLayout(auto_row)
+        layout.addRow("Adjustment:", auto_container)
+        
+        inner.setLayout(layout)
+        box.addWidget(inner)
+        panel.setLayout(box)
+        return panel
+    
+    # --- Context and calculation helpers ---
+    def _map_fitting_to_element_type(self, fitting_type: str) -> str:
+        ft = (fitting_type or '').lower()
+        if ft.startswith('elbow'):
+            return 'elbow'
+        if 'tee' in ft or 'junction' in ft or 'branch' in ft:
+            return 'junction'
+        if 'reducer' in ft:
+            return 'junction'
+        return 'duct'
+    
+    def _build_segment_element_from_ui(self):
+        return self.noise_engine.__class__.PathElement if False else None  # placeholder to keep type hints quiet
+    
+    def _endpoint_allows_fitting(self, component) -> tuple:
+        """Return (allowed: bool, default_fitting: str | None) for a component endpoint.
+        - Elbow components suggest 'elbow_90'
+        - Branch/Junction/Tee components suggest 'tee_branch'
+        - Other components do not allow endpoint fittings here.
+        """
+        try:
+            if component is None:
+                return False, None
+            ctype = str(getattr(component, 'component_type', '') or '').lower()
+            if 'elbow' in ctype:
+                return True, 'elbow_90'
+            if 'branch' in ctype or 'tee' in ctype or 'junction' in ctype:
+                return True, 'tee_branch'
+            return False, None
+        except Exception:
+            return False, None
+
+    def _apply_endpoint_fitting_constraints(self) -> None:
+        """Enable/disable upstream/downstream fitting combos based on neighbor components.
+        Also set sensible default selection if allowed and currently 'none'.
+        """
+        # Upstream
+        allow_up, up_default = self._endpoint_allows_fitting(getattr(self, 'from_component', None))
+        self.up_fitting_combo.setEnabled(bool(allow_up))
+        if not allow_up:
+            self.up_fitting_combo.blockSignals(True)
+            try:
+                idx = self.up_fitting_combo.findText('none')
+                if idx >= 0:
+                    self.up_fitting_combo.setCurrentIndex(idx)
+            finally:
+                self.up_fitting_combo.blockSignals(False)
+        else:
+            # Apply default if currently 'none'
+            if self.up_fitting_combo.currentText() == 'none' and up_default:
+                self.up_fitting_combo.blockSignals(True)
+                try:
+                    idx = self.up_fitting_combo.findText(up_default)
+                    if idx >= 0:
+                        self.up_fitting_combo.setCurrentIndex(idx)
+                finally:
+                    self.up_fitting_combo.blockSignals(False)
+
+        # Downstream
+        allow_down, down_default = self._endpoint_allows_fitting(getattr(self, 'to_component', None))
+        self.down_fitting_combo.setEnabled(bool(allow_down))
+        if not allow_down:
+            self.down_fitting_combo.blockSignals(True)
+            try:
+                idx = self.down_fitting_combo.findText('none')
+                if idx >= 0:
+                    self.down_fitting_combo.setCurrentIndex(idx)
+            finally:
+                self.down_fitting_combo.blockSignals(False)
+        else:
+            if self.down_fitting_combo.currentText() == 'none' and down_default:
+                self.down_fitting_combo.blockSignals(True)
+                try:
+                    idx = self.down_fitting_combo.findText(down_default)
+                    if idx >= 0:
+                        self.down_fitting_combo.setCurrentIndex(idx)
+                finally:
+                    self.down_fitting_combo.blockSignals(False)
+
+    def _make_segment_element(self):
+        from calculations.hvac_noise_engine import PathElement
+        element_type = 'duct'
+        # Reuse legacy mapping if present in data later; for dialog, treat as duct
+        return PathElement(
+            element_type=element_type,
+            element_id='editing_segment',
+            length=self.length_spin.value() or 0.0,
+            width=self.width_spin.value() or 12.0,
+            height=self.height_spin.value() or 8.0,
+            diameter=self.diameter_spin.value() or 0.0,
+            duct_shape=self.shape_combo.currentText() or 'rectangular',
+            duct_type=self.duct_type_combo.currentText() or 'sheet_metal',
+            lining_thickness=self.lining_thickness_spin.value() or 0.0,
+        )
+    
+    def _get_upstream_context(self) -> tuple:
+        """Return (dba, spectrum) before this segment based on current path calc"""
+        try:
+            if not self.hvac_path_id:
+                raise ValueError('no path id')
+            result = self.path_calculator.calculate_path_noise(self.hvac_path_id)
+            order = self.order_spin.value() or (self.segment.segment_order if self.segment else 1)
+            # If first segment, use source
+            find_id = f"segment_{max(0, order-1)}"
+            upstream_dba = None
+            upstream_spectrum = None
+            # element_results includes a source element with element_order 0
+            for el in result.segment_results:
+                if order == 1 and el.get('element_type') == 'source':
+                    upstream_dba = el.get('noise_after_dba') or el.get('noise_after') or 50.0
+                    upstream_spectrum = el.get('noise_after_spectrum')
+                    break
+                if el.get('element_id') == f"segment_{order-1}":
+                    upstream_dba = el.get('noise_after_dba') or el.get('noise_after') or 50.0
+                    upstream_spectrum = el.get('noise_after_spectrum')
+                    break
+            if upstream_dba is None:
+                upstream_dba = 50.0
+            if not upstream_spectrum:
+                upstream_spectrum = self.noise_engine._estimate_spectrum_from_dba(upstream_dba)
+            return upstream_dba, upstream_spectrum
+        except Exception:
+            dba = 50.0
+            return dba, self.noise_engine._estimate_spectrum_from_dba(dba)
+    
+    def _get_downstream_context(self) -> tuple:
+        """Return (dba, spectrum) after this segment based on segment attenuation applied to upstream"""
+        up_dba, up_spec = self._get_upstream_context()
+        element = self._make_segment_element()
+        effect = self.noise_engine._calculate_element_effect(element, up_spec.copy(), up_dba)
+        # Apply attenuation to get downstream spectrum, then recompute dBA
+        downstream_spec = up_spec.copy()
+        att = effect.get('attenuation_spectrum') or [0.0]*8
+        if isinstance(att, list):
+            for i in range(min(8, len(att))):
+                downstream_spec[i] = max(0.0, downstream_spec[i] - att[i])
+        down_dba = self.noise_engine._calculate_dba_from_spectrum(downstream_spec)
+        return down_dba, downstream_spec
+    
+    def _auto_generated_for_fitting(self, fitting_type: str, context_spectrum: list, context_dba: float) -> float:
+        """Return the net dB increase of a fitting given context spectrum.
+        Calculates generated spectrum for the fitting and combines with context to
+        report delta dB(A)."""
+        from calculations.hvac_noise_engine import PathElement
+        etype = self._map_fitting_to_element_type(fitting_type)
+        element = PathElement(element_type=etype, element_id='tmp_fit')
+        effect = self.noise_engine._calculate_element_effect(element, context_spectrum, context_dba)
+        generated = effect.get('generated_spectrum') or [0.0] * 8
+        new_spec = context_spectrum.copy()
+        for i in range(min(8, len(generated))):
+            if generated[i] > 0:
+                new_spec[i] = self.noise_engine._combine_noise_levels(new_spec[i], generated[i])
+        new_dba = self.noise_engine._calculate_dba_from_spectrum(new_spec)
+        return max(0.0, new_dba - context_dba)
+    
+    def refresh_context(self):
+        up_dba, _ = self._get_upstream_context()
+        self.upstream_noise_label.setText(f"Upstream: {up_dba:.1f} dB(A)")
+        self._recalc_upstream_auto()
+        self._recalc_downstream_context_and_auto()
+    
+    def _recalc_upstream_auto(self):
+        dba, spec = self._get_upstream_context()
+        ft = self.up_fitting_combo.currentText()
+        if ft and ft != 'none':
+            gen = self._auto_generated_for_fitting(ft, spec, dba)
+        else:
+            gen = 0.0
+        self.up_auto_label.setText(f"Auto gen: {gen:+.1f} dB")
+        if self.up_use_auto_chk.isChecked():
+            self.up_adjust_spin.blockSignals(True)
+            self.up_adjust_spin.setValue(gen)
+            self.up_adjust_spin.blockSignals(False)
+    
+    def _recalc_downstream_context_and_auto(self):
+        dba, spec = self._get_downstream_context()
+        self.downstream_noise_label.setText(f"After Segment: {dba:.1f} dB(A)")
+        ft = self.down_fitting_combo.currentText()
+        if ft and ft != 'none':
+            gen = self._auto_generated_for_fitting(ft, spec, dba)
+        else:
+            gen = 0.0
+        self.down_auto_label.setText(f"Auto gen: {gen:+.1f} dB")
+        if self.down_use_auto_chk.isChecked():
+            self.down_adjust_spin.blockSignals(True)
+            self.down_adjust_spin.setValue(gen)
+            self.down_adjust_spin.blockSignals(False)
+    
+    # --- Signal handlers ---
+    def on_segment_changed(self, *args):
+        try:
+            self.refresh_context()
+        except Exception:
+            pass
+    
+    def on_upstream_fitting_changed(self, *args):
+        self._recalc_upstream_auto()
+    
+    def on_upstream_use_auto_changed(self, state):
+        self.up_adjust_spin.setEnabled(not self.up_use_auto_chk.isChecked())
+        if self.up_use_auto_chk.isChecked():
+            self._recalc_upstream_auto()
+    
+    def on_upstream_adjust_changed(self, *args):
+        # No-op; value saved on commit
+        pass
+    
+    def on_downstream_fitting_changed(self, *args):
+        self._recalc_downstream_context_and_auto()
+    
+    def on_downstream_use_auto_changed(self, state):
+        self.down_adjust_spin.setEnabled(not self.down_use_auto_chk.isChecked())
+        if self.down_use_auto_chk.isChecked():
+            self._recalc_downstream_context_and_auto()
+    
+    def on_downstream_adjust_changed(self, *args):
+        # No-op; value saved on commit
+        pass
+    
         
     def on_duct_shape_changed(self, shape):
         """Handle duct shape change"""
-        if shape == "round":
-            # For round ducts, height = width (diameter)
-            self.height_spin.setValue(self.width_spin.value())
+        if shape == "circular":
+            # Show diameter; hide rectangular dims
+            self.diameter_spin.setEnabled(True)
+            self.width_spin.setEnabled(False)
             self.height_spin.setEnabled(False)
         else:
+            self.diameter_spin.setEnabled(False)
+            self.width_spin.setEnabled(True)
             self.height_spin.setEnabled(True)
     
     def add_fitting(self):
@@ -340,6 +664,7 @@ class HVACSegmentDialog(QDialog):
         
         self.width_spin.setValue(self.segment.duct_width or 12)
         self.height_spin.setValue(self.segment.duct_height or 8)
+        self.diameter_spin.setValue(getattr(self.segment, 'diameter', 0) or 0)
         
         if self.segment.duct_type:
             index = self.duct_type_combo.findText(self.segment.duct_type)
@@ -350,21 +675,65 @@ class HVACSegmentDialog(QDialog):
             index = self.insulation_combo.findText(self.segment.insulation)
             if index >= 0:
                 self.insulation_combo.setCurrentIndex(index)
+        if getattr(self.segment, 'lining_thickness', None) is not None:
+            self.lining_thickness_spin.setValue(self.segment.lining_thickness or 0)
         
         # Acoustic properties
         self.distance_loss_spin.setValue(self.segment.distance_loss or 0)
         self.duct_loss_spin.setValue(self.segment.duct_loss or 0)
         self.fitting_additions_spin.setValue(self.segment.fitting_additions or 0)
         
-        # Load fittings
-        fittings_data = []
-        for fitting in self.segment.fittings:
-            fittings_data.append({
-                'fitting_type': fitting.fitting_type,
-                'quantity': fitting.quantity or 1,
-                'noise_adjustment': fitting.noise_adjustment or 0.0
-            })
-        self.fittings_table.set_fittings_data(fittings_data)
+        # Load fittings reliably using stored position_on_segment so upstream/downstream
+        # are deterministic regardless of DB return order.
+        try:
+            fits = list(self.segment.fittings)
+        except Exception:
+            fits = []
+        # Sort by position; treat None as 0.0
+        try:
+            fits_sorted = sorted(fits, key=lambda f: (getattr(f, 'position_on_segment', 0.0) or 0.0))
+        except Exception:
+            fits_sorted = fits
+        # Map to upstream/downstream
+        length_val = float(getattr(self.segment, 'length', 0.0) or 0.0)
+        if len(fits_sorted) == 1:
+            f = fits_sorted[0]
+            pos = float(getattr(f, 'position_on_segment', 0.0) or 0.0)
+            # Heuristic: position in latter half -> downstream, else upstream
+            is_down = pos >= max(0.0, 0.5 * length_val)
+            if is_down:
+                idx = self.down_fitting_combo.findText(f.fitting_type)
+                if idx >= 0:
+                    self.down_fitting_combo.setCurrentIndex(idx)
+                if f.noise_adjustment is not None:
+                    self.down_adjust_spin.setValue(f.noise_adjustment)
+            else:
+                idx = self.up_fitting_combo.findText(f.fitting_type)
+                if idx >= 0:
+                    self.up_fitting_combo.setCurrentIndex(idx)
+                if f.noise_adjustment is not None:
+                    self.up_adjust_spin.setValue(f.noise_adjustment)
+        elif len(fits_sorted) >= 2:
+            up_f = fits_sorted[0]
+            down_f = fits_sorted[-1]
+            idx = self.up_fitting_combo.findText(up_f.fitting_type)
+            if idx >= 0:
+                self.up_fitting_combo.setCurrentIndex(idx)
+            if getattr(up_f, 'noise_adjustment', None) is not None:
+                self.up_adjust_spin.setValue(up_f.noise_adjustment)
+            idx = self.down_fitting_combo.findText(down_f.fitting_type)
+            if idx >= 0:
+                self.down_fitting_combo.setCurrentIndex(idx)
+            if getattr(down_f, 'noise_adjustment', None) is not None:
+                self.down_adjust_spin.setValue(down_f.noise_adjustment)
+
+        # Enforce applicability and defaults now that prior values are loaded
+        try:
+            self._apply_endpoint_fitting_constraints()
+        except Exception:
+            pass
+        # Refresh computed context to display labels
+        self.refresh_context()
     
     def save_segment(self):
         """Save the HVAC segment"""
@@ -392,9 +761,11 @@ class HVACSegmentDialog(QDialog):
                     segment_order=self.order_spin.value(),
                     duct_width=self.width_spin.value(),
                     duct_height=self.height_spin.value(),
+                    diameter=self.diameter_spin.value(),
                     duct_shape=self.shape_combo.currentText(),
                     duct_type=self.duct_type_combo.currentText(),
                     insulation=self.insulation_combo.currentText(),
+                    lining_thickness=self.lining_thickness_spin.value(),
                     distance_loss=self.distance_loss_spin.value(),
                     duct_loss=self.duct_loss_spin.value(),
                     fitting_additions=self.fitting_additions_spin.value()
@@ -423,9 +794,11 @@ class HVACSegmentDialog(QDialog):
         segment.segment_order = self.order_spin.value()
         segment.duct_width = self.width_spin.value()
         segment.duct_height = self.height_spin.value()
+        segment.diameter = self.diameter_spin.value()
         segment.duct_shape = self.shape_combo.currentText()
         segment.duct_type = self.duct_type_combo.currentText()
         segment.insulation = self.insulation_combo.currentText()
+        segment.lining_thickness = self.lining_thickness_spin.value()
         segment.distance_loss = self.distance_loss_spin.value()
         segment.duct_loss = self.duct_loss_spin.value()
         segment.fitting_additions = self.fitting_additions_spin.value()
@@ -433,19 +806,34 @@ class HVACSegmentDialog(QDialog):
     def update_segment_fittings(self, segment, session):
         """Update segment fittings"""
         # Remove existing fittings
-        for fitting in segment.fittings:
+        for fitting in list(segment.fittings):
             session.delete(fitting)
         
-        # Add new fittings
-        fittings_data = self.fittings_table.get_fittings_data()
-        for fitting_data in fittings_data:
-            fitting = SegmentFitting(
+        # Upstream fitting (if any)
+        up_type = self.up_fitting_combo.currentText()
+        allow_up, _ = self._endpoint_allows_fitting(getattr(self, 'from_component', None))
+        if allow_up and up_type and up_type != 'none':
+            up_adj = self.up_adjust_spin.value()
+            session.add(SegmentFitting(
                 segment_id=segment.id,
-                fitting_type=fitting_data['fitting_type'],
-                quantity=fitting_data['quantity'],
-                noise_adjustment=fitting_data['noise_adjustment']
-            )
-            session.add(fitting)
+                fitting_type=up_type,
+                quantity=1,
+                noise_adjustment=up_adj,
+                position_on_segment=0.0
+            ))
+        
+        # Downstream fitting (if any)
+        down_type = self.down_fitting_combo.currentText()
+        allow_down, _ = self._endpoint_allows_fitting(getattr(self, 'to_component', None))
+        if allow_down and down_type and down_type != 'none':
+            down_adj = self.down_adjust_spin.value()
+            session.add(SegmentFitting(
+                segment_id=segment.id,
+                fitting_type=down_type,
+                quantity=1,
+                noise_adjustment=down_adj,
+                position_on_segment=(segment.length or 0.0)
+            ))
     
     def delete_segment(self):
         """Delete the HVAC segment"""

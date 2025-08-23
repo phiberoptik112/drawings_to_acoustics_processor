@@ -17,6 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - ✅ **Final**: Results dashboard, comprehensive testing
 - ✅ **Enhancement**: Acoustic materials database integration with 1,339+ materials
 - ✅ **Advanced Feature**: Frequency-based material search system with treatment analysis
+- ✅ **Deployment**: Windows executable build system with git-based versioning
 
 ## Development Setup
 
@@ -136,6 +137,22 @@ python test_mvp.py
 python src/test_structure.py
 ```
 
+**Windows Deployment Commands:**
+```bash
+# Build Windows executable
+cd build
+python build.py
+
+# Or use batch script
+build.bat
+
+# Test deployment
+python test_deployment.py
+
+# User deployment setup
+deploy.bat
+```
+
 **Database Operations:**
 - SQLite database automatically created on first run
 - Database location: `projects.db` in application directory
@@ -247,6 +264,43 @@ python test_mvp.py
 - 6 room type defaults for quick professional setup
 - Standard duct sizes, shapes, and fitting noise adjustments
 
+## Windows Deployment System
+
+**Professional Executable Distribution:**
+- **PyInstaller-based**: Single executable with bundled dependencies
+- **Git-integrated Versioning**: Automatic build numbers from git commits
+- **Database Bundling**: 1,339+ materials database travels with application
+- **User Data Persistence**: Projects stored in Documents/AcousticAnalysis
+- **Automated Testing**: Comprehensive deployment validation suite
+- **Professional Metadata**: Version info embedded in executable
+
+**Build System Components:**
+```
+build/
+├── build.py              # Main build script with git versioning
+├── build_spec.py         # PyInstaller configuration 
+├── build.bat            # Windows build batch script
+├── deploy.bat           # User deployment script
+├── test_deployment.py   # Build validation tests
+└── deploy/
+    ├── AcousticAnalysisTool.exe  # Built executable
+    └── README_INSTALL.txt        # User instructions
+```
+
+**User Experience:**
+- **Single-click Installation**: No additional software required
+- **Portable Application**: Can run from any Windows location
+- **Automatic Setup**: User data directories created on first run
+- **Version Display**: Build info shown in application UI
+- **Professional Uninstaller**: Clean removal with data preservation
+
+**Distribution Ready:**
+- **Target**: Windows 10/11 (64-bit)
+- **Size**: ~100-200 MB self-contained executable
+- **Requirements**: No additional installations needed
+- **Testing**: Automated validation of all components
+- **Support**: Complete installation and troubleshooting documentation
+
 ## Notes for Future Development
 
 **Potential Enhancements:**
@@ -267,3 +321,4 @@ python test_mvp.py
 - Industry-standard calculations with validation and warnings
 - Export capabilities for professional reporting and documentation
 - Complete test coverage for all major functionality
+- Professional deployment system with automated building and validation

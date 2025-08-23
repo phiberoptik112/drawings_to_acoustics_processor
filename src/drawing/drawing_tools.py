@@ -16,6 +16,7 @@ class ToolType(Enum):
     COMPONENT = "component"
     SEGMENT = "segment"
     MEASURE = "measure"
+    POLYGON = "polygon"
 
 
 class DrawingTool(QObject):
@@ -112,6 +113,47 @@ class RectangleTool(DrawingTool):
             rect = QRect(QPoint(x1, y1), QPoint(x2, y2))
             painter.drawRect(rect.normalized())
 
+
+class SelectionTool(DrawingTool):
+    """Selection/edit tool. This tool itself does not create elements; it
+    exists so that the overlay can detect SELECT mode via the tool manager.
+
+    The overlay owns the selection logic and uses mouse events to perform
+    hit-testing, box selection, and dragging. This class only provides an
+    optional rubber-band preview rectangle when active in box-select mode.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.pen = QPen(QColor(255, 200, 0), 1, Qt.DashLine)
+        self._box_select_mode = False
+
+    def start(self, point):
+        self.active = True
+        self.start_point = point
+        self.current_point = point
+        # Overlay will decide whether this is a drag or a box; default to box
+        self._box_select_mode = True
+
+    def update(self, point):
+        if self.active:
+            self.current_point = point
+            self.updated.emit()
+
+    def finish(self, point):
+        # Selection tool does not emit new elements; overlay will handle
+        self.active = False
+        self._box_select_mode = False
+
+    def cancel(self):
+        super().cancel()
+        self._box_select_mode = False
+
+    def draw_preview(self, painter):
+        if self.active and self._box_select_mode and self.start_point and self.current_point:
+            painter.setPen(self.pen)
+            rect = QRect(self.start_point, self.current_point).normalized()
+            painter.drawRect(rect)
 
 class ComponentTool(DrawingTool):
     """Tool for placing HVAC components"""
@@ -253,83 +295,149 @@ class SegmentTool(DrawingTool):
         return None
         
     def find_nearby_segment(self, point, max_distance=20):
-        """Find a segment near the given point"""
+        """Find a segment near the given point and infer any component at the endpoint.
+
+        Returns a dictionary with:
+        - 'segment': the segment dict
+        - 'endpoint': 'start' | 'end'
+        - 'distance': float
+        - 'component': component dict at that endpoint if known
+        - 'snap_x'/'snap_y': coordinates to snap the cursor to the endpoint
+        """
         if not self.available_segments:
-            print(f"DEBUG: No available segments to connect to")
+            print("DEBUG: No available segments to connect to")
             return None
-            
+
         print(f"DEBUG: Looking for segment near point ({point.x()}, {point.y()})")
         print(f"DEBUG: Available segments: {len(self.available_segments)}")
-        
+
         for i, segment in enumerate(self.available_segments):
             # Check distance to segment endpoints
             start_x = segment.get('start_x', 0)
             start_y = segment.get('start_y', 0)
             end_x = segment.get('end_x', 0)
             end_y = segment.get('end_y', 0)
-            
+
             # Distance to start point
-            start_distance = math.sqrt((point.x() - start_x)**2 + (point.y() - start_y)**2)
+            start_distance = math.sqrt((point.x() - start_x) ** 2 + (point.y() - start_y) ** 2)
             # Distance to end point
-            end_distance = math.sqrt((point.x() - end_x)**2 + (point.y() - end_y)**2)
-            
+            end_distance = math.sqrt((point.x() - end_x) ** 2 + (point.y() - end_y) ** 2)
+
             print(f"DEBUG: Segment {i}: start=({start_x}, {start_y}) end=({end_x}, {end_y})")
             print(f"DEBUG:   Start distance: {start_distance:.1f}, End distance: {end_distance:.1f}")
-            
+
             if start_distance <= max_distance:
-                print(f"DEBUG: Found segment at start point, distance {start_distance:.1f}")
-                return {'segment': segment, 'endpoint': 'start', 'distance': start_distance}
-            elif end_distance <= max_distance:
-                print(f"DEBUG: Found segment at end point, distance {end_distance:.1f}")
-                return {'segment': segment, 'endpoint': 'end', 'distance': end_distance}
-                
+                component_at_endpoint = segment.get('from_component')
+                print(
+                    "DEBUG: Found segment at start point, distance "
+                    f"{start_distance:.1f}; has_component={component_at_endpoint is not None}"
+                )
+                return {
+                    'segment': segment,
+                    'endpoint': 'start',
+                    'distance': start_distance,
+                    'component': component_at_endpoint,
+                    'snap_x': start_x,
+                    'snap_y': start_y,
+                }
+            if end_distance <= max_distance:
+                component_at_endpoint = segment.get('to_component')
+                print(
+                    "DEBUG: Found segment at end point, distance "
+                    f"{end_distance:.1f}; has_component={component_at_endpoint is not None}"
+                )
+                return {
+                    'segment': segment,
+                    'endpoint': 'end',
+                    'distance': end_distance,
+                    'component': component_at_endpoint,
+                    'snap_x': end_x,
+                    'snap_y': end_y,
+                }
+
         print(f"DEBUG: No segment found within {max_distance} pixels")
         return None
         
     def start(self, point):
         """Start segment drawing - try to connect to nearby component or segment"""
         super().start(point)
-        
+
         # Try to find a component at the start point
         self.from_component = self.find_nearby_component(point)
-        
-        # If no component found, try to find a segment
+
+        # If no component found, try to find a segment endpoint; snap and infer component
         if not self.from_component:
             nearby_segment = self.find_nearby_segment(point)
             if nearby_segment:
-                print(f"DEBUG: Starting segment from existing segment endpoint")
-                # Store segment connection info for later use
+                print("DEBUG: Starting segment from existing segment endpoint")
                 self.from_segment = nearby_segment
+                # Snap start point for clean geometry
+                try:
+                    self.start_point.setX(int(nearby_segment['snap_x']))
+                    self.start_point.setY(int(nearby_segment['snap_y']))
+                except Exception:
+                    pass
+                # If that endpoint is attached to a component, use it
+                if nearby_segment.get('component') is not None:
+                    self.from_component = nearby_segment['component']
+                else:
+                    # Re-check for a component at the snapped point
+                    try:
+                        snapped = QPoint(int(nearby_segment['snap_x']), int(nearby_segment['snap_y']))
+                        alt_component = self.find_nearby_component(snapped)
+                        if alt_component is not None:
+                            print("DEBUG: Found component at snapped start point; using as from_component")
+                            self.from_component = alt_component
+                    except Exception:
+                        pass
         
     def finish(self, point):
         """Finish segment drawing - try to connect to nearby component or segment"""
         print(f"DEBUG: SegmentTool.finish - method called, active: {self.active}")
         if self.active:
-            print(f"DEBUG: SegmentTool.finish - tool is active, processing")
+            print("DEBUG: SegmentTool.finish - tool is active, processing")
             self.current_point = point
-            
+
             # Try to find a component at the end point
             self.to_component = self.find_nearby_component(point)
-            
-            # If no component found, try to find a segment
+
+            # If no component found, try to find a segment endpoint; snap and infer component
             if not self.to_component:
                 nearby_segment = self.find_nearby_segment(point)
                 if nearby_segment:
-                    print(f"DEBUG: Ending segment at existing segment endpoint")
-                    # Store segment connection info for later use
+                    print("DEBUG: Ending segment at existing segment endpoint")
                     self.to_segment = nearby_segment
-            
+                    # Snap end point for clean geometry
+                    try:
+                        self.current_point.setX(int(nearby_segment['snap_x']))
+                        self.current_point.setY(int(nearby_segment['snap_y']))
+                    except Exception:
+                        pass
+                    # If that endpoint is attached to a component, use it
+                    if nearby_segment.get('component') is not None:
+                        self.to_component = nearby_segment['component']
+                    else:
+                        # Re-check for a component at the snapped point
+                        try:
+                            snapped = QPoint(int(nearby_segment['snap_x']), int(nearby_segment['snap_y']))
+                            alt_component = self.find_nearby_component(snapped)
+                            if alt_component is not None:
+                                print("DEBUG: Found component at snapped end point; using as to_component")
+                                self.to_component = alt_component
+                        except Exception:
+                            pass
+
             self.active = False
-            print(f"DEBUG: SegmentTool.finish - calling get_result()")
+            print("DEBUG: SegmentTool.finish - calling get_result()")
             result = self.get_result()
             print(f"DEBUG: SegmentTool.finish - result: {result is not None}")
             if result:
-                print(f"DEBUG: SegmentTool.finish - emitting finished signal")
+                print("DEBUG: SegmentTool.finish - emitting finished signal")
                 self.finished.emit(result)
             else:
-                print(f"DEBUG: SegmentTool.finish - no result to emit")
+                print("DEBUG: SegmentTool.finish - no result to emit")
         else:
-            print(f"DEBUG: SegmentTool.finish - tool is NOT active, skipping")
+            print("DEBUG: SegmentTool.finish - tool is NOT active, skipping")
                 
     def get_result(self):
         """Get segment information"""
@@ -338,9 +446,16 @@ class SegmentTool(DrawingTool):
             print(f"DEBUG: get_result - no start or current point")
             return None
             
-        # Calculate length
+        # Calculate length (with axis snapping)
         x1, y1 = self.start_point.x(), self.start_point.y()
         x2, y2 = self.current_point.x(), self.current_point.y()
+        dx = x2 - x1
+        dy = y2 - y1
+        # Snap to axis if nearly horizontal/vertical (10px tolerance)
+        if abs(dx) < 10 and abs(dy) >= 10:
+            x2 = x1
+        elif abs(dy) < 10 and abs(dx) >= 10:
+            y2 = y1
         length_pixels = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
         
         print(f"DEBUG: get_result - length_pixels: {length_pixels}")
@@ -468,6 +583,162 @@ class MeasureTool(DrawingTool):
             painter.drawText(mid_x + 5, mid_y - 5, f"📏 {length_pixels:.0f}px")
 
 
+class PolygonTool(DrawingTool):
+    """Tool for drawing polygonal spaces by placing vertices"""
+
+    def __init__(self):
+        super().__init__()
+        self.pen = QPen(QColor(0, 120, 215), 2, Qt.SolidLine)
+        self.fill_brush = QBrush(QColor(0, 120, 215, 30))
+        self.vertex_pen = QPen(QColor(0, 120, 215), 1, Qt.SolidLine)
+        self.vertex_brush = QBrush(QColor(0, 120, 215))
+        self.vertices = []  # list[QPoint]
+        self._closed = False
+
+    def start(self, point):
+        self.active = True
+        self.vertices = [QPoint(point.x(), point.y())]
+        self.start_point = point
+        self.current_point = point
+        self._closed = False
+
+    def add_vertex(self, point):
+        if not self.active:
+            self.start(point)
+            return
+        # Avoid duplicate consecutive points
+        if self.vertices:
+            last = self.vertices[-1]
+            if last.x() == point.x() and last.y() == point.y():
+                return
+        self.vertices.append(QPoint(point.x(), point.y()))
+        self.current_point = point
+        self.updated.emit()
+
+    def update(self, point):
+        # For live preview of the last edge
+        if self.active:
+            self.current_point = point
+            self.updated.emit()
+
+    def cancel(self):
+        super().cancel()
+        self.vertices = []
+        self._closed = False
+
+    def _compute_bounds(self):
+        if not self.vertices:
+            return None
+        xs = [p.x() for p in self.vertices]
+        ys = [p.y() for p in self.vertices]
+        x = min(xs)
+        y = min(ys)
+        w = max(1, max(xs) - x)
+        h = max(1, max(ys) - y)
+        return QRect(x, y, w, h)
+
+    def get_result(self):
+        # Only produce a result when we have a closed polygon with >= 3 vertices
+        if not self.vertices or len(self.vertices) < 3:
+            return None
+        bounds = self._compute_bounds()
+        # Serialize points
+        points = [{'x': int(p.x()), 'y': int(p.y())} for p in self.vertices]
+        return {
+            'type': 'polygon',
+            'points': points,
+            'x': int(bounds.x()) if isinstance(bounds, QRect) else 0,
+            'y': int(bounds.y()) if isinstance(bounds, QRect) else 0,
+            'width': int(bounds.width()) if isinstance(bounds, QRect) else 0,
+            'height': int(bounds.height()) if isinstance(bounds, QRect) else 0,
+            'bounds': bounds
+        }
+
+    def finish(self, point):
+        # Close and emit if valid
+        if not self.active:
+            return
+        
+        # Add the final point if it's not too close to the last vertex
+        if point and self.vertices:
+            last = self.vertices[-1]
+            dx = point.x() - last.x()
+            dy = point.y() - last.y()
+            distance = (dx * dx + dy * dy) ** 0.5
+            
+            # If clicking close to first vertex, close the polygon
+            if len(self.vertices) >= 3:
+                first = self.vertices[0]
+                dx_first = point.x() - first.x()
+                dy_first = point.y() - first.y()
+                distance_to_first = (dx_first * dx_first + dy_first * dy_first) ** 0.5
+                
+                if distance_to_first <= 15:  # Close tolerance
+                    print("DEBUG: Closing polygon by snapping to first vertex")
+                    self._closed = True
+                else:
+                    # Add final point if not too close to last
+                    if distance > 5:
+                        self.vertices.append(QPoint(point.x(), point.y()))
+                        print(f"DEBUG: Added final vertex, total vertices: {len(self.vertices)}")
+        
+        self.active = False
+        result = self.get_result()
+        if result:
+            print(f"DEBUG: PolygonTool emitting result with {len(result.get('points', []))} points")
+            self.finished.emit(result)
+        else:
+            print("DEBUG: PolygonTool - no valid result to emit")
+
+    def draw_preview(self, painter):
+        if not self.active:
+            return
+        pts = self.vertices.copy()
+        
+        # Add preview line to current mouse position
+        if self.current_point and len(pts) > 0:
+            last = pts[-1]
+            if last.x() != self.current_point.x() or last.y() != self.current_point.y():
+                painter.setPen(QPen(QColor(0, 120, 215, 128), 1, Qt.DashLine))
+                painter.drawLine(last, self.current_point)
+                
+                # Show closing line if near first vertex
+                if len(pts) >= 3:
+                    first = pts[0]
+                    dx = self.current_point.x() - first.x()
+                    dy = self.current_point.y() - first.y()
+                    if (dx * dx + dy * dy) ** 0.5 <= 15:
+                        painter.setPen(QPen(QColor(255, 0, 0), 2, Qt.SolidLine))
+                        painter.drawLine(self.current_point, first)
+        
+        # Draw the polygon edges
+        if len(pts) >= 2:
+            painter.setPen(self.pen)
+            for i in range(len(pts) - 1):
+                painter.drawLine(pts[i], pts[i + 1])
+                
+        # If we have enough points, show filled preview
+        if len(pts) >= 3:
+            from PySide6.QtGui import QPolygon
+            polygon = QPolygon(pts)
+            painter.setPen(self.pen)
+            painter.setBrush(self.fill_brush)
+            painter.drawPolygon(polygon)
+        
+        # Draw vertices as circles
+        painter.setPen(self.vertex_pen)
+        painter.setBrush(self.vertex_brush)
+        for i, p in enumerate(self.vertices):
+            # First vertex is larger and red
+            if i == 0 and len(self.vertices) >= 3:
+                painter.setPen(QPen(QColor(255, 0, 0), 2))
+                painter.setBrush(QBrush(QColor(255, 0, 0)))
+                painter.drawEllipse(p.x() - 4, p.y() - 4, 8, 8)
+            else:
+                painter.setPen(self.vertex_pen)
+                painter.setBrush(self.vertex_brush)
+                painter.drawEllipse(p.x() - 3, p.y() - 3, 6, 6)
+
 class DrawingToolManager(QObject):
     """Manages drawing tools and their state"""
     
@@ -477,10 +748,12 @@ class DrawingToolManager(QObject):
     def __init__(self):
         super().__init__()
         self.tools = {
+            ToolType.SELECT: SelectionTool(),
             ToolType.RECTANGLE: RectangleTool(),
             ToolType.COMPONENT: ComponentTool(),
             ToolType.SEGMENT: SegmentTool(),
-            ToolType.MEASURE: MeasureTool()
+            ToolType.MEASURE: MeasureTool(),
+            ToolType.POLYGON: PolygonTool()
         }
         
         self.current_tool_type = ToolType.RECTANGLE

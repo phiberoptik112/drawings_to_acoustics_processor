@@ -12,6 +12,16 @@ from PySide6.QtGui import QFont, QPixmap
 from models import initialize_database, get_session, Project
 from ui.dialogs.project_dialog import ProjectDialog
 from ui.project_dashboard import ProjectDashboard
+from data.silencer_database import populate_silencer_database
+
+# Import version utilities with fallback
+try:
+    from utils import get_application_title, get_version_info
+except ImportError:
+    def get_application_title():
+        return "Acoustic Analysis Tool v1.0.0"
+    def get_version_info():
+        return {'version': '1.0.0', 'build_number': 'dev'}
 
 
 class SplashScreen(QWidget):
@@ -28,13 +38,22 @@ class SplashScreen(QWidget):
         """Initialize the database connection"""
         try:
             self.db_path = initialize_database()
+            
+            # Populate silencer database if it's empty
+            try:
+                populate_silencer_database()
+            except Exception as e:
+                # Silencer database population is not critical, just log the error
+                print(f"Warning: Failed to populate silencer database: {e}")
+                
         except Exception as e:
             QMessageBox.critical(self, "Database Error", 
                                f"Failed to initialize database:\n{str(e)}")
             
     def init_ui(self):
         """Initialize the user interface"""
-        self.setWindowTitle("Acoustic Analysis Tool")
+        app_title = get_application_title()
+        self.setWindowTitle(app_title)
         self.setGeometry(300, 300, 600, 400)
         self.setStyleSheet("""
             QWidget {
@@ -84,8 +103,13 @@ class SplashScreen(QWidget):
         # Main layout
         main_layout = QVBoxLayout()
         
-        # Title section
-        title_label = QLabel("Acoustic Analysis Tool")
+        # Title section with version info
+        version_info = get_version_info()
+        title_text = f"Acoustic Analysis Tool v{version_info['version']}"
+        if version_info['build_number'] != 'dev':
+            title_text += f" (Build {version_info['build_number']})"
+        
+        title_label = QLabel(title_text)
         title_label.setObjectName("title")
         title_label.setAlignment(Qt.AlignCenter)
         
@@ -155,7 +179,7 @@ class SplashScreen(QWidget):
     def create_new_project(self):
         """Create a new project"""
         dialog = ProjectDialog(self)
-        if dialog.exec() == dialog.Accepted:
+        if dialog.exec() == dialog.accepted:
             project_data = dialog.get_project_data()
             
             try:

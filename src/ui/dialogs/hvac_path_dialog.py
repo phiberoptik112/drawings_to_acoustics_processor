@@ -7,15 +7,20 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QMessageBox, QSpinBox, QCheckBox, QTableWidget,
                              QTableWidgetItem, QHeaderView, QListWidget,
-                             QListWidgetItem, QSplitter, QTabWidget, QWidget)
+                             QListWidgetItem, QSplitter, QTabWidget, QWidget,
+                             QPlainTextEdit, QSizePolicy)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from models import get_session
+from models.mechanical import MechanicalUnit
 from models.hvac import HVACPath, HVACComponent, HVACSegment
+from sqlalchemy.orm import selectinload
 from models.space import Space
 from calculations.hvac_path_calculator import HVACPathCalculator
 from .hvac_component_dialog import HVACComponentDialog
+from .component_library_dialog import ComponentLibraryDialog
+from .hvac_receiver_dialog import HVACReceiverDialog
 from .hvac_segment_dialog import HVACSegmentDialog
 
 
@@ -89,6 +94,22 @@ class SegmentListWidget(QListWidget):
         self.segment_double_clicked.emit(segment)
 
 
+class PathDiagramText(QPlainTextEdit):
+    """Read-only ASCII diagram viewer that reports clicked line numbers."""
+    line_clicked = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.setFont(QFont("Courier New", 10))
+
+    def mousePressEvent(self, event):
+        cursor = self.cursorForPosition(event.pos())
+        self.line_clicked.emit(cursor.blockNumber())
+        super().mousePressEvent(event)
+
+
 class HVACPathDialog(QDialog):
     """Dialog for creating and managing HVAC paths"""
     
@@ -99,6 +120,8 @@ class HVACPathDialog(QDialog):
         self.project_id = project_id
         self.path = path  # Existing path for editing
         self.is_editing = path is not None
+        # Store primitive path id to avoid detached SQLAlchemy access
+        self.path_id = getattr(path, 'id', None)
         
         # Components and segments for this path
         self.components = []
@@ -111,6 +134,12 @@ class HVACPathDialog(QDialog):
         
         # Calculator
         self.path_calculator = HVACPathCalculator()
+        # Last calculation element results for component context lookups
+        self._last_element_results = []
+        # Selected Mechanical Unit (library) source data for calculations
+        self.source_octave_bands = None  # list[float] | None
+        self.source_noise_dba = None     # float | None
+        self._selected_source_label = None
         
         self.init_ui()
         if self.is_editing:
@@ -205,6 +234,7 @@ class HVACPathDialog(QDialog):
         self.setWindowTitle(title)
         self.setModal(True)
         self.resize(900, 700)
+        self.setSizeGripEnabled(True)
         
         layout = QVBoxLayout()
         
@@ -212,28 +242,48 @@ class HVACPathDialog(QDialog):
         header_label = QLabel(title)
         header_label.setFont(QFont("Arial", 14, QFont.Bold))
         header_label.setAlignment(Qt.AlignCenter)
+        header_label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         layout.addWidget(header_label)
         
-        # Main content in tabs
-        tabs = QTabWidget()
-        
+        # Main content: tabs on the left + ASCII path diagram on the right
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        # Tabs (left side)
+        self.tabs = QTabWidget()
+
         # Path Information tab
         info_tab = self.create_path_info_tab()
-        tabs.addTab(info_tab, "Path Information")
-        
+        self.info_tab_index = self.tabs.addTab(info_tab, "Path Information")
+
         # Components tab
         components_tab = self.create_components_tab()
-        tabs.addTab(components_tab, "Components")
-        
+        self.components_tab_index = self.tabs.addTab(components_tab, "Components")
+
         # Segments tab
         segments_tab = self.create_segments_tab()
-        tabs.addTab(segments_tab, "Segments")
-        
+        self.segments_tab_index = self.tabs.addTab(segments_tab, "Segments")
+
         # Analysis tab
         analysis_tab = self.create_analysis_tab()
-        tabs.addTab(analysis_tab, "Analysis")
-        
-        layout.addWidget(tabs)
+        self.analysis_tab_index = self.tabs.addTab(analysis_tab, "Analysis")
+
+        # Ensure tabs expand with window
+        self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.main_splitter.addWidget(self.tabs)
+
+        # Right side: NC summary + ASCII diagram panel
+        diagram_panel = self.create_ascii_diagram_panel()
+        self.main_splitter.addWidget(diagram_panel)
+        self.main_splitter.setSizes([650, 250])
+        self.main_splitter.setChildrenCollapsible(False)
+        self.main_splitter.setStretchFactor(0, 3)
+        self.main_splitter.setStretchFactor(1, 2)
+
+        layout.addWidget(self.main_splitter)
+        # Give the splitter all extra vertical space
+        layout.setStretch(0, 0)  # header
+        layout.setStretch(1, 1)  # splitter
         
         # Buttons
         button_layout = QHBoxLayout()
@@ -284,6 +334,8 @@ class HVACPathDialog(QDialog):
         # Target space
         self.space_combo = QComboBox()
         self.load_spaces()
+        # Update ASCII diagram when target space changes
+        self.space_combo.currentIndexChanged.connect(self.update_path_diagram)
         info_layout.addRow("Target Space:", self.space_combo)
         
         # Description
@@ -309,6 +361,43 @@ class HVACPathDialog(QDialog):
         layout.addStretch()
         widget.setLayout(layout)
         return widget
+
+    def create_ascii_diagram_panel(self):
+        """Create the right-side panel showing Path NC summary and ASCII path diagram."""
+        panel = QWidget()
+        root_v = QVBoxLayout()
+
+        # Header
+        header = QHBoxLayout()
+        title_left = QLabel("Path NC")
+        title_left.setFont(QFont("Arial", 12, QFont.Bold))
+        title_right = QLabel("Path Diagram")
+        title_right.setFont(QFont("Arial", 12, QFont.Bold))
+        header.addWidget(title_left)
+        header.addStretch()
+        header.addWidget(title_right)
+        root_v.addLayout(header)
+
+        # Content area: left NC list, right ASCII diagram
+        content = QHBoxLayout()
+
+        # NC list
+        self.nc_list = QListWidget()
+        self.nc_list.setFixedWidth(90)
+        self.nc_list.setSelectionMode(QListWidget.NoSelection)
+        self.nc_list.setFocusPolicy(Qt.NoFocus)
+        content.addWidget(self.nc_list)
+
+        # ASCII diagram
+        self.diagram_text = PathDiagramText()
+        self.diagram_text.setPlaceholderText("ASCII diagram will appear here when components/segments are defined.")
+        self.diagram_text.line_clicked.connect(self.on_diagram_line_clicked)
+        self.diagram_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        content.addWidget(self.diagram_text)
+
+        root_v.addLayout(content)
+        panel.setLayout(root_v)
+        return panel
         
     def create_components_tab(self):
         """Create the components tab"""
@@ -425,9 +514,12 @@ class HVACPathDialog(QDialog):
         self.results_text = QTextEdit()
         self.results_text.setReadOnly(True)
         self.results_text.setHtml("<i>Click 'Calculate Noise' to analyze this path</i>")
+        # Ensure the results area can grow to use vertical space
+        self.results_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         results_layout.addWidget(self.results_text)
         
         results_group.setLayout(results_layout)
+        results_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(results_group)
         
         # Analysis options
@@ -439,9 +531,13 @@ class HVACPathDialog(QDialog):
         options_layout.addWidget(self.auto_calculate_cb)
         
         options_group.setLayout(options_layout)
+        # Keep options compact so results get the extra space
+        options_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         layout.addWidget(options_group)
         
-        layout.addStretch()
+        # Give most of the vertical space to the results group
+        layout.setStretch(0, 1)
+        layout.setStretch(1, 0)
         widget.setLayout(layout)
         return widget
         
@@ -467,11 +563,26 @@ class HVACPathDialog(QDialog):
             components = session.query(HVACComponent).filter(
                 HVACComponent.project_id == self.project_id
             ).all()
+            # Also load project-level Mechanical Units for use as source components
+            mechanical_units = (
+                session.query(MechanicalUnit)
+                .filter(MechanicalUnit.project_id == self.project_id)
+                .order_by(MechanicalUnit.name)
+                .all()
+            )
             
             self.available_list.clear()
+            # Drawing-placed HVAC components
             for component in components:
-                item = QListWidgetItem(f"{component.name} ({component.component_type})")
+                item = QListWidgetItem(f"🔧 {component.name} ({component.component_type})")
                 item.setData(Qt.UserRole, component)
+                self.available_list.addItem(item)
+            # Mechanical Units (project-level library)
+            for unit in mechanical_units:
+                label_type = unit.unit_type or "unit"
+                item = QListWidgetItem(f"🏭 {unit.name} ({label_type}) [Mechanical Unit]")
+                # Store the MechanicalUnit directly; we'll wrap on add
+                item.setData(Qt.UserRole, unit)
                 self.available_list.addItem(item)
             
             session.close()
@@ -502,8 +613,61 @@ class HVACPathDialog(QDialog):
             self.description_text.setPlainText(self.path.description)
         
         # Load components and segments
-        self.components = list(self.path.segments[0].from_component.hvac_path.segments[0].from_component.project.hvac_components) if self.path.segments else []
-        self.segments = list(self.path.segments)
+        # Segments: prefer a fresh DB read to avoid stale or partially loaded relationships
+        try:
+            session = get_session()
+            segs = (
+                session.query(HVACSegment)
+                .options(
+                    selectinload(HVACSegment.from_component),
+                    selectinload(HVACSegment.to_component),
+                    selectinload(HVACSegment.fittings),
+                )
+                .filter(HVACSegment.hvac_path_id == self.path.id)
+                .order_by(HVACSegment.segment_order)
+                .all()
+            )
+            # Build an ordered, de-duplicated component list from segments
+            ordered_components = []
+            seen_ids = set()
+            for seg in segs:
+                for comp in [seg.from_component, seg.to_component]:
+                    if comp is None:
+                        continue
+                    if comp.id not in seen_ids:
+                        ordered_components.append(comp)
+                        seen_ids.add(comp.id)
+            self.segments = list(segs)
+            # Components used by this path, in traversal order
+            self.components = ordered_components
+            # Also populate "Available Components" from the project for adding to the path
+            try:
+                comps = session.query(HVACComponent).filter(HVACComponent.project_id == self.project_id).all()
+            except Exception:
+                comps = []
+            finally:
+                session.close()
+            # Fill the available list widget
+            self.available_list.clear()
+            for component in comps:
+                item = QListWidgetItem(f"{component.name} ({component.component_type})")
+                item.setData(Qt.UserRole, component)
+                self.available_list.addItem(item)
+        except Exception:
+            # Fallback to any segments present on the provided object
+            self.segments = list(self.path.segments) if getattr(self.path, 'segments', None) else []
+            # Derive components from those segments as best-effort
+            ordered_components = []
+            seen_ids = set()
+            for seg in self.segments:
+                for comp in [getattr(seg, 'from_component', None), getattr(seg, 'to_component', None)]:
+                    if comp is None:
+                        continue
+                    cid = getattr(comp, 'id', None)
+                    if cid is not None and cid not in seen_ids:
+                        ordered_components.append(comp)
+                        seen_ids.add(cid)
+            self.components = ordered_components
         
         self.update_component_list()
         self.update_segment_list()
@@ -513,10 +677,67 @@ class HVACPathDialog(QDialog):
         """Update the component list display"""
         self.component_list.set_components(self.components)
         self.add_seg_btn.setEnabled(len(self.components) >= 2)
+        self.update_path_diagram()
+        # Auto-calc when enabled and path is minimally defined
+        try:
+            if getattr(self, 'auto_calculate_cb', None) and self.auto_calculate_cb.isChecked():
+                if len(self.components) >= 2 and len(self.segments) >= 1:
+                    self.calculate_path_noise()
+        except Exception:
+            pass
     
     def update_segment_list(self):
         """Update the segment list display"""
+        # Re-sort segments by connectivity if possible for consistent display and calculation order
+        try:
+            segs = list(self.segments)
+            from_map = {}
+            to_set = set()
+            for s in segs:
+                fcid = getattr(s, 'from_component_id', None) or (getattr(getattr(s, 'from_component', None), 'id', None))
+                tcid = getattr(s, 'to_component_id', None) or (getattr(getattr(s, 'to_component', None), 'id', None))
+                if fcid is not None and fcid not in from_map:
+                    from_map[fcid] = s
+                if tcid is not None:
+                    to_set.add(tcid)
+            start = None
+            for fcid in list(from_map.keys()):
+                if fcid not in to_set:
+                    start = fcid
+                    break
+            ordered = []
+            visited = set()
+            current = start
+            max_iters = len(segs) + 2
+            iters = 0
+            while current is not None and iters < max_iters:
+                iters += 1
+                seg = from_map.get(current)
+                if seg is None:
+                    break
+                if seg in visited:
+                    break
+                ordered.append(seg)
+                visited.add(seg)
+                current = getattr(seg, 'to_component_id', None) or (getattr(getattr(seg, 'to_component', None), 'id', None))
+            if len(ordered) < len(segs):
+                remaining = [s for s in segs if s not in ordered]
+                ordered.extend(sorted(remaining, key=lambda s: getattr(s, 'segment_order', 0)))
+            # Persist the reordering in-memory for UI and save flow
+            self.segments = ordered
+        except Exception:
+            # Fallback to stored order
+            self.segments = sorted(list(self.segments), key=lambda s: getattr(s, 'segment_order', 0))
+
         self.segment_list.set_segments(self.segments)
+        self.update_path_diagram()
+        # Auto-calc when enabled and path is minimally defined
+        try:
+            if getattr(self, 'auto_calculate_cb', None) and self.auto_calculate_cb.isChecked():
+                if len(self.components) >= 2 and len(self.segments) >= 1:
+                    self.calculate_path_noise()
+        except Exception:
+            pass
     
     def update_summary(self):
         """Update the path summary"""
@@ -524,7 +745,7 @@ class HVACPathDialog(QDialog):
             self.summary_label.setText("No components added yet.")
             return
         
-        source = self.components[0].name if self.components else "Unknown"
+        source = self._selected_source_label or (self.components[0].name if self.components else "Unknown")
         terminal = self.components[-1].name if self.components else "Unknown"
         segment_count = len(self.segments)
         
@@ -539,6 +760,256 @@ class HVACPathDialog(QDialog):
             summary += f"NC Rating: NC-{self.path.calculated_nc:.0f}"
         
         self.summary_label.setText(summary)
+        # Keep diagram in sync with summary updates
+        self.update_path_diagram()
+
+    def _ordered_components_from_segments(self):
+        """Return components ordered by connectivity traversal if possible.
+        Falls back to current self.components order when segments are missing."""
+        try:
+            if not self.segments:
+                return list(self.components)
+            # Build adjacency and in-degree to locate a starting component
+            from_to = {}
+            in_degree = {}
+            comp_ref_by_id = {}
+            for seg in self.segments:
+                f = getattr(seg, 'from_component', None)
+                t = getattr(seg, 'to_component', None)
+                if f is None or t is None:
+                    continue
+                fid = getattr(f, 'id', None) or id(f)
+                tid = getattr(t, 'id', None) or id(t)
+                comp_ref_by_id[fid] = f
+                comp_ref_by_id[tid] = t
+                if fid not in from_to:
+                    from_to[fid] = tid
+                in_degree[tid] = in_degree.get(tid, 0) + 1
+                in_degree.setdefault(fid, in_degree.get(fid, 0))
+            # Choose start: in-degree 0 if available; else current first component
+            start_id = None
+            for cid, deg in in_degree.items():
+                if deg == 0:
+                    start_id = cid
+                    break
+            if start_id is None and self.components:
+                start_id = getattr(self.components[0], 'id', None) or id(self.components[0])
+            # Walk chain
+            ordered_ids = []
+            visited = set()
+            current = start_id
+            max_iters = len(from_to) + 2
+            iters = 0
+            while current is not None and iters < max_iters:
+                iters += 1
+                if current in visited:
+                    break
+                visited.add(current)
+                ordered_ids.append(current)
+                current = from_to.get(current)
+            ordered = [comp_ref_by_id[cid] for cid in ordered_ids if cid in comp_ref_by_id]
+            return ordered if ordered else list(self.components)
+        except Exception:
+            return list(self.components)
+
+    def update_path_diagram(self):
+        """Rebuild and display the ASCII path diagram on the right panel."""
+        if not hasattr(self, 'diagram_text'):
+            return
+
+        # Map line index -> (kind, ref)
+        # kind in { 'component', 'segment', 'source', 'receiver' }
+        self._diagram_line_to_item = {}
+
+        components = self._ordered_components_from_segments()
+        if not components:
+            self.diagram_text.setPlainText("No components yet.")
+            return
+
+        # Resolve receiver space name
+        space_name = None
+        try:
+            idx = self.space_combo.currentIndex() if hasattr(self, 'space_combo') else -1
+            space_name = self.space_combo.currentText() if idx >= 0 else None
+            if space_name == "None":
+                space_name = None
+        except Exception:
+            space_name = None
+
+        lines = []
+        box = lambda text: [
+            "+" + "-" * (len(text) + 2) + "+",
+            "| " + text + " |",
+            "+" + "-" * (len(text) + 2) + "+",
+        ]
+
+        # Helper to register mapping for a box just appended
+        def register_box_mapping(start_line, kind, ref):
+            # Map center text line primarily, but include all three lines
+            for offset in range(3):
+                self._diagram_line_to_item[start_line + offset] = (kind, ref)
+
+        # Top: source/mechanical component
+        top_label = f"Source: {getattr(components[0], 'name', 'Unknown')}"
+        start_idx = len(lines)
+        lines.extend(box(top_label))
+        register_box_mapping(start_idx, 'source', components[0])
+
+        # Iterate segments between components
+        segs = sorted(self.segments, key=lambda s: getattr(s, 'segment_order', 0)) if self.segments else []
+        def seg_label(seg):
+            length = getattr(seg, 'length', 0) or 0
+            shape = getattr(seg, 'duct_shape', '') or ''
+            w = getattr(seg, 'duct_width', '') or ''
+            h = getattr(seg, 'duct_height', '') or ''
+            dim = f" {int(w)}x{int(h)}" if w and h else ""
+            return f"segment {getattr(seg, 'segment_order', '?')}: {length:.1f} ft{dim} {shape}".strip()
+
+        for i, comp in enumerate(components[1:], start=1):
+            # arrow + segment info block if available
+            lines.append("     |")
+            if i-1 < len(segs):
+                seg_text = seg_label(segs[i-1])
+                start_idx = len(lines)
+                for l in box(seg_text):
+                    lines.append("     " + l)
+                lines.append("     v")
+                # map three lines of the segment box (shifted by 1 indent)
+                register_box_mapping(start_idx, 'segment', segs[i-1])
+            else:
+                lines.append("     v")
+            comp_label = getattr(comp, 'name', 'Component')
+            start_idx = len(lines)
+            lines.extend(box(comp_label))
+            register_box_mapping(start_idx, 'component', comp)
+
+        # Receiver space at bottom
+        if space_name:
+            lines.append("     |")
+            lines.append("     v")
+            start_idx = len(lines)
+            lines.extend(box(f"Receiver: {space_name}"))
+            register_box_mapping(start_idx, 'receiver', space_name)
+
+        self.diagram_text.setPlainText("\n".join(lines))
+
+    def on_diagram_line_clicked(self, line_index: int) -> None:
+        """Handle clicks in the diagram and switch left panel accordingly."""
+        item = getattr(self, '_diagram_line_to_item', {}).get(line_index)
+        if not item:
+            return
+        kind, ref = item
+        if kind == 'component':
+            # Go to Components tab and select matching component
+            self.tabs.setCurrentIndex(self.components_tab_index)
+            # Select in list
+            for row in range(self.component_list.count()):
+                it = self.component_list.item(row)
+                if it.data(Qt.UserRole) is ref:
+                    self.component_list.setCurrentRow(row)
+                    break
+            # Open edit dialog for details
+            self.edit_component(ref)
+        elif kind == 'segment':
+            self.tabs.setCurrentIndex(self.segments_tab_index)
+            for row in range(self.segment_list.count()):
+                it = self.segment_list.item(row)
+                if it.data(Qt.UserRole) is ref:
+                    self.segment_list.setCurrentRow(row)
+                    break
+            self.edit_segment(ref)
+        elif kind in ('receiver', 'source'):
+            # For 'source' click: open component library selector to choose primary Mechanical Unit
+            if kind == 'source':
+                self.select_primary_source_from_library()
+            else:
+                self.open_receiver_dialog()
+
+    def select_primary_source_from_library(self):
+        """Open component library to select a Mechanical Unit as the path's primary source."""
+        try:
+            lib = ComponentLibraryDialog(self, project_id=self.project_id)
+            if lib.exec() != QDialog.Accepted:
+                return
+            # After closing, get currently selected unit id from the list
+            current = getattr(lib, 'mechanical_list', None)
+            if not current or not current.currentItem():
+                return
+            unit_id = current.currentItem().data(Qt.UserRole)
+            if not unit_id:
+                return
+            session = get_session()
+            try:
+                from models.mechanical import MechanicalUnit
+                unit = session.query(MechanicalUnit).filter(MechanicalUnit.id == unit_id).first()
+            finally:
+                session.close()
+
+            if not unit:
+                return
+
+            # Extract octave-band data from the unit (prefer outlet -> inlet -> radiated)
+            import json
+            def parse_bands(js):
+                if not js:
+                    return None
+                try:
+                    data = json.loads(js)
+                    order = ["63","125","250","500","1000","2000","4000","8000"]
+                    vals = []
+                    for k in order:
+                        v = data.get(k)
+                        vals.append(float(v) if v is not None and str(v).strip() != '' else 0.0)
+                    return vals
+                except Exception:
+                    return None
+
+            bands = (parse_bands(getattr(unit, 'outlet_levels_json', None)) or
+                     parse_bands(getattr(unit, 'inlet_levels_json', None)) or
+                     parse_bands(getattr(unit, 'radiated_levels_json', None)))
+
+            # Compute A-weighted if we have bands; fallback to 80 dB(A)
+            if bands:
+                try:
+                    dba = self.path_calculator.noise_calculator.hvac_engine._calculate_dba_from_spectrum(bands)
+                except Exception:
+                    dba = 80.0
+            else:
+                dba = 80.0
+
+            self.source_octave_bands = bands
+            self.source_noise_dba = dba
+            self._selected_source_label = unit.name or unit.unit_type or "Mechanical Unit"
+
+            # Persist selection on path when editing
+            try:
+                if self.path:
+                    session = get_session()
+                    db_path = session.query(HVACPath).filter(HVACPath.id == self.path.id).first()
+                    if db_path:
+                        db_path.primary_source_id = getattr(unit, 'id', None)
+                        session.commit()
+                        self.path = db_path
+                    session.close()
+            except Exception:
+                pass
+
+            # Refresh summary/diagram to reflect change
+            self.update_summary()
+        except Exception as e:
+            print(f"Error selecting primary source: {e}")
+
+    def open_receiver_dialog(self):
+        """Open the Edit Space HVAC Receiver dialog for the currently selected target space."""
+        try:
+            space_id = self.space_combo.currentData() if hasattr(self, 'space_combo') else None
+            if not space_id:
+                self.tabs.setCurrentIndex(self.info_tab_index)
+                return
+            dlg = HVACReceiverDialog(self, space_id=int(space_id))
+            dlg.exec()
+        except Exception as e:
+            print(f"Error opening receiver dialog: {e}")
     
     def add_component(self):
         """Add a new component to the path"""
@@ -557,6 +1028,23 @@ class HVACPathDialog(QDialog):
             component = current_item.data(Qt.UserRole)
         
         dialog = HVACComponentDialog(self, self.project_id, None, component)
+        # If we have recent analysis, provide context for passive components
+        try:
+            if hasattr(self, '_last_element_results') and self._last_element_results:
+                # Prefer segment leaving this component, else entering
+                seg = next((s for s in self.segments if getattr(s, 'from_component', None) is component), None)
+                if seg is None:
+                    seg = next((s for s in self.segments if getattr(s, 'to_component', None) is component), None)
+                if seg is not None:
+                    order = int(getattr(seg, 'segment_order', 0) or 0)
+                    # Index 0 in results is source pseudo; segments start at index 1
+                    if order >= 1 and order < len(self._last_element_results):
+                        elem_res = self._last_element_results[order]
+                        # Apply to the dialog if it exposes the helper
+                        if hasattr(dialog, 'apply_passive_context_from_element_result'):
+                            dialog.apply_passive_context_from_element_result(elem_res)
+        except Exception:
+            pass
         if dialog.exec() == QDialog.Accepted:
             # Component was updated, refresh lists
             self.load_project_components()
@@ -592,11 +1080,25 @@ class HVACPathDialog(QDialog):
     
     def add_existing_component(self, item):
         """Add an existing component to the path"""
-        component = item.data(Qt.UserRole)
+        data_obj = item.data(Qt.UserRole)
+        
+        # If this is a MechanicalUnit, wrap into a lightweight component-like object
+        if isinstance(data_obj, MechanicalUnit):
+            unit = data_obj
+            # Create a simple, dialog-scoped component stub
+            component = type('Component', (), {
+                'id': None,  # not persisted to hvac_components
+                'name': unit.name,
+                'component_type': unit.unit_type or 'ahu',
+                # Placeholder overall noise level; can be refined from schedule later
+                'noise_level': 80.0,
+            })()
+        else:
+            component = data_obj
         
         if component in self.components:
             QMessageBox.information(self, "Component Already Added", 
-                                   f"'{component.name}' is already in this path.")
+                                   f"'{getattr(component, 'name', 'Component')}' is already in this path.")
             return
         
         self.components.append(component)
@@ -614,7 +1116,7 @@ class HVACPathDialog(QDialog):
         from_component = self.components[-2] if len(self.components) > 1 else self.components[0]
         to_component = self.components[-1]
         
-        dialog = HVACSegmentDialog(self, self.path.id if self.path else None, 
+        dialog = HVACSegmentDialog(self, self.path_id if self.path_id else None, 
                                  from_component, to_component, None)
         if dialog.exec() == QDialog.Accepted:
             # Segment was created, refresh list
@@ -629,7 +1131,7 @@ class HVACPathDialog(QDialog):
                 return
             segment = current_item.data(Qt.UserRole)
         
-        dialog = HVACSegmentDialog(self, self.path.id if self.path else None,
+        dialog = HVACSegmentDialog(self, self.path_id if self.path_id else None,
                                  segment.from_component, segment.to_component, segment)
         if dialog.exec() == QDialog.Accepted:
             # Segment was updated, refresh list
@@ -655,53 +1157,82 @@ class HVACPathDialog(QDialog):
     
     def calculate_path_noise(self):
         """Calculate noise for the current path"""
-        if not self.components or not self.segments:
-            QMessageBox.warning(self, "Incomplete Path", 
-                               "Need components and segments to calculate noise.")
-            return
-        
         try:
-            # Build path data for calculation
+            # If we have a persisted path, prefer the database-backed calculator so that
+            # selections like primary source Mechanical Unit (set from the Component dialog)
+            # are honored in the analysis.
+            if self.path_id and not self.drawing_components:
+                res = self.path_calculator.calculate_path_noise(int(self.path_id))
+                results = {
+                    'calculation_valid': bool(res.calculation_valid),
+                    'source_noise': float(res.source_noise or 0.0),
+                    'terminal_noise': float(res.terminal_noise or 0.0),
+                    'total_attenuation': float(res.total_attenuation or 0.0),
+                    'nc_rating': int(res.nc_rating or 0),
+                    'path_segments': list(res.segment_results or []),
+                    'path_elements': list(res.segment_results or []),
+                    'warnings': list(res.warnings or []),
+                }
+                self._last_element_results = results['path_elements']
+                self.display_analysis_results(results)
+                self.update_nc_summary(results)
+                return
+
+            # In-memory preview for unsaved/new paths
+            if not self.components or not self.segments:
+                QMessageBox.warning(self, "Incomplete Path", 
+                                   "Need components and segments to calculate noise.")
+                return
+
+            # Build path data for calculation (unchanged logic for new/unsaved paths)
+            source_payload = {
+                'component_type': getattr(self.components[0], 'component_type', 'unit'),
+                'noise_level': (self.source_noise_dba if isinstance(self.source_noise_dba, (int, float)) else getattr(self.components[0], 'noise_level', 50.0))
+            }
+            if isinstance(self.source_octave_bands, list) and len(self.source_octave_bands) >= 8:
+                source_payload['octave_band_levels'] = list(self.source_octave_bands)
+
             path_data = {
-                'source_component': {
-                    'component_type': self.components[0].component_type,
-                    'noise_level': self.components[0].noise_level
-                },
+                'source_component': source_payload,
                 'terminal_component': {
-                    'component_type': self.components[-1].component_type,
-                    'noise_level': self.components[-1].noise_level
+                    'component_type': getattr(self.components[-1], 'component_type', 'terminal'),
+                    'noise_level': getattr(self.components[-1], 'noise_level', 50.0)
                 },
                 'segments': []
             }
-            
-            # Add segments
+
             for segment in self.segments:
                 segment_data = {
                     'length': segment.length,
                     'duct_width': segment.duct_width,
                     'duct_height': segment.duct_height,
+                    'diameter': getattr(segment, 'diameter', 0) or 0,
                     'duct_shape': segment.duct_shape,
                     'duct_type': segment.duct_type,
                     'insulation': segment.insulation,
+                    'lining_thickness': getattr(segment, 'lining_thickness', 0) or 0,
                     'fittings': []
                 }
-                
-                # Add fittings
-                for fitting in segment.fittings:
+
+                first_fitting_type = None
+                for fitting in getattr(segment, 'fittings', []) or []:
                     fitting_data = {
                         'fitting_type': fitting.fitting_type,
                         'noise_adjustment': fitting.noise_adjustment
                     }
                     segment_data['fittings'].append(fitting_data)
-                
+                    if not first_fitting_type and getattr(fitting, 'fitting_type', None):
+                        first_fitting_type = fitting.fitting_type
+                if first_fitting_type:
+                    segment_data['fitting_type'] = first_fitting_type
+
                 path_data['segments'].append(segment_data)
-            
-            # Calculate noise
+
             results = self.path_calculator.noise_calculator.calculate_hvac_path_noise(path_data)
-            
-            # Display results
+            self._last_element_results = results.get('path_elements', results.get('path_segments', [])) or []
             self.display_analysis_results(results)
-            
+            self.update_nc_summary(results)
+
         except Exception as e:
             QMessageBox.critical(self, "Calculation Error", f"Failed to calculate noise:\n{str(e)}")
     
@@ -712,7 +1243,8 @@ class HVACPathDialog(QDialog):
         if results['calculation_valid']:
             html += f"<p><b>Source Noise:</b> {results['source_noise']:.1f} dB(A)<br>"
             html += f"<b>Terminal Noise:</b> {results['terminal_noise']:.1f} dB(A)<br>"
-            html += f"<b>Total Attenuation:</b> {results['total_attenuation']:.1f} dB<br>"
+            total_att = results.get('total_attenuation') or results.get('total_attenuation_dba') or 0.0
+            html += f"<b>Total Attenuation:</b> {float(total_att):.1f} dB<br>"
             html += f"<b>NC Rating:</b> NC-{results['nc_rating']:.0f}</p>"
             
             # Segment breakdown
@@ -721,12 +1253,37 @@ class HVACPathDialog(QDialog):
             html += "<tr><th>Segment</th><th>Length</th><th>Noise Before</th><th>Noise After</th><th>Attenuation</th></tr>"
             
             for segment_result in results['path_segments']:
-                html += f"<tr><td>{segment_result['segment_number']}</td>"
-                html += f"<td>{segment_result.get('length', 0):.1f} ft</td>"
-                html += f"<td>{segment_result['noise_before']:.1f} dB</td>"
-                html += f"<td>{segment_result['noise_after']:.1f} dB</td>"
-                html += f"<td>{segment_result['total_attenuation']:.1f} dB</td></tr>"
+                seg_num = segment_result.get('segment_number') or segment_result.get('element_order') or ''
+                length = segment_result.get('length', 0.0) or 0.0
+                nb = float(segment_result.get('noise_before', 0.0) or 0.0)
+                na = float(segment_result.get('noise_after', 0.0) or 0.0)
+                # Support both legacy 'total_attenuation' and engine 'attenuation_dba'
+                att = segment_result.get('total_attenuation')
+                if att is None:
+                    att = segment_result.get('attenuation_dba')
+                if att is None:
+                    # fallback from parts
+                    att = (segment_result.get('duct_loss') or 0.0) - (segment_result.get('generated_dba') or 0.0)
+                html += f"<tr><td>{seg_num}</td>"
+                html += f"<td>{float(length):.1f} ft</td>"
+                html += f"<td>{nb:.1f} dB</td>"
+                html += f"<td>{na:.1f} dB</td>"
+                html += f"<td>{float(att or 0.0):.1f} dB</td></tr>"
             
+            html += "</table>"
+
+            # Components and fittings breakdown with NC and spectra
+            html += "<h4>Components & Elements</h4>"
+            html += "<table border='1' cellpadding='5'>"
+            html += "<tr><th>#</th><th>Type</th><th>Noise After</th><th>NC</th><th>Octave Bands (63-8k Hz)</th></tr>"
+            for element in results.get('path_elements', results.get('path_segments', [])):
+                order = element.get('segment_number') or element.get('element_order') or ''
+                etype = element.get('element_type') or 'segment'
+                na = float(element.get('noise_after', 0.0) or 0.0)
+                nc = element.get('nc_rating', '')
+                bands = element.get('noise_after_spectrum') or []
+                bands_str = ", ".join(f"{float(b):.1f}" for b in bands) if bands else ""
+                html += f"<tr><td>{order}</td><td>{etype}</td><td>{na:.1f} dB(A)</td><td>{nc}</td><td>{bands_str}</td></tr>"
             html += "</table>"
             
             # Warnings
@@ -739,6 +1296,31 @@ class HVACPathDialog(QDialog):
             html += f"<p style='color: red;'>Calculation failed: {results.get('error', 'Unknown error')}</p>"
         
         self.results_text.setHtml(html)
+
+    def update_nc_summary(self, results: dict) -> None:
+        """Update the compact NC list aligned with the path diagram.
+        Expects each element to include 'nc_rating'. Falls back to blank.
+        """
+        try:
+            self.nc_list.clear()
+            elements = results.get('path_elements', results.get('path_segments', []))
+            # Build a simple list of NC values, color-coded
+            for elem in elements:
+                nc = elem.get('nc_rating')
+                label = f"NC {int(nc)}" if isinstance(nc, (int, float)) and nc > 0 else ""
+                item = QListWidgetItem(label)
+                # Background by NC performance
+                if isinstance(nc, (int, float)):
+                    if nc <= 30:
+                        item.setBackground(Qt.green)
+                    elif nc <= 40:
+                        item.setBackground(Qt.yellow)
+                    else:
+                        item.setBackground(Qt.red)
+                self.nc_list.addItem(item)
+        except Exception:
+            # Keep UI resilient
+            pass
     
     def save_path(self):
         """Save the HVAC path"""
@@ -769,46 +1351,57 @@ class HVACPathDialog(QDialog):
                 }
                 
                 # Create HVAC path using the calculator
-                path = self.path_calculator.create_hvac_path_from_drawing(
+                created_path = self.path_calculator.create_hvac_path_from_drawing(
                     self.project_id, drawing_data
                 )
                 
-                if path:
-                    # Update path name and description
+                if created_path:
+                    # Update path using a fresh session-bound instance
                     session = get_session()
-                    path.name = name
-                    path.path_type = self.type_combo.currentText()
-                    path.description = self.description_text.toPlainText()
-                    
-                    # Update target space
-                    space_id = self.space_combo.currentData()
-                    path.target_space_id = space_id
-                    
-                    session.commit()
-                    session.close()
-                    
-                    self.path = path
-                    self.path_saved.emit(path)
-                    self.accept()
+                    try:
+                        db_path = session.query(HVACPath).filter(HVACPath.id == created_path.id).first()
+                        if db_path is None:
+                            session.close()
+                            QMessageBox.warning(self, "Creation Warning", "Path was created but could not be reloaded for update.")
+                            self.path = created_path
+                            self.path_saved.emit(created_path)
+                            self.accept()
+                            return
+                        db_path.name = name
+                        db_path.path_type = self.type_combo.currentText()
+                        db_path.description = self.description_text.toPlainText()
+                        # Update target space
+                        space_id = self.space_combo.currentData()
+                        db_path.target_space_id = space_id
+                        session.commit()
+                        # Assign updated object back for emit
+                        self.path = db_path
+                        self.path_saved.emit(db_path)
+                        self.accept()
+                    finally:
+                        session.close()
                 else:
                     QMessageBox.warning(self, "Creation Failed", "Failed to create HVAC path from drawing elements.")
                     return
             else:
-                # Standard database path creation
+                # Standard database path creation / update
                 session = get_session()
                 
                 if self.is_editing:
-                    # Update existing path
-                    self.path.name = name
-                    self.path.path_type = self.type_combo.currentText()
-                    self.path.description = self.description_text.toPlainText()
-                    
+                    # Update existing path (reload session-bound)
+                    db_path = session.query(HVACPath).filter(HVACPath.id == self.path.id).first()
+                    if db_path is None:
+                        session.close()
+                        QMessageBox.warning(self, "Update Failed", "Selected path could not be found.")
+                        return
+                    db_path.name = name
+                    db_path.path_type = self.type_combo.currentText()
+                    db_path.description = self.description_text.toPlainText()
                     # Update target space
                     space_id = self.space_combo.currentData()
-                    self.path.target_space_id = space_id
-                    
+                    db_path.target_space_id = space_id
                     session.commit()
-                    path = self.path
+                    path = db_path
                 else:
                     # Create new path
                     space_id = self.space_combo.currentData()
@@ -820,16 +1413,23 @@ class HVACPathDialog(QDialog):
                         description=self.description_text.toPlainText(),
                         target_space_id=space_id
                     )
-                    
                     session.add(path)
                     session.flush()  # Get ID
                     
-                    # Create segments
+                    # Create segments (persist new records based on dialog segment stubs)
                     for i, segment in enumerate(self.segments):
-                        segment.hvac_path_id = path.id
-                        segment.segment_order = i + 1
-                        session.add(segment)
-                    
+                        seg = HVACSegment(
+                            hvac_path_id=path.id,
+                            from_component_id=getattr(segment, 'from_component_id', None) or (segment.from_component.id if hasattr(segment, 'from_component') and segment.from_component else None),
+                            to_component_id=getattr(segment, 'to_component_id', None) or (segment.to_component.id if hasattr(segment, 'to_component') and segment.to_component else None),
+                            length=getattr(segment, 'length', None) or getattr(segment, 'length_real', 0) or 0,
+                            segment_order=i + 1,
+                            duct_width=getattr(segment, 'duct_width', None) or 12,
+                            duct_height=getattr(segment, 'duct_height', None) or 8,
+                            duct_shape=getattr(segment, 'duct_shape', None) or 'rectangular',
+                            duct_type=getattr(segment, 'duct_type', None) or 'sheet_metal',
+                        )
+                        session.add(seg)
                     session.commit()
                 
                 session.close()
@@ -846,9 +1446,25 @@ class HVACPathDialog(QDialog):
         if not self.is_editing or not self.path:
             return
             
+        # Safely resolve path name without triggering lazy-load on a detached instance
+        try:
+            name_str = str(getattr(self.path, 'name'))
+        except Exception:
+            name_str = None
+        if not name_str:
+            try:
+                session = get_session()
+                try:
+                    dbp = session.query(HVACPath).filter(HVACPath.id == (self.path_id or getattr(self.path, 'id', None))).first()
+                    name_str = getattr(dbp, 'name', 'this path') if dbp else 'this path'
+                finally:
+                    session.close()
+            except Exception:
+                name_str = 'this path'
+
         reply = QMessageBox.question(
             self, "Delete Path",
-            f"Are you sure you want to delete '{self.path.name}'?\n\n"
+            f"Are you sure you want to delete '{name_str}'?\n\n"
             "This will also remove all segments and fittings associated with this path.",
             QMessageBox.Yes | QMessageBox.No
         )
@@ -856,7 +1472,13 @@ class HVACPathDialog(QDialog):
         if reply == QMessageBox.Yes:
             try:
                 session = get_session()
-                session.delete(self.path)
+                # Delete using a session-bound instance to avoid DetachedInstanceError
+                db_path = session.query(HVACPath).filter(HVACPath.id == (self.path_id or getattr(self.path, 'id', None))).first()
+                if not db_path:
+                    session.close()
+                    QMessageBox.warning(self, "Delete Path", "Selected path could not be found in the database.")
+                    return
+                session.delete(db_path)
                 session.commit()
                 session.close()
                 

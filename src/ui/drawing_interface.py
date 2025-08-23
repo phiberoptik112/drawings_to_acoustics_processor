@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QToolBar, QButtonGroup, QPushButton, 
                              QLabel, QComboBox, QLineEdit, QGroupBox, 
                              QListWidget, QListWidgetItem, QMessageBox, QFileDialog, QSplitter,
-                             QFrame, QSpinBox)
+                             QFrame, QSpinBox, QDialog, QCheckBox)
 from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QIcon, QFont, QAction
 
@@ -16,6 +16,9 @@ from models import get_session, Drawing, Project, Space, RoomBoundary, DrawingEl
 from drawing import PDFViewer, DrawingOverlay, ScaleManager, ToolType
 from ui.dialogs.scale_dialog import ScaleDialog
 from ui.dialogs.room_properties import RoomPropertiesDialog
+from ui.dialogs.hvac_path_dialog import HVACPathDialog
+from ui.dialogs.hvac_component_dialog import HVACComponentDialog
+from ui.dialogs.hvac_segment_dialog import HVACSegmentDialog
 from data.components import STANDARD_COMPONENTS
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 from calculations import RT60Calculator, NoiseCalculator, HVACPathCalculator
@@ -26,6 +29,7 @@ class DrawingInterface(QMainWindow):
     
     # Signals
     finished = Signal()
+    paths_updated = Signal()
     
     def __init__(self, drawing_id, project_id):
         super().__init__()
@@ -50,6 +54,9 @@ class DrawingInterface(QMainWindow):
         # Current page tracking
         self.current_page_number = 1
         
+        # Path visibility tracking
+        self.visible_paths = set()  # Set of path IDs that are currently visible
+        
         # Initialize base scale ratio for zoom adjustments
         self._base_scale_ratio = 1.0
         
@@ -59,6 +66,9 @@ class DrawingInterface(QMainWindow):
         
         if self.drawing and self.drawing.file_path:
             self.load_pdf()
+            
+        # Load saved paths
+        self.load_saved_paths()
             
     def load_drawing_data(self):
         """Load drawing and project data from database"""
@@ -131,7 +141,7 @@ class DrawingInterface(QMainWindow):
         
         # Edit menu
         edit_menu = menubar.addMenu('Edit')
-        edit_menu.addAction('Clear All', self.clear_all_elements)
+        edit_menu.addAction('Clear Unsaved', self.clear_unsaved_elements)
         edit_menu.addAction('Clear Measurements', self.clear_measurements)
         
         # View menu
@@ -184,6 +194,20 @@ class DrawingInterface(QMainWindow):
         seg_action.triggered.connect(lambda: self.set_drawing_tool(ToolType.SEGMENT))
         toolbar.addAction(seg_action)
         self.tool_group.addButton(toolbar.widgetForAction(seg_action))
+
+        # Polygon tool
+        poly_action = QAction('🔷 Polygon', self)
+        poly_action.setCheckable(True)
+        poly_action.triggered.connect(lambda: self.set_drawing_tool(ToolType.POLYGON))
+        toolbar.addAction(poly_action)
+        self.tool_group.addButton(toolbar.widgetForAction(poly_action))
+
+        # Edit/Select tool
+        edit_action = QAction('✏️ Edit', self)
+        edit_action.setCheckable(True)
+        edit_action.triggered.connect(lambda: self.set_drawing_tool(ToolType.SELECT))
+        toolbar.addAction(edit_action)
+        self.tool_group.addButton(toolbar.widgetForAction(edit_action))
         
         # Measure tool
         measure_action = QAction('📏 Measure', self)
@@ -196,7 +220,8 @@ class DrawingInterface(QMainWindow):
         
         # Quick actions
         toolbar.addAction('💾 Save', self.save_drawing)
-        toolbar.addAction('🗑️ Clear', self.clear_all_elements)
+        # Clear only unsaved/transient elements so saved path visuals persist
+        toolbar.addAction('🗑️ Clear', self.clear_unsaved_elements)
         
     def create_left_panel(self):
         """Create the left panel with tools and properties"""
@@ -293,6 +318,70 @@ class DrawingInterface(QMainWindow):
         elements_group.setLayout(elements_layout)
         layout.addWidget(elements_group)
         
+        # Saved Paths section
+        paths_group = QGroupBox("Saved Paths")
+        paths_layout = QVBoxLayout()
+        
+        # Paths summary
+        self.paths_summary_label = QLabel("No paths saved")
+        paths_layout.addWidget(self.paths_summary_label)
+        
+        # Paths list with checkboxes
+        self.paths_list = QListWidget()
+        self.paths_list.setMaximumHeight(120)  # Limit height to save space
+        self.paths_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.paths_list.customContextMenuRequested.connect(self.show_path_context_menu)
+        paths_layout.addWidget(self.paths_list)
+        
+        # Path mode toggle
+        self.path_only_mode = QCheckBox("Show only visible paths")
+        self.path_only_mode.setToolTip("Hide all drawing elements except those belonging to visible paths")
+        self.path_only_mode.stateChanged.connect(self.toggle_path_only_mode)
+        paths_layout.addWidget(self.path_only_mode)
+        
+        # Path actions
+        path_actions_layout = QHBoxLayout()
+        
+        self.refresh_paths_btn = QPushButton("🔄 Refresh")
+        self.refresh_paths_btn.clicked.connect(self.load_saved_paths)
+        self.refresh_paths_btn.setToolTip("Refresh saved paths list")
+        
+        self.show_all_paths_btn = QPushButton("👁️ Show All")
+        self.show_all_paths_btn.clicked.connect(self.show_all_paths)
+        self.show_all_paths_btn.setToolTip("Show all paths on drawing")
+        
+        self.hide_all_paths_btn = QPushButton("👁️‍🗨️ Hide All")
+        self.hide_all_paths_btn.clicked.connect(self.hide_all_paths)
+        self.hide_all_paths_btn.setToolTip("Hide all paths from drawing")
+        
+        path_actions_layout.addWidget(self.refresh_paths_btn)
+        path_actions_layout.addWidget(self.show_all_paths_btn)
+        path_actions_layout.addWidget(self.hide_all_paths_btn)
+        
+        # Advanced path actions
+        path_actions_layout2 = QHBoxLayout()
+        
+        self.register_all_btn = QPushButton("🔗 Register All to Path 1")
+        self.register_all_btn.clicked.connect(lambda: self.register_all_elements_to_path(1))
+        self.register_all_btn.setToolTip("Register all drawing elements to Path 1 for complete hide/show control")
+        
+        self.force_show_btn = QPushButton("👁️ Force Show Path 1")
+        self.force_show_btn.clicked.connect(lambda: self.force_show_path(1))
+        self.force_show_btn.setToolTip("Force show Path 1 (debug button)")
+        
+        # Debug checkbox test
+        self.debug_checkbox = QCheckBox("Debug Test Toggle")
+        self.debug_checkbox.stateChanged.connect(lambda state: print(f"DEBUG: Debug checkbox state: {state} (checked={state == Qt.Checked})"))
+        
+        path_actions_layout2.addWidget(self.register_all_btn)
+        path_actions_layout2.addWidget(self.force_show_btn)
+        path_actions_layout2.addWidget(self.debug_checkbox)
+        
+        paths_layout.addLayout(path_actions_layout)
+        paths_layout.addLayout(path_actions_layout2)
+        paths_group.setLayout(paths_layout)
+        layout.addWidget(paths_group)
+        
         layout.addStretch()
         panel.setLayout(layout)
         
@@ -338,11 +427,15 @@ class DrawingInterface(QMainWindow):
         if self.drawing_overlay:
             self.drawing_overlay.element_created.connect(self.element_created)
             self.drawing_overlay.measurement_taken.connect(self.measurement_taken)
+            # Open edit dialogs on double-clicks in overlay
+            self.drawing_overlay.element_double_clicked.connect(self.overlay_element_double_clicked)
             
         self.scale_manager.scale_changed.connect(self.scale_updated)
         
         # Element list selection
         self.elements_list.itemSelectionChanged.connect(self.element_selected)
+        # Saved paths list double-click to edit path
+        self.paths_list.itemDoubleClicked.connect(self.open_path_editor_from_item)
         
     def load_pdf(self):
         """Load the PDF file"""
@@ -362,6 +455,20 @@ class DrawingInterface(QMainWindow):
             # Get PDF display size
             pdf_size = self.pdf_viewer.pixmap.size()
             self.drawing_overlay.resize(pdf_size)
+
+            # Align overlay origin with the pixmap content origin inside the centered QLabel
+            try:
+                label = self.pdf_viewer.pdf_label
+                pixmap = self.pdf_viewer.pixmap
+                if label and pixmap:
+                    offset_x = max((label.width() - pixmap.width()) // 2, 0)
+                    offset_y = max((label.height() - pixmap.height()) // 2, 0)
+                    self.drawing_overlay.move(offset_x, offset_y)
+                else:
+                    self.drawing_overlay.move(0, 0)
+            except Exception:
+                # Fallback to (0,0) if anything unexpected
+                self.drawing_overlay.move(0, 0)
             
             # Update scale manager with page dimensions
             pdf_width, pdf_height = self.pdf_viewer.get_page_dimensions()
@@ -424,6 +531,13 @@ class DrawingInterface(QMainWindow):
             self.scale_manager.scale_ratio = self._base_scale_ratio * zoom_factor
             # Emit the scale change to update the UI
             self.scale_manager.scale_changed.emit(self.scale_manager.scale_ratio, self.scale_manager.scale_string)
+
+        # Re-scale overlay geometry so items remain anchored while background zooms
+        if self.drawing_overlay:
+            try:
+                self.drawing_overlay.set_zoom_factor(zoom_factor)
+            except Exception as e:
+                print(f"DEBUG: overlay zoom update failed: {e}")
         
     def page_changed(self, page_number):
         """Handle PDF page change - save current page elements and load new page elements"""
@@ -469,6 +583,10 @@ class DrawingInterface(QMainWindow):
             area_text = element_data.get('area_formatted', '')
             item = QListWidgetItem(f"🔲 Rectangle - {area_text}")
             item.setData(Qt.UserRole, element_data)  # Store element data
+        elif element_type == 'polygon':
+            area_text = element_data.get('area_formatted', '')
+            item = QListWidgetItem(f"🔷 Polygon - {area_text}")
+            item.setData(Qt.UserRole, element_data)
         elif element_type == 'component':
             comp_type = element_data.get('component_type', 'unknown')
             item = QListWidgetItem(f"🔧 {comp_type.upper()}")
@@ -505,6 +623,7 @@ class DrawingInterface(QMainWindow):
             summary = self.drawing_overlay.get_elements_summary()
             
             text = f"Rectangles: {summary['rectangles']}\n"
+            text += f"Polygons: {summary.get('polygons', 0)}\n"
             text += f"Components: {summary['components']}\n" 
             text += f"Segments: {summary['segments']}\n"
             text += f"Measurements: {summary['measurements']}\n\n"
@@ -720,6 +839,19 @@ class DrawingInterface(QMainWindow):
             self.drawing_overlay.clear_all_elements()
             self.elements_list.clear()
             self.update_elements_display()
+
+    def clear_unsaved_elements(self):
+        """Clear only elements not registered to saved HVAC paths.
+
+        Preserves the visuals for saved paths by delegating to the overlay's
+        `clear_unsaved_elements` method. Also refreshes the elements list.
+        """
+        if self.drawing_overlay:
+            self.drawing_overlay.clear_unsaved_elements()
+            self.elements_list.clear()
+            # Rebuild list from remaining overlay data
+            overlay_data = self.drawing_overlay.get_elements_data()
+            self.rebuild_elements_list(overlay_data)
             
     def clear_measurements(self):
         """Clear measurement lines"""
@@ -800,11 +932,11 @@ class DrawingInterface(QMainWindow):
             element_type = element_data.get('type') if element_data else None
             
             # Enable appropriate buttons
-            self.create_room_btn.setEnabled(element_type == 'rectangle')
+            self.create_room_btn.setEnabled(element_type in ['rectangle', 'polygon'])
             self.create_path_btn.setEnabled(element_type in ['component', 'segment'])
             self.delete_element_btn.setEnabled(True)
             
-            if element_type == 'rectangle':
+            if element_type in ['rectangle', 'polygon']:
                 self.selected_rectangle = element_data
             elif element_type in ['component', 'segment']:
                 self.selected_hvac_element = element_data
@@ -820,7 +952,7 @@ class DrawingInterface(QMainWindow):
         item = self.elements_list.itemAt(position)
         if not item:
             return
-            
+        
         element_data = item.data(Qt.UserRole)
         element_type = element_data.get('type') if element_data else None
         
@@ -828,13 +960,16 @@ class DrawingInterface(QMainWindow):
         
         menu = QMenu(self)
         
-        if element_type == 'rectangle':
+        if element_type in ['rectangle', 'polygon']:
             create_room_action = menu.addAction("🏠 Create Room/Space")
-            create_room_action.triggered.connect(lambda: self.create_room_from_rectangle(element_data))
+            if element_type == 'rectangle':
+                create_room_action.triggered.connect(lambda: self.create_room_from_rectangle(element_data))
+            else:
+                create_room_action.triggered.connect(lambda: self.create_room_from_polygon(element_data))
         elif element_type in ['component', 'segment']:
             create_path_action = menu.addAction("🔀 Create HVAC Path")
             create_path_action.triggered.connect(lambda: self.create_path_from_element(element_data))
-            
+        
         menu.addSeparator()
         delete_action = menu.addAction("🗑️ Delete Element")
         delete_action.triggered.connect(lambda: self.delete_element(item))
@@ -844,7 +979,10 @@ class DrawingInterface(QMainWindow):
     def create_room_from_selected(self):
         """Create room from selected rectangle"""
         if self.selected_rectangle:
-            self.create_room_from_rectangle(self.selected_rectangle)
+            if self.selected_rectangle.get('type') == 'polygon':
+                self.create_room_from_polygon(self.selected_rectangle)
+            else:
+                self.create_room_from_rectangle(self.selected_rectangle)
     
     def create_path_from_selected(self):
         """Create HVAC path from selected component or segment"""
@@ -1039,17 +1177,38 @@ class DrawingInterface(QMainWindow):
             for comp in components:
                 comp['drawing_id'] = self.drawing.id
             
-            # Filter segments that connect the components in our path
+            # Filter segments that connect to any components in our path
+            # Be permissive: include a segment if EITHER endpoint is in the path's component set.
+            # The calculator later validates and creates DB segments only when at least one
+            # endpoint is resolvable, so over-including here is safe and avoids false negatives
+            # due to identity/equality nuances in dicts.
             path_segments = []
-            component_ids = [comp.get('id') for comp in components]
-            
-            for segment in segments:
+            print(f"DEBUG: Preparing path from {len(components)} components and {len(segments)} segments (pre-filter)")
+            for i, segment in enumerate(segments):
                 from_comp = segment.get('from_component')
                 to_comp = segment.get('to_component')
-                
-                if (from_comp and from_comp in components and 
-                    to_comp and to_comp in components):
+                include = False
+                if from_comp and from_comp in components:
+                    include = True
+                if to_comp and to_comp in components:
+                    include = True
+                if include:
                     path_segments.append(segment)
+                else:
+                    # Extra permissive fallback: include if either endpoint matches by position/type
+                    def comp_matches(c):
+                        if not c:
+                            return False
+                        for cmp in components:
+                            if (cmp.get('x') == c.get('x') and cmp.get('y') == c.get('y') and 
+                                cmp.get('component_type') == c.get('component_type')):
+                                return True
+                        return False
+                    if comp_matches(from_comp) or comp_matches(to_comp):
+                        path_segments.append(segment)
+                        include = True
+                print(f"DEBUG: Segment {i} filter include={include}")
+            print(f"DEBUG: path_segments after filter: {len(path_segments)}")
             
             drawing_data = {
                 'components': components,
@@ -1062,6 +1221,10 @@ class DrawingInterface(QMainWindow):
             )
             
             if hvac_path:
+                # Register path elements in drawing overlay for show/hide functionality
+                if self.drawing_overlay:
+                    self.drawing_overlay.register_path_elements(hvac_path.id, components, path_segments)
+                
                 # Show success message with path details
                 path_info = f"Successfully created HVAC path: {hvac_path.name}\n\n"
                 path_info += f"Components: {len(components)}\n"
@@ -1077,6 +1240,14 @@ class DrawingInterface(QMainWindow):
                 
                 # Update status bar
                 self.status_bar.showMessage(f"Created HVAC path '{hvac_path.name}' with {len(components)} components", 5000)
+                
+                # Refresh paths list to show new path
+                self.load_saved_paths()
+                # Notify listeners (e.g., project dashboard HVAC tab)
+                try:
+                    self.paths_updated.emit()
+                except Exception:
+                    pass
             else:
                 QMessageBox.warning(self, "Creation Failed", "Failed to create HVAC path from drawing elements.")
                 
@@ -1100,6 +1271,7 @@ class DrawingInterface(QMainWindow):
             
     def handle_space_created(self, space_data):
         """Handle space creation from room properties dialog"""
+        session = None
         try:
             session = get_session()
             
@@ -1138,22 +1310,40 @@ class DrawingInterface(QMainWindow):
                 space.calculated_rt60 = rt60_results['rt60']
                 calculated_rt60 = rt60_results['rt60']
                 
-            # Create room boundary record
-            rectangle_data = space_data.get('rectangle_data', {})
-            if rectangle_data and self.drawing:
-                boundary = RoomBoundary(
-                    space_id=space.id,
-                    drawing_id=self.drawing.id,
-                    page_number=self.current_page_number,
-                    x_position=rectangle_data.get('x', 0),
-                    y_position=rectangle_data.get('y', 0),
-                    width=rectangle_data.get('width', 0),
-                    height=rectangle_data.get('height', 0),
-                    calculated_area=rectangle_data.get('area_real', 0)
-                )
+            # Create room boundary record (rectangle or polygon)
+            shape_data = space_data.get('rectangle_data', {})
+            if shape_data and self.drawing:
+                if shape_data.get('type') == 'polygon':
+                    import json
+                    x = int(shape_data.get('x', 0) or 0)
+                    y = int(shape_data.get('y', 0) or 0)
+                    w = int(shape_data.get('width', 1) or 1)
+                    h = int(shape_data.get('height', 1) or 1)
+                    boundary = RoomBoundary(
+                        space_id=space.id,
+                        drawing_id=self.drawing.id,
+                        page_number=self.current_page_number,
+                        x_position=x,
+                        y_position=y,
+                        width=w,
+                        height=h,
+                        calculated_area=shape_data.get('area_real', 0),
+                        polygon_points=json.dumps(shape_data.get('points', []))
+                    )
+                else:
+                    boundary = RoomBoundary(
+                        space_id=space.id,
+                        drawing_id=self.drawing.id,
+                        page_number=self.current_page_number,
+                        x_position=shape_data.get('x', 0),
+                        y_position=shape_data.get('y', 0),
+                        width=shape_data.get('width', 0),
+                        height=shape_data.get('height', 0),
+                        calculated_area=shape_data.get('area_real', 0)
+                    )
                 
                 session.add(boundary)
-                
+            
             session.commit()
             session.close()
             
@@ -1188,8 +1378,11 @@ class DrawingInterface(QMainWindow):
             
             # Update rectangle to show it's now a space
             self.update_elements_after_space_creation(space_data['name'])
-            
+        
         except Exception as e:
+            if session is not None:
+                session.rollback()
+                session.close()
             QMessageBox.critical(self, "Error", f"Failed to create space:\n{str(e)}")
             
     def update_elements_after_space_creation(self, space_name):
@@ -1199,7 +1392,7 @@ class DrawingInterface(QMainWindow):
             item = self.elements_list.item(i)
             element_data = item.data(Qt.UserRole)
             
-            if element_data and element_data.get('type') == 'rectangle':
+            if element_data and element_data.get('type') in ['rectangle', 'polygon']:
                 # Check if this is the rectangle we just converted
                 if element_data == self.selected_rectangle:
                     # Update item text to show it's now a space
@@ -1214,11 +1407,18 @@ class DrawingInterface(QMainWindow):
         
         # Update drawing overlay to show visual changes
         if self.drawing_overlay and self.selected_rectangle:
-            for rect_data in self.drawing_overlay.rectangles:
-                if rect_data == self.selected_rectangle:
-                    rect_data['converted_to_space'] = True
-                    rect_data['space_name'] = space_name
-                    break
+            if self.selected_rectangle.get('type') == 'polygon':
+                for poly in self.drawing_overlay.polygons:
+                    if poly == self.selected_rectangle:
+                        poly['converted_to_space'] = True
+                        poly['space_name'] = space_name
+                        break
+            else:
+                for rect_data in self.drawing_overlay.rectangles:
+                    if rect_data == self.selected_rectangle:
+                        rect_data['converted_to_space'] = True
+                        rect_data['space_name'] = space_name
+                        break
             
             # Trigger repaint to show the rectangle in green with space name
             self.drawing_overlay.update()
@@ -1329,6 +1529,10 @@ class DrawingInterface(QMainWindow):
             if dialog.exec() == QDialog.Accepted:
                 QMessageBox.information(self, "HVAC Path Created", 
                                        f"Successfully created HVAC path: {dialog.path.name if dialog.path else 'Unknown'}")
+                
+                # Refresh paths list to show new path
+                self.load_saved_paths()
+                self.paths_updated.emit()
                 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")
@@ -1459,7 +1663,22 @@ class DrawingInterface(QMainWindow):
         message += f"Path: {source_type} → {terminal_type}\n\n"
         message += f"Source Noise Level: {results['source_noise']:.1f} dB(A)\n"
         message += f"Terminal Noise Level: {results['terminal_noise']:.1f} dB(A)\n"
-        message += f"Total Attenuation: {results['total_attenuation']:.1f} dB\n"
+        # Be tolerant of key name differences
+        total_att = results.get('total_attenuation')
+        if total_att is None:
+            total_att = results.get('total_attenuation_dba')
+        if total_att is None:
+            # Fallback: derive from last segment if present
+            try:
+                segs = results.get('path_segments', [])
+                if segs:
+                    last = segs[-1]
+                    total_att = last.get('total_attenuation')
+                    if total_att is None:
+                        total_att = last.get('attenuation_dba')
+            except Exception:
+                total_att = 0.0
+        message += f"Total Attenuation: {float(total_att or 0):.1f} dB\n"
         message += f"NC Rating: NC-{results['nc_rating']}\n\n"
         
         # Add NC criteria description
@@ -1902,8 +2121,687 @@ class DrawingInterface(QMainWindow):
             QMessageBox.warning(self, "Options Error", f"Error getting export options:\n{str(e)}")
             return ExportOptions()  # Default options
 
+    # Path visibility methods
+    def load_saved_paths(self):
+        """Load saved HVAC paths from database and populate the paths list"""
+        session = None
+        try:
+            session = get_session()
+            
+            # Import HVACPath model
+            from models.hvac import HVACPath
+            
+            # Query HVAC paths for this project
+            hvac_paths = session.query(HVACPath).filter(
+                HVACPath.project_id == self.project_id
+            ).all()
+            
+            # Clear the current list
+            self.paths_list.clear()
+            self.visible_paths.clear()
+            
+            if not hvac_paths:
+                self.paths_summary_label.setText("No paths saved")
+                session.close()
+                return
+                
+            # Update summary
+            path_count = len(hvac_paths)
+            calculated_count = sum(1 for p in hvac_paths if p.calculated_noise)
+            self.paths_summary_label.setText(f"{path_count} paths ({calculated_count} calculated)")
+            
+            # Add paths to list with checkboxes
+            for hvac_path in hvac_paths:
+                # Register path elements for show/hide functionality
+                if self.drawing_overlay:
+                    self.register_existing_path_elements(hvac_path)
+                
+                # Create list item with checkbox
+                item = QListWidgetItem()
+                
+                # Create a widget container for path controls
+                widget = QWidget()
+                layout = QHBoxLayout(widget)
+                layout.setContentsMargins(5, 2, 5, 2)
+                
+                # Path name label
+                path_label = QLabel(self.format_path_display_name(hvac_path))
+                path_label.setToolTip(self.format_path_tooltip(hvac_path))
+                # Let double-clicks pass through label to the list item row
+                path_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                
+                # Toggle button for show/hide
+                toggle_btn = QPushButton("👁️‍🗨️")  # Hidden eye initially
+                toggle_btn.setMaximumWidth(35)
+                toggle_btn.setMaximumHeight(25)
+                toggle_btn.setToolTip("Click to show/hide this path on drawing")
+                toggle_btn.setCheckable(True)  # Make it a toggle button
+                toggle_btn.setChecked(False)  # Default to hidden
+                
+                # Style the toggle button
+                toggle_btn.setStyleSheet("""
+                    QPushButton {
+                        border: 1px solid #888;
+                        border-radius: 3px;
+                        padding: 2px;
+                    }
+                    QPushButton:checked {
+                        background-color: #4CAF50;
+                        border: 1px solid #45a049;
+                    }
+                """)
+                
+                # Connect toggle button
+                toggle_btn.clicked.connect(lambda checked, pid=hvac_path.id, btn=toggle_btn: self.toggle_path_visibility(pid, checked, btn))
+                
+                layout.addWidget(path_label)
+                layout.addStretch()  # Push toggle button to the right
+                layout.addWidget(toggle_btn)
+                
+                # Store path data in the item
+                item.setData(Qt.UserRole, hvac_path)
+                
+                # Set the widget as the item widget
+                self.paths_list.addItem(item)
+                self.paths_list.setItemWidget(item, widget)
+                # Also allow double-clicking the row to open the editor directly
+                def _row_dbl_click(event, p=hvac_path):
+                    try:
+                        if event.button() == Qt.LeftButton:
+                            self.open_path_editor(p)
+                            event.accept()
+                            return
+                    except Exception:
+                        pass
+                    QWidget.mouseDoubleClickEvent(widget, event)
+                widget.mouseDoubleClickEvent = _row_dbl_click
+            
+            session.close()
+            
+        except Exception as e:
+            if session is not None:
+                session.close()
+            QMessageBox.warning(self, "Error", f"Failed to load saved paths:\n{str(e)}")
+    
+    def format_path_display_name(self, hvac_path):
+        """Format the display name for a path in the list"""
+        path_type = hvac_path.path_type or "supply"
+        space_name = hvac_path.target_space.name if hvac_path.target_space else "No Space"
+        
+        # Add noise info if available
+        noise_info = ""
+        if hvac_path.calculated_noise:
+            noise_info = f" [{hvac_path.calculated_noise:.1f} dB(A)]"
+            
+        return f"{hvac_path.name} ({path_type}) → {space_name}{noise_info}"
+    
+    def format_path_tooltip(self, hvac_path):
+        """Format tooltip information for a path"""
+        tooltip = f"Path: {hvac_path.name}\n"
+        tooltip += f"Type: {hvac_path.path_type or 'supply'}\n"
+        tooltip += f"Target Space: {hvac_path.target_space.name if hvac_path.target_space else 'None'}\n"
+        tooltip += f"Components: {len(hvac_path.segments) + 1 if hvac_path.segments else 0}\n"
+        
+        if hvac_path.calculated_noise:
+            tooltip += f"Noise Level: {hvac_path.calculated_noise:.1f} dB(A)\n"
+            tooltip += f"NC Rating: NC-{hvac_path.calculated_nc:.0f}" if hvac_path.calculated_nc else "NC Rating: Not calculated"
+        else:
+            tooltip += "Noise: Not calculated"
+            
+        return tooltip
+    
+    def handle_path_visibility_changed(self, path_id: int, visible: bool):
+        """Handle path visibility checkbox change"""
+        print(f"DEBUG: Path {path_id} visibility changed to {visible}")
+        if visible:
+            self.visible_paths.add(path_id)
+            self.show_path_on_drawing(path_id)
+        else:
+            self.visible_paths.discard(path_id)
+            self.hide_path_on_drawing(path_id)
+        print(f"DEBUG: Drawing overlay visible_paths after change: {list(self.drawing_overlay.visible_paths.keys()) if self.drawing_overlay else 'No overlay'}")
+    
+    def show_path_on_drawing(self, path_id: int):
+        """Show a specific path on the drawing overlay"""
+        if self.drawing_overlay:
+            # Add path to visible paths (this will make path elements visible)
+            self.drawing_overlay.visible_paths[path_id] = True
+            self.drawing_overlay.update()
+            print(f"DEBUG: Showing path {path_id}, visible paths: {list(self.drawing_overlay.visible_paths.keys())}")
+        
+    def hide_path_on_drawing(self, path_id: int):
+        """Hide a specific path from the drawing overlay"""
+        if self.drawing_overlay:
+            # Remove path from visible paths (this will hide path elements)
+            self.drawing_overlay.visible_paths.pop(path_id, None)
+            self.drawing_overlay.update()
+            print(f"DEBUG: Hiding path {path_id}, visible paths: {list(self.drawing_overlay.visible_paths.keys())}")
+    
+    def show_all_paths(self):
+        """Show all paths on the drawing"""
+        for i in range(self.paths_list.count()):
+            item = self.paths_list.item(i)
+            widget = self.paths_list.itemWidget(item)
+            if widget:
+                toggle_btn = widget.findChild(QPushButton)
+                if toggle_btn and not toggle_btn.isChecked():
+                    toggle_btn.setChecked(True)
+                    toggle_btn.clicked.emit(True)  # Trigger the click handler
+    
+    def hide_all_paths(self):
+        """Hide all paths from the drawing"""
+        for i in range(self.paths_list.count()):
+            item = self.paths_list.item(i)
+            widget = self.paths_list.itemWidget(item)
+            if widget:
+                toggle_btn = widget.findChild(QPushButton)
+                if toggle_btn and toggle_btn.isChecked():
+                    toggle_btn.setChecked(False)
+                    toggle_btn.clicked.emit(False)  # Trigger the click handler
+    
+    def show_path_context_menu(self, position):
+        """Show context menu for paths list"""
+        item = self.paths_list.itemAt(position)
+        if not item:
+            return
+            
+        hvac_path = item.data(Qt.UserRole)
+        if not hvac_path:
+            return
+        
+        from PySide6.QtWidgets import QMenu
+        
+        menu = QMenu(self)
+        
+        # Toggle visibility action
+        checkbox = self.paths_list.itemWidget(item)
+        if checkbox:
+            if checkbox.isChecked():
+                hide_action = menu.addAction("👁️‍🗨️ Hide Path")
+                hide_action.triggered.connect(lambda: checkbox.setChecked(False))
+            else:
+                show_action = menu.addAction("👁️ Show Path")
+                show_action.triggered.connect(lambda: checkbox.setChecked(True))
+        
+        menu.addSeparator()
+        
+        # Path information action
+        info_action = menu.addAction("ℹ️ Path Information")
+        info_action.triggered.connect(lambda: self.show_path_information(hvac_path))
+        
+        # Register all elements action
+        register_all_action = menu.addAction("🔗 Register All Drawing Elements")
+        register_all_action.triggered.connect(lambda: self.register_all_elements_to_path(hvac_path.id))
+        register_all_action.setToolTip("Register all currently drawn components and segments to this path")
+        
+        # Calculate noise action (if not calculated)
+        if not hvac_path.calculated_noise:
+            calc_action = menu.addAction("🔊 Calculate Noise")
+            calc_action.triggered.connect(lambda: self.calculate_path_noise(hvac_path.id))
+        
+        menu.exec_(self.paths_list.mapToGlobal(position))
+
+    def open_path_editor_from_item(self, item: QListWidgetItem):
+        """Open the Edit HVAC Path dialog when a saved path list item is double-clicked."""
+        try:
+            hvac_path = item.data(Qt.UserRole)
+            if not hvac_path:
+                return
+            # Open in edit mode
+            dlg = HVACPathDialog(self, project_id=self.project_id, path=hvac_path)
+            if dlg.exec() == QDialog.Accepted:
+                # Refresh list and notify listeners
+                self.load_saved_paths()
+                try:
+                    self.paths_updated.emit()
+                except Exception:
+                    pass
+        except Exception as e:
+            QMessageBox.warning(self, "Path Editor", f"Failed to open path editor:\n{e}")
+
+    def overlay_element_double_clicked(self, element: dict):
+        """Open component or segment editor when double-clicked on the drawing overlay."""
+        try:
+            etype = (element or {}).get('type')
+            if etype == 'component':
+                # Prefer DB component id embedded via registration; else try to match by position/type
+                db_id = element.get('db_component_id')
+                session = None
+                try:
+                    from models.hvac import HVACComponent
+                    if db_id:
+                        session = get_session()
+                        comp = session.query(HVACComponent).filter(HVACComponent.id == db_id).first()
+                        session.close()
+                    else:
+                        # Fallback lookup by position/type within this drawing; if not found,
+                        # relax matching to nearest component within a small pixel tolerance.
+                        session = get_session()
+                        from models.hvac import HVACComponent as _HC
+                        try:
+                            comp = (
+                                session.query(_HC)
+                                .filter(
+                                    _HC.project_id == self.project_id,
+                                    _HC.drawing_id == (self.drawing.id if self.drawing else None),
+                                    _HC.x_position == element.get('x'),
+                                    _HC.y_position == element.get('y'),
+                                    _HC.component_type == element.get('component_type')
+                                )
+                                .first()
+                            )
+                            if comp is None:
+                                # Relax: search by proximity (<= 12 px) on same drawing and project
+                                ex = float(element.get('x') or 0)
+                                ey = float(element.get('y') or 0)
+                                candidates = (
+                                    session.query(_HC)
+                                    .filter(
+                                        _HC.project_id == self.project_id,
+                                        _HC.drawing_id == (self.drawing.id if self.drawing else None)
+                                    )
+                                    .all()
+                                )
+                                best = None
+                                best_dist = 999999.0
+                                for c in candidates:
+                                    dx = float(getattr(c, 'x_position', 0.0) or 0.0) - ex
+                                    dy = float(getattr(c, 'y_position', 0.0) or 0.0) - ey
+                                    d = abs(dx) + abs(dy)
+                                    if d < best_dist:
+                                        best = c
+                                        best_dist = d
+                                # Accept if within tolerance (12 px manhattan)
+                                if best is not None and best_dist <= 12.0:
+                                    comp = best
+                        finally:
+                            session.close()
+                    if comp is None:
+                        QMessageBox.information(self, "Edit Component", "No saved component found at this location.")
+                        return
+                finally:
+                    try:
+                        if session is not None:
+                            session.close()
+                    except Exception:
+                        pass
+                print("DEBUG[DrawingInterface]: Opening HVACComponentDialog for component id=", getattr(comp, 'id', None),
+                      " name=", getattr(comp, 'name', None))
+                dlg = HVACComponentDialog(self, self.project_id, self.drawing.id if self.drawing else None, comp)
+                dlg.exec()
+                return
+            if etype == 'segment':
+                # Eager-load relationships to avoid detached lazy-loads when dialog accesses them
+                seg_id = element.get('db_segment_id')
+                session = None
+                seg = None
+                try:
+                    from sqlalchemy.orm import selectinload
+                    from models.hvac import HVACSegment
+                    session = get_session()
+                    if seg_id:
+                        seg = (
+                            session.query(HVACSegment)
+                            .options(
+                                selectinload(HVACSegment.from_component),
+                                selectinload(HVACSegment.to_component),
+                                selectinload(HVACSegment.fittings),
+                            )
+                            .filter(HVACSegment.id == int(seg_id))
+                            .first()
+                        )
+                    else:
+                        # Fallback: find segment on this path whose endpoints are nearest to the clicked overlay endpoints
+                        from models.hvac import HVACSegment as _HS
+                        segments = (
+                            session.query(_HS)
+                            .options(
+                                selectinload(_HS.from_component),
+                                selectinload(_HS.to_component),
+                                selectinload(_HS.fittings),
+                            )
+                            .filter(_HS.hvac_path_id == element.get('db_path_id'))
+                            .all()
+                        )
+                        best = None
+                        best_dist = 999999.0
+                        tol = 12.0
+                        ex_f = element.get('from_component') or {}
+                        ex_t = element.get('to_component') or {}
+                        fx = float(ex_f.get('x') or 0)
+                        fy = float(ex_f.get('y') or 0)
+                        tx = float(ex_t.get('x') or 0)
+                        ty = float(ex_t.get('y') or 0)
+                        for s in segments:
+                            if not (s.from_component and s.to_component):
+                                continue
+                            d1 = abs(float(getattr(s.from_component, 'x_position', 0.0)) - fx) + abs(float(getattr(s.from_component, 'y_position', 0.0)) - fy)
+                            d2 = abs(float(getattr(s.to_component, 'x_position', 0.0)) - tx) + abs(float(getattr(s.to_component, 'y_position', 0.0)) - ty)
+                            d = d1 + d2
+                            if d < best_dist:
+                                best = s
+                                best_dist = d
+                        if best is not None and best_dist <= (2 * tol):
+                            seg = best
+                    if seg is None:
+                        QMessageBox.information(self, "Edit Segment", "No saved segment found here.")
+                        return
+                    # Access relationships while session is open
+                    _ = seg.from_component, seg.to_component
+                    try:
+                        _ = list(seg.fittings)
+                    except Exception:
+                        pass
+                    # Sync in-memory segment length with the current overlay length so the dialog reflects on-canvas edits
+                    try:
+                        overlay_len = float(element.get('length_real', 0) or 0)
+                        if overlay_len > 0:
+                            seg.length = overlay_len
+                    except Exception:
+                        pass
+                    # Optionally detach to be safe
+                    try:
+                        session.expunge(seg)
+                        if seg.from_component:
+                            session.expunge(seg.from_component)
+                        if seg.to_component:
+                            session.expunge(seg.to_component)
+                    except Exception:
+                        pass
+                finally:
+                    try:
+                        if session is not None:
+                            session.close()
+                    except Exception:
+                        pass
+                dlg = HVACSegmentDialog(
+                    self,
+                    hvac_path_id=getattr(seg, 'hvac_path_id', None),
+                    from_component=getattr(seg, 'from_component', None),
+                    to_component=getattr(seg, 'to_component', None),
+                    segment=seg,
+                )
+                try:
+                    # Keep the drawing overlay in sync when a segment is saved from the dialog
+                    dlg.segment_saved.connect(self._on_segment_saved)
+                except Exception:
+                    pass
+                dlg.exec()
+        except Exception as e:
+            QMessageBox.warning(self, "Edit Element", f"Failed to open editor:\n{e}")
+    
+    def show_path_information(self, hvac_path):
+        """Show detailed information about a path"""
+        info = f"HVAC Path Information\n"
+        info += f"{'=' * 30}\n\n"
+        info += f"Name: {hvac_path.name}\n"
+        info += f"Type: {hvac_path.path_type or 'supply'}\n"
+        info += f"Description: {hvac_path.description or 'None'}\n"
+        info += f"Target Space: {hvac_path.target_space.name if hvac_path.target_space else 'None'}\n"
+        info += f"Components: {len(hvac_path.segments) + 1 if hvac_path.segments else 0}\n"
+        info += f"Segments: {len(hvac_path.segments) if hvac_path.segments else 0}\n\n"
+        
+        if hvac_path.calculated_noise:
+            info += f"Calculated Noise: {hvac_path.calculated_noise:.1f} dB(A)\n"
+            info += f"NC Rating: NC-{hvac_path.calculated_nc:.0f}" if hvac_path.calculated_nc else "NC Rating: Not calculated"
+        else:
+            info += "Noise: Not calculated"
+        
+        QMessageBox.information(self, "Path Information", info)
+
+    def open_path_editor(self, hvac_path):
+        """Open the Edit HVAC Path dialog for a given HVACPath instance."""
+        try:
+            if not hvac_path:
+                return
+            dlg = HVACPathDialog(self, project_id=self.project_id, path=hvac_path)
+            if dlg.exec() == QDialog.Accepted:
+                self.load_saved_paths()
+                try:
+                    self.paths_updated.emit()
+                except Exception:
+                    pass
+        except Exception as e:
+            QMessageBox.warning(self, "Path Editor", f"Failed to open path editor:\n{e}")
+    
+    def calculate_path_noise(self, path_id: int):
+        """Calculate noise for a specific path"""
+        try:
+            # Use the existing HVAC path calculator
+            result = self.hvac_path_calculator.analyze_hvac_path(path_id)
+            
+            if result and result.calculation_valid:
+                QMessageBox.information(self, "Calculation Complete", 
+                                      f"Path '{result.path_name}' calculated:\n"
+                                      f"Terminal Noise: {result.terminal_noise:.1f} dB(A)\n"
+                                      f"NC Rating: NC-{result.nc_rating:.0f}")
+                
+                # Refresh the paths list to show updated values
+                self.load_saved_paths()
+            else:
+                QMessageBox.warning(self, "Calculation Failed", 
+                                  "Unable to calculate noise for this path.\n"
+                                  "Check that all components and segments are properly defined.")
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to calculate path noise:\n{str(e)}")
+    
+    def register_existing_path_elements(self, hvac_path):
+        """Register existing path elements in the drawing overlay for show/hide functionality"""
+        if not self.drawing_overlay:
+            return
+            
+        try:
+            path_components = []
+            path_segments = []
+            
+            # Find drawing elements that match the path's components and segments
+            overlay_data = self.drawing_overlay.get_elements_data()
+            drawing_components = overlay_data.get('components', [])
+            drawing_segments = overlay_data.get('segments', [])
+            
+            # print(f"DEBUG: Registering path {hvac_path.id} with {len(hvac_path.segments)} database segments")
+            # print(f"DEBUG: Available drawing elements: {len(drawing_components)} components, {len(drawing_segments)} segments")
+            
+            # Match path components to drawing components
+            for i, segment in enumerate(hvac_path.segments):
+                print(f"DEBUG: Processing segment {i}")
+                
+                if segment.from_component:
+                    db_comp = segment.from_component
+                    print(f"DEBUG: Looking for from_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                    
+                    # Look for matching component in drawing elements
+                    found = False
+                    for comp in drawing_components:
+                        if (comp.get('x') == db_comp.x_position and
+                            comp.get('y') == db_comp.y_position and
+                            comp.get('component_type') == db_comp.component_type):
+                            if comp not in path_components:
+                                path_components.append(comp)
+                                # Attach DB id for edit lookups
+                                comp['db_component_id'] = db_comp.id
+                                print(f"DEBUG: Found matching from_component: {comp}")
+                            found = True
+                            break
+                    if not found:
+                        print(f"DEBUG: No match found for from_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                
+                if segment.to_component:
+                    db_comp = segment.to_component
+                    print(f"DEBUG: Looking for to_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                    
+                    # Look for matching component in drawing elements
+                    found = False
+                    for comp in drawing_components:
+                        if (comp.get('x') == db_comp.x_position and
+                            comp.get('y') == db_comp.y_position and
+                            comp.get('component_type') == db_comp.component_type):
+                            if comp not in path_components:
+                                path_components.append(comp)
+                                # Attach DB id for edit lookups
+                                comp['db_component_id'] = db_comp.id
+                                print(f"DEBUG: Found matching to_component: {comp}")
+                            found = True
+                            break
+                    if not found:
+                        print(f"DEBUG: No match found for to_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                
+                # Match segments (robust: allow small pixel tolerance on endpoints)
+                if segment.from_component and segment.to_component:
+                    print(f"DEBUG: Looking for segment from {segment.from_component.component_type} to {segment.to_component.component_type}")
+                    found = False
+                    tol = 12.0  # pixels
+                    fx = float(segment.from_component.x_position or 0.0)
+                    fy = float(segment.from_component.y_position or 0.0)
+                    tx = float(segment.to_component.x_position or 0.0)
+                    ty = float(segment.to_component.y_position or 0.0)
+                    for seg in drawing_segments:
+                        # Check if this segment connects the same components (within tolerance)
+                        from_comp = seg.get('from_component')
+                        to_comp = seg.get('to_component')
+                        if not (from_comp and to_comp):
+                            continue
+                        d1 = abs(float(from_comp.get('x') or 0) - fx) + abs(float(from_comp.get('y') or 0) - fy)
+                        d2 = abs(float(to_comp.get('x') or 0) - tx) + abs(float(to_comp.get('y') or 0) - ty)
+                        if d1 <= tol and d2 <= tol:
+                            if seg not in path_segments:
+                                path_segments.append(seg)
+                                # Attach DB ids for edit lookups
+                                seg['db_segment_id'] = segment.id
+                                seg['db_path_id'] = hvac_path.id
+                                # Also synchronize overlay label length with DB value
+                                try:
+                                    seg['length_real'] = float(getattr(segment, 'length', 0) or 0)
+                                    fmtr = self.drawing_overlay.scale_manager.format_distance
+                                    seg['length_formatted'] = fmtr(seg['length_real'])
+                                except Exception:
+                                    pass
+                                print(f"DEBUG: Found matching segment (tol {tol}px): {from_comp.get('component_type')} -> {to_comp.get('component_type')}")
+                            found = True
+                            break
+                    if not found:
+                        print(f"DEBUG: No matching segment found (with tolerance) for {segment.from_component.component_type} -> {segment.to_component.component_type}")
+            
+            # Register the found elements
+            if path_components or path_segments:
+                self.drawing_overlay.register_path_elements(hvac_path.id, path_components, path_segments)
+                print(f"DEBUG: Registered path {hvac_path.id} with {len(path_components)} components and {len(path_segments)} segments")
+            else:
+                print(f"DEBUG: No elements found to register for path {hvac_path.id}")
+            
+        except Exception as e:
+            print(f"Error registering path elements for path {hvac_path.id}: {e}")
+
+    def _on_segment_saved(self, segment) -> None:
+        """After editing a segment in the dialog, update any registered overlay
+        segment to reflect the new length so UI values stay linked.
+        """
+        try:
+            if not self.drawing_overlay:
+                return
+            seg_id = getattr(segment, 'id', None)
+            if seg_id is None:
+                return
+            updated = False
+            for seg in self.drawing_overlay.segments:
+                try:
+                    if int(seg.get('db_segment_id')) == int(seg_id):
+                        new_len = float(getattr(segment, 'length', 0) or 0)
+                        seg['length_real'] = new_len
+                        fmtr = self.drawing_overlay.scale_manager.format_distance
+                        seg['length_formatted'] = fmtr(new_len)
+                        updated = True
+                        break
+                except Exception:
+                    continue
+            if updated:
+                # Ensure tools see the latest geometry/meta
+                try:
+                    self.drawing_overlay.update_segment_tool_components()
+                except Exception:
+                    pass
+                self.drawing_overlay.update()
+        except Exception:
+            pass
+    
+    def register_all_elements_to_path(self, path_id: int):
+        """Register all currently drawn elements to the specified path"""
+        if not self.drawing_overlay:
+            return
+            
+        try:
+            # Get all current drawing elements
+            overlay_data = self.drawing_overlay.get_elements_data()
+            all_components = overlay_data.get('components', [])
+            all_segments = overlay_data.get('segments', [])
+            
+            # Register all elements to this path
+            self.drawing_overlay.register_path_elements(path_id, all_components, all_segments)
+            
+            # Show confirmation
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Elements Registered", 
+                                  f"Registered {len(all_components)} components and {len(all_segments)} segments to path {path_id}.\n\n"
+                                  "Now when you hide this path, all drawing elements will be hidden.")
+            
+        except Exception as e:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Registration Error", f"Failed to register elements:\n{str(e)}")
+    
+    def toggle_path_visibility(self, path_id: int, visible: bool, button: QPushButton):
+        """Toggle a path's visibility using the eye button"""
+        print(f"DEBUG: Toggle path {path_id} visibility: {visible}")
+        
+        # Update button appearance
+        if visible:
+            button.setText("👁️")  # Open eye for visible
+        else:
+            button.setText("👁️‍🗨️")  # Closed eye for hidden
+            
+        # Call visibility handler
+        self.handle_path_visibility_changed(path_id, visible)
+    
+    def force_show_path(self, path_id: int):
+        """Force show a path (debug method)"""
+        print(f"DEBUG: Force showing path {path_id}")
+        
+        # Find and activate the toggle button
+        for i in range(self.paths_list.count()):
+            item = self.paths_list.item(i)
+            hvac_path = item.data(Qt.UserRole)
+            if hvac_path and hvac_path.id == path_id:
+                widget = self.paths_list.itemWidget(item)
+                if widget:
+                    toggle_btn = widget.findChild(QPushButton)
+                    if toggle_btn and not toggle_btn.isChecked():
+                        toggle_btn.setChecked(True)
+                        toggle_btn.clicked.emit(True)
+                        print(f"DEBUG: Force-activated toggle button for path {path_id}")
+                break
+    
+    def toggle_path_only_mode(self, checked: bool):
+        """Toggle path-only display mode"""
+        if self.drawing_overlay:
+            self.drawing_overlay.path_only_mode = checked
+            self.drawing_overlay.update()
+            print(f"DEBUG: Path-only mode set to {checked}")
+
     def closeEvent(self, event):
         """Handle window close event"""
         self.save_drawing_to_db()
         self.finished.emit()
         event.accept()
+
+    def create_room_from_polygon(self, polygon_data):
+        """Create a room/space from polygon data"""
+        if not polygon_data:
+            QMessageBox.warning(self, "Error", "No polygon data available.")
+            return
+        try:
+            # Reuse RoomPropertiesDialog; it reads area/perimeter generically
+            dialog = RoomPropertiesDialog(self, polygon_data, self.scale_manager)
+            dialog.space_created.connect(self.handle_space_created)
+            dialog.exec()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to create room properties dialog:\n{str(e)}")

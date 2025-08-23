@@ -5,8 +5,12 @@ Minimal test of main application
 
 import sys
 import os
-from PyQt5.QtWidgets import QApplication, QStyleFactory
-from PyQt5.QtCore import Qt
+
+# Use offscreen platform for headless test environments
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtWidgets import QApplication, QStyleFactory
+from PySide6.QtCore import Qt
 
 # Add src directory to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'src'))
@@ -38,7 +42,7 @@ def main():
         splash_screen.show()
         print("SplashScreen shown")
         
-        return app.exec_()
+        return app.exec()
     except Exception as e:
         print(f"Error: {e}")
         import traceback

@@ -6,10 +6,19 @@ import os
 from typing import Dict, List, Optional, Tuple
 
 def get_database_path():
-    """Get the path to the acoustic materials database"""
-    current_dir = os.path.dirname(__file__)
-    project_root = os.path.dirname(os.path.dirname(current_dir))
-    return os.path.join(project_root, 'materials', 'acoustic_materials.db')
+    """Get the path to the acoustic materials database
+    
+    Handles both development and bundled deployment scenarios
+    """
+    try:
+        # Try to use the deployment-aware utility
+        from utils import get_materials_database_path
+        return get_materials_database_path()
+    except ImportError:
+        # Fallback for development or if utils not available
+        current_dir = os.path.dirname(__file__)
+        project_root = os.path.dirname(os.path.dirname(current_dir))
+        return os.path.join(project_root, 'materials', 'acoustic_materials.db')
 
 def load_materials_from_database() -> Dict[str, Dict]:
     """Load materials from the acoustic_materials.db database"""
