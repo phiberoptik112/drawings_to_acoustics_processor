@@ -2492,6 +2492,13 @@ class DrawingInterface(QMainWindow):
                         _ = list(seg.fittings)
                     except Exception:
                         pass
+                    # Sync in-memory segment length with the current overlay length so the dialog reflects on-canvas edits
+                    try:
+                        overlay_len = float(element.get('length_real', 0) or 0)
+                        if overlay_len > 0:
+                            seg.length = overlay_len
+                    except Exception:
+                        pass
                     # Optionally detach to be safe
                     try:
                         session.expunge(seg)
