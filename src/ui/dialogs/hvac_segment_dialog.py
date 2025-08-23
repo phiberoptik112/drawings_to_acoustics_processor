@@ -193,6 +193,12 @@ class HVACSegmentDialog(QDialog):
             self.refresh_context()
         except Exception:
             pass
+
+        # Apply endpoint fitting constraints based on connected component types
+        try:
+            self._apply_endpoint_fitting_constraints()
+        except Exception:
+            pass
         
     def create_segment_properties_panel(self):
         """Create the segment properties panel"""
@@ -415,6 +421,71 @@ class HVACSegmentDialog(QDialog):
     def _build_segment_element_from_ui(self):
         return self.noise_engine.__class__.PathElement if False else None  # placeholder to keep type hints quiet
     
+    def _endpoint_allows_fitting(self, component) -> tuple:
+        """Return (allowed: bool, default_fitting: str | None) for a component endpoint.
+        - Elbow components suggest 'elbow_90'
+        - Branch/Junction/Tee components suggest 'tee_branch'
+        - Other components do not allow endpoint fittings here.
+        """
+        try:
+            if component is None:
+                return False, None
+            ctype = str(getattr(component, 'component_type', '') or '').lower()
+            if 'elbow' in ctype:
+                return True, 'elbow_90'
+            if 'branch' in ctype or 'tee' in ctype or 'junction' in ctype:
+                return True, 'tee_branch'
+            return False, None
+        except Exception:
+            return False, None
+
+    def _apply_endpoint_fitting_constraints(self) -> None:
+        """Enable/disable upstream/downstream fitting combos based on neighbor components.
+        Also set sensible default selection if allowed and currently 'none'.
+        """
+        # Upstream
+        allow_up, up_default = self._endpoint_allows_fitting(getattr(self, 'from_component', None))
+        self.up_fitting_combo.setEnabled(bool(allow_up))
+        if not allow_up:
+            self.up_fitting_combo.blockSignals(True)
+            try:
+                idx = self.up_fitting_combo.findText('none')
+                if idx >= 0:
+                    self.up_fitting_combo.setCurrentIndex(idx)
+            finally:
+                self.up_fitting_combo.blockSignals(False)
+        else:
+            # Apply default if currently 'none'
+            if self.up_fitting_combo.currentText() == 'none' and up_default:
+                self.up_fitting_combo.blockSignals(True)
+                try:
+                    idx = self.up_fitting_combo.findText(up_default)
+                    if idx >= 0:
+                        self.up_fitting_combo.setCurrentIndex(idx)
+                finally:
+                    self.up_fitting_combo.blockSignals(False)
+
+        # Downstream
+        allow_down, down_default = self._endpoint_allows_fitting(getattr(self, 'to_component', None))
+        self.down_fitting_combo.setEnabled(bool(allow_down))
+        if not allow_down:
+            self.down_fitting_combo.blockSignals(True)
+            try:
+                idx = self.down_fitting_combo.findText('none')
+                if idx >= 0:
+                    self.down_fitting_combo.setCurrentIndex(idx)
+            finally:
+                self.down_fitting_combo.blockSignals(False)
+        else:
+            if self.down_fitting_combo.currentText() == 'none' and down_default:
+                self.down_fitting_combo.blockSignals(True)
+                try:
+                    idx = self.down_fitting_combo.findText(down_default)
+                    if idx >= 0:
+                        self.down_fitting_combo.setCurrentIndex(idx)
+                finally:
+                    self.down_fitting_combo.blockSignals(False)
+
     def _make_segment_element(self):
         from calculations.hvac_noise_engine import PathElement
         element_type = 'duct'
@@ -612,23 +683,55 @@ class HVACSegmentDialog(QDialog):
         self.duct_loss_spin.setValue(self.segment.duct_loss or 0)
         self.fitting_additions_spin.setValue(self.segment.fitting_additions or 0)
         
-        # Load fittings (map first to upstream, second to downstream)
+        # Load fittings reliably using stored position_on_segment so upstream/downstream
+        # are deterministic regardless of DB return order.
         try:
             fits = list(self.segment.fittings)
         except Exception:
             fits = []
-        if len(fits) >= 1:
-            idx = self.up_fitting_combo.findText(fits[0].fitting_type)
+        # Sort by position; treat None as 0.0
+        try:
+            fits_sorted = sorted(fits, key=lambda f: (getattr(f, 'position_on_segment', 0.0) or 0.0))
+        except Exception:
+            fits_sorted = fits
+        # Map to upstream/downstream
+        length_val = float(getattr(self.segment, 'length', 0.0) or 0.0)
+        if len(fits_sorted) == 1:
+            f = fits_sorted[0]
+            pos = float(getattr(f, 'position_on_segment', 0.0) or 0.0)
+            # Heuristic: position in latter half -> downstream, else upstream
+            is_down = pos >= max(0.0, 0.5 * length_val)
+            if is_down:
+                idx = self.down_fitting_combo.findText(f.fitting_type)
+                if idx >= 0:
+                    self.down_fitting_combo.setCurrentIndex(idx)
+                if f.noise_adjustment is not None:
+                    self.down_adjust_spin.setValue(f.noise_adjustment)
+            else:
+                idx = self.up_fitting_combo.findText(f.fitting_type)
+                if idx >= 0:
+                    self.up_fitting_combo.setCurrentIndex(idx)
+                if f.noise_adjustment is not None:
+                    self.up_adjust_spin.setValue(f.noise_adjustment)
+        elif len(fits_sorted) >= 2:
+            up_f = fits_sorted[0]
+            down_f = fits_sorted[-1]
+            idx = self.up_fitting_combo.findText(up_f.fitting_type)
             if idx >= 0:
                 self.up_fitting_combo.setCurrentIndex(idx)
-            if fits[0].noise_adjustment is not None:
-                self.up_adjust_spin.setValue(fits[0].noise_adjustment)
-        if len(fits) >= 2:
-            idx = self.down_fitting_combo.findText(fits[1].fitting_type)
+            if getattr(up_f, 'noise_adjustment', None) is not None:
+                self.up_adjust_spin.setValue(up_f.noise_adjustment)
+            idx = self.down_fitting_combo.findText(down_f.fitting_type)
             if idx >= 0:
                 self.down_fitting_combo.setCurrentIndex(idx)
-            if fits[1].noise_adjustment is not None:
-                self.down_adjust_spin.setValue(fits[1].noise_adjustment)
+            if getattr(down_f, 'noise_adjustment', None) is not None:
+                self.down_adjust_spin.setValue(down_f.noise_adjustment)
+
+        # Enforce applicability and defaults now that prior values are loaded
+        try:
+            self._apply_endpoint_fitting_constraints()
+        except Exception:
+            pass
         # Refresh computed context to display labels
         self.refresh_context()
     
@@ -708,7 +811,8 @@ class HVACSegmentDialog(QDialog):
         
         # Upstream fitting (if any)
         up_type = self.up_fitting_combo.currentText()
-        if up_type and up_type != 'none':
+        allow_up, _ = self._endpoint_allows_fitting(getattr(self, 'from_component', None))
+        if allow_up and up_type and up_type != 'none':
             up_adj = self.up_adjust_spin.value()
             session.add(SegmentFitting(
                 segment_id=segment.id,
@@ -720,7 +824,8 @@ class HVACSegmentDialog(QDialog):
         
         # Downstream fitting (if any)
         down_type = self.down_fitting_combo.currentText()
-        if down_type and down_type != 'none':
+        allow_down, _ = self._endpoint_allows_fitting(getattr(self, 'to_component', None))
+        if allow_down and down_type and down_type != 'none':
             down_adj = self.down_adjust_spin.value()
             session.add(SegmentFitting(
                 segment_id=segment.id,
