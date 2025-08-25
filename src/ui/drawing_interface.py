@@ -1225,18 +1225,30 @@ class DrawingInterface(QMainWindow):
                 if self.drawing_overlay:
                     self.drawing_overlay.register_path_elements(hvac_path.id, components, path_segments)
                 
-                # Show success message with path details
+                # Ask user if they want to clear used elements from drawing
                 path_info = f"Successfully created HVAC path: {hvac_path.name}\n\n"
                 path_info += f"Components: {len(components)}\n"
                 path_info += f"Segments: {len(path_segments)}\n"
                 
                 if hvac_path.calculated_noise:
                     path_info += f"Terminal Noise: {hvac_path.calculated_noise:.1f} dB(A)\n"
-                    path_info += f"NC Rating: NC-{hvac_path.calculated_nc:.0f}"
+                    path_info += f"NC Rating: NC-{hvac_path.calculated_nc:.0f}\n\n"
                 else:
-                    path_info += "Noise calculation pending"
+                    path_info += "Noise calculation pending\n\n"
                 
-                QMessageBox.information(self, "HVAC Path Created", path_info)
+                path_info += "Would you like to remove the used components and segments from the drawing?\n"
+                path_info += "(They will still be available as part of the saved path)"
+                
+                reply = QMessageBox.question(
+                    self, 
+                    "HVAC Path Created", 
+                    path_info,
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                
+                if reply == QMessageBox.Yes:
+                    self.clear_used_elements_from_overlay(components, path_segments)
                 
                 # Update status bar
                 self.status_bar.showMessage(f"Created HVAC path '{hvac_path.name}' with {len(components)} components", 5000)
@@ -1253,6 +1265,46 @@ class DrawingInterface(QMainWindow):
                 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")
+    
+    def clear_used_elements_from_overlay(self, used_components, used_segments):
+        """Remove components and segments that were used in path creation from the overlay"""
+        try:
+            if not self.drawing_overlay:
+                return
+            
+            print(f"DEBUG: Clearing {len(used_components)} components and {len(used_segments)} segments from overlay")
+            
+            # Remove components
+            components_removed = 0
+            for comp in used_components:
+                if comp in self.drawing_overlay.components:
+                    self.drawing_overlay.components.remove(comp)
+                    components_removed += 1
+            
+            # Remove segments  
+            segments_removed = 0
+            for seg in used_segments:
+                if seg in self.drawing_overlay.segments:
+                    self.drawing_overlay.segments.remove(seg)
+                    segments_removed += 1
+            
+            print(f"DEBUG: Actually removed {components_removed} components and {segments_removed} segments")
+            
+            # Mark base cache as dirty and update overlay
+            self.drawing_overlay._base_dirty = True
+            self.drawing_overlay.update()
+            
+            # Refresh the elements list display
+            overlay_data = self.drawing_overlay.get_elements_data()
+            self.rebuild_elements_list(overlay_data)
+            self.update_elements_display()
+            
+            # Update status
+            self.status_bar.showMessage(f"Removed {components_removed} components and {segments_removed} segments from drawing", 3000)
+            
+        except Exception as e:
+            print(f"Warning: Failed to clear used elements: {e}")
+            QMessageBox.warning(self, "Cleanup Warning", f"Path created successfully, but failed to clean up drawing elements:\n{str(e)}")
             
     def create_room_from_rectangle(self, rectangle_data):
         """Create a room/space from rectangle data"""
