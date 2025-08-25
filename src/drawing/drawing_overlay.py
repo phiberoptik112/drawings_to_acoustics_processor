@@ -668,7 +668,28 @@ class DrawingOverlay(QWidget):
         self.update()
     
     def clear_unsaved_elements(self):
-        self.clear_all_elements()
+        try:
+            # Preserve elements registered to any saved path; clear only transient ones
+            keep_components = set()
+            keep_segments = set()
+            for mapping in self.path_element_mapping.values():
+                for c in mapping.get('components', []) or []:
+                    keep_components.add(id(c))
+                for s in mapping.get('segments', []) or []:
+                    keep_segments.add(id(s))
+
+            self.components = [c for c in self.components if id(c) in keep_components]
+            self.segments = [s for s in self.segments if id(s) in keep_segments]
+
+            # Do not touch rectangles/polygons; measurements have their own clearer
+            self._base_components.clear()
+            self._base_segments.clear()
+            self._base_dirty = True
+            self.update_segment_tool_components()
+            self.update()
+        except Exception:
+            # Fallback: keep state as-is to avoid losing data on error
+            self.update()
 
     def _clear_selection(self):
         self._selected_components.clear()
@@ -682,8 +703,20 @@ class DrawingOverlay(QWidget):
     # ---------------------- Drawing primitives ----------------------
     def draw_components(self, painter):
         for comp in self.components:
-            if self.path_only_mode and not self._is_component_in_visible_path(comp):
-                continue
+            # Visibility rules
+            if self.path_only_mode:
+                if not self._is_component_in_visible_path(comp):
+                    continue
+            else:
+                has_reg = bool(self.path_element_mapping)
+                if has_reg:
+                    is_reg = self._is_component_registered_any_path(comp)
+                    if not self.visible_paths:
+                        if is_reg:
+                            continue
+                    else:
+                        if is_reg and not self._is_component_in_visible_path(comp):
+                            continue
             x = comp.get('x', 0)
             y = comp.get('y', 0)
             comp_type = comp.get('component_type', 'unknown')
@@ -708,8 +741,19 @@ class DrawingOverlay(QWidget):
 
     def draw_segments(self, painter):
         for seg in self.segments:
-            if self.path_only_mode and not self._is_segment_in_visible_path(seg):
-                continue
+            if self.path_only_mode:
+                if not self._is_segment_in_visible_path(seg):
+                    continue
+            else:
+                has_reg = bool(self.path_element_mapping)
+                if has_reg:
+                    is_reg = self._is_segment_registered_any_path(seg)
+                    if not self.visible_paths:
+                        if is_reg:
+                            continue
+                    else:
+                        if is_reg and not self._is_segment_in_visible_path(seg):
+                            continue
             start_x = seg.get('start_x', 0)
             start_y = seg.get('start_y', 0)
             end_x = seg.get('end_x', 0)
@@ -752,6 +796,18 @@ class DrawingOverlay(QWidget):
             mapping = self.path_element_mapping.get(path_id, {})
             if seg in mapping.get('segments', []):
                         return True
+        return False
+
+    def _is_component_registered_any_path(self, comp):
+        for mapping in self.path_element_mapping.values():
+            if comp in mapping.get('components', []):
+                return True
+        return False
+
+    def _is_segment_registered_any_path(self, seg):
+        for mapping in self.path_element_mapping.values():
+            if seg in mapping.get('segments', []):
+                return True
         return False
 
     def _draw_selection(self, painter):

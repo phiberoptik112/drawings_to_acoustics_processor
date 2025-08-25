@@ -55,8 +55,9 @@ class SplashScreen(QWidget):
         app_title = get_application_title()
         self.setWindowTitle(app_title)
         self.setGeometry(300, 300, 600, 400)
+        # Scope styles to this widget to avoid leaking to dialogs
         self.setStyleSheet("""
-            QWidget {
+            QWidget#SplashRoot {
                 background-color: #ffffff;
             }
             QLabel#title {
@@ -156,6 +157,8 @@ class SplashScreen(QWidget):
         self.status_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(self.status_label)
         
+        # Give this widget an object name so stylesheet scoping works
+        self.setObjectName("SplashRoot")
         self.setLayout(main_layout)
         
     def load_recent_projects(self):

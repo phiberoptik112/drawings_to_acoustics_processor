@@ -21,6 +21,36 @@ class ProjectDialog(QDialog):
         self.setWindowTitle("New Project")
         self.setModal(True)
         self.resize(500, 350)
+
+        # Ensure readable colors regardless of global styles/dark mode
+        self.setStyleSheet(
+            """
+            QDialog {
+                background-color: #f7f7f7;
+            }
+            QLabel { color: #1f1f1f; }
+            QLineEdit, QTextEdit, QComboBox {
+                background-color: #ffffff;
+                color: #1a1a1a;
+                border: 1px solid #c9c9c9;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QLineEdit:disabled, QTextEdit:disabled, QComboBox:disabled {
+                color: #6b6b6b;
+                background-color: #ececec;
+            }
+            QPushButton {
+                background-color: #0d8bd6;
+                color: white;
+                border: none;
+                padding: 8px 12px;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #0b79ba; }
+            QPushButton:disabled { background-color: #a9a9a9; color: #f0f0f0; }
+            """
+        )
         
         # Main layout
         layout = QVBoxLayout()
