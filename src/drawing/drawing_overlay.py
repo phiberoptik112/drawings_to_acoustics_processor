@@ -830,6 +830,8 @@ class DrawingOverlay(QWidget):
                         pos['x'] = int(pos.get('x', 0)) + dx
                         pos['y'] = int(pos.get('y', 0)) + dy
                     self._update_segments_for_component_move(comp)
+                    # Immediately update base coordinates for moved component
+                    self._update_component_base_coordinates(comp)
             elif self._hit_target and self._hit_target.get('type') == 'segment':
                 seg = self._hit_target.get('ref')
                 endpoint = self._hit_target.get('endpoint')
@@ -848,7 +850,8 @@ class DrawingOverlay(QWidget):
                         self._recompute_segment_length(seg)
                     except Exception:
                         pass
-            self._base_dirty = True
+                    # Update base coordinates for moved segment
+                    self._update_segment_base_coordinates(seg)
             self.update()
 
     def _handle_select_release(self, point):
@@ -967,6 +970,58 @@ class DrawingOverlay(QWidget):
         lr = self.scale_manager.pixels_to_real(lp)
         seg['length_real'] = lr
         seg['length_formatted'] = self.scale_manager.format_distance(lr)
+
+    def _update_component_base_coordinates(self, component: dict) -> None:
+        """Update base coordinates for a specific component to maintain zoom consistency"""
+        try:
+            cur_z = self._current_zoom_factor or 1.0
+            comp_id = id(component)  # Use object identity since components might not have stable IDs
+            
+            # Find and update the component in base cache
+            for i, bc in enumerate(self._base_components):
+                if id(bc) == comp_id or self._components_match(bc, component):
+                    self._base_components[i]['x'] = int(component.get('x', 0) / cur_z)
+                    self._base_components[i]['y'] = int(component.get('y', 0) / cur_z)
+                    if isinstance(component.get('position'), dict):
+                        self._base_components[i]['position'] = {
+                            'x': int(component['position'].get('x', 0) / cur_z),
+                            'y': int(component['position'].get('y', 0) / cur_z),
+                        }
+                    break
+        except Exception as e:
+            print(f"DEBUG: Failed to update component base coordinates: {e}")
+
+    def _update_segment_base_coordinates(self, segment: dict) -> None:
+        """Update base coordinates for a specific segment to maintain zoom consistency"""
+        try:
+            cur_z = self._current_zoom_factor or 1.0
+            seg_id = id(segment)  # Use object identity
+            
+            # Find and update the segment in base cache
+            for i, bs in enumerate(self._base_segments):
+                if id(bs) == seg_id or self._segments_match(bs, segment):
+                    self._base_segments[i]['start_x'] = int(segment.get('start_x', 0) / cur_z)
+                    self._base_segments[i]['start_y'] = int(segment.get('start_y', 0) / cur_z)
+                    self._base_segments[i]['end_x'] = int(segment.get('end_x', 0) / cur_z)
+                    self._base_segments[i]['end_y'] = int(segment.get('end_y', 0) / cur_z)
+                    lp = segment.get('length_pixels', 0)
+                    self._base_segments[i]['length_pixels'] = lp / cur_z if lp else 0
+                    break
+        except Exception as e:
+            print(f"DEBUG: Failed to update segment base coordinates: {e}")
+
+    def _components_match(self, comp1: dict, comp2: dict) -> bool:
+        """Check if two components represent the same element"""
+        return (comp1.get('component_type') == comp2.get('component_type') and
+                abs(comp1.get('x', 0) - comp2.get('x', 0)) < 5 and
+                abs(comp1.get('y', 0) - comp2.get('y', 0)) < 5)
+
+    def _segments_match(self, seg1: dict, seg2: dict) -> bool:
+        """Check if two segments represent the same element"""
+        return (abs(seg1.get('start_x', 0) - seg2.get('start_x', 0)) < 5 and
+                abs(seg1.get('start_y', 0) - seg2.get('start_y', 0)) < 5 and
+                abs(seg1.get('end_x', 0) - seg2.get('end_x', 0)) < 5 and
+                abs(seg1.get('end_y', 0) - seg2.get('end_y', 0)) < 5)
 
     # ---------------------- Utilities ----------------------
     def attach_component_to_nearby_segments(self, component, threshold_px=20):
