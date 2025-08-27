@@ -27,7 +27,7 @@ class ResultsWidget(QWidget):
         self.project = None
         
         # Calculators
-        self.hvac_calculator = HVACPathCalculator()
+        self.hvac_calculator = HVACPathCalculator(self.project_id)
         self.nc_analyzer = NCRatingAnalyzer()
         
         self.init_ui()

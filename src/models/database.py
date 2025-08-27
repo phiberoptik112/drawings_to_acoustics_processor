@@ -8,6 +8,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 import sys
+from contextlib import contextmanager
 
 # Import utilities for deployment detection
 try:
@@ -128,6 +129,33 @@ def get_session():
 	if SessionLocal is None:
 		raise RuntimeError("Database not initialized. Call initialize_database() first.")
 	return SessionLocal()
+
+
+@contextmanager
+def get_hvac_session():
+	"""Context manager for HVAC operations with proper cleanup and error handling
+	
+	This should be used for all HVAC-related database operations to ensure
+	consistent session handling and proper cleanup.
+	
+	Usage:
+		with get_hvac_session() as session:
+			# All DB operations
+			pass
+	"""
+	session = get_session()
+	try:
+		yield session
+		session.commit()
+	except Exception as e:
+		session.rollback()
+		print(f"DEBUG: HVAC session rolled back due to error: {e}")
+		raise
+	finally:
+		try:
+			session.close()
+		except Exception as cleanup_error:
+			print(f"DEBUG: Session cleanup error: {cleanup_error}")
 
 
 def close_database():

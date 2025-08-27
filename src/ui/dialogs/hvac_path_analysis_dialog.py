@@ -32,7 +32,7 @@ class AnalysisThread(QThread):
         super().__init__()
         self.path_ids = path_ids
         self.project_id = project_id
-        self.calculator = HVACPathCalculator()
+        self.calculator = HVACPathCalculator(self.project_id)
         self.debug = debug
         
     def run(self):
@@ -62,7 +62,7 @@ class HVACPathAnalysisDialog(QDialog):
         self.selected_paths = []
         
         # Calculators
-        self.path_calculator = HVACPathCalculator()
+        self.path_calculator = HVACPathCalculator(self.project_id)
         self.nc_analyzer = NCRatingAnalyzer()
         
         self.init_ui()

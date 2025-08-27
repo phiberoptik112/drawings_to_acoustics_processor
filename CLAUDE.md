@@ -46,6 +46,8 @@ python test_mvp.py
 ```bash
 # Activate virtual environment
 source venv/bin/activate  # On Windows: venv\Scripts\activate
+# Alternative virtual environment location (if .venv is used)
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 
 # Deactivate when done
 deactivate
@@ -57,9 +59,15 @@ pip freeze > requirements.txt
 **Key Dependencies:**
 - PySide6 (GUI framework)
 - SQLAlchemy (database ORM)
-- PyMuPDF (PDF processing)
+- PyMuPDF (PDF processing) 
 - openpyxl (Excel export)
 - numpy, scipy (scientific computing)
+- opencv-python (image processing)
+- pytesseract (OCR processing)
+- matplotlib, seaborn (visualization)
+- pandas (data analysis)
+- Pillow (image manipulation)
+- pdf2image (PDF to image conversion)
 
 ## Architecture Overview
 
@@ -85,9 +93,15 @@ src/
 │   └── scale_manager.py   # Coordinate transformation
 ├── calculations/          # Acoustic calculation engines
 │   ├── rt60_calculator.py # RT60 reverberation time
+│   ├── enhanced_rt60_calculator.py # Advanced RT60 features
 │   ├── noise_calculator.py # HVAC noise analysis
 │   ├── hvac_path_calculator.py # Path management system
-│   └── nc_rating_analyzer.py # NC rating compliance
+│   ├── hvac_noise_engine.py # Unified HVAC calculation engine
+│   ├── hvac_validation.py # HVAC calculation validation
+│   ├── nc_rating_analyzer.py # NC rating compliance
+│   ├── treatment_analyzer.py # Acoustic treatment analysis
+│   ├── surface_area_calculator.py # Surface area calculations
+│   └── [specialized duct calculators] # Multiple duct calculation modules
 └── data/                  # Standard libraries and export
     ├── components.py      # HVAC component library
     ├── materials.py       # Acoustic materials database integration
@@ -120,6 +134,18 @@ materials/                 # External acoustic materials database
 - Comprehensive acoustic materials database (1,339+ materials from professional sources)
 - HVAC component noise levels and duct attenuation
 
+## Current Development State
+
+**Active Branch**: `drawing_ui_debugging` - Focus on UI coordinate sync and drawing tool refinements
+**Main Branch**: `main` (2 commits behind active development)
+**Recent Work**: HVAC path creation, coordinate synchronization, segment fittings management
+
+**Current Issues Being Addressed:**
+- Coordinate sync between drawing tools and HVAC path components
+- Element cleanup after HVAC path creation
+- Segment snapping and editing tool improvements
+- UI workflow refinements for drawing overlay system
+
 ## Commands
 
 **Primary Commands:**
@@ -135,6 +161,12 @@ python test_mvp.py
 
 # Development testing (components only)
 python src/test_structure.py
+
+# Additional test commands
+python test_hvac_integration.py    # HVAC integration tests
+python test_dialog_integration.py  # UI dialog tests
+python test_material_search.py     # Material search tests
+python test_space_drawing_integration.py  # Space drawing tests
 ```
 
 **Windows Deployment Commands:**
@@ -194,7 +226,19 @@ deploy.bat
 
 **Run Tests:**
 ```bash
+# Run comprehensive MVP test suite
 python test_mvp.py
+
+# Run specific test categories
+python test_hvac_integration.py     # HVAC system integration
+python test_dialog_integration.py   # UI dialog functionality  
+python test_material_search.py      # Material search system
+python test_space_drawing_integration.py  # Space-drawing integration
+python test_structure.py            # Basic structure validation
+
+# Development testing (for debugging)
+python test_dialog_simulation.py    # Dialog behavior simulation
+python test_button_visibility.py    # UI button placement testing
 ```
 
 ## Implementation Status
@@ -237,6 +281,49 @@ python test_mvp.py
 - NRC (Noise Reduction Coefficient) support
 - Automatic material categorization and filtering
 - Enhanced RT60 calculations with professional materials data
+
+## Debugging and Development
+
+**Current Development Focus:**
+- Coordinate synchronization between drawing tools and HVAC components (`src/drawing/drawing_overlay.py`, `src/calculations/hvac_path_calculator.py`)
+- UI element cleanup after HVAC path creation (`src/ui/dialogs/hvac_path_dialog.py`)
+- Drawing overlay zoom anchoring and scale management (`src/drawing/scale_manager.py`)
+- Segment fitting management and visibility (`src/models/hvac.py`)
+
+**Development Files and Documentation:**
+- `HVAC_PATH_ISSUES_ANALYSIS_2025.md` - Current HVAC pathing issues analysis
+- `DRAWING_OVERLAY_DEBUG_PLAN.md` - Drawing overlay debugging strategy
+- `HVAC_PATHING_IMPLEMENTATION.md` - HVAC pathing system documentation
+- `PATH_VISIBILITY_IMPLEMENTATION.md` - Path visibility system docs
+- `UI_WORKFLOW_REFACTOR_PLAN.md` - UI workflow improvement plans
+
+**Debug Data Location:**
+- `debug_data/` - Contains test databases and debugging information
+- `sampledata/` - Sample PDFs and test data for development
+
+**Common Debugging Commands:**
+```bash
+# Activate virtual environment
+source venv/bin/activate  # or source .venv/bin/activate
+
+# Run application with debug output
+python src/main.py
+
+# Test specific UI components
+python test_button_structure.py     # Test UI button placement
+python test_dialog_simulation.py    # Simulate dialog interactions
+
+# Check database integrity
+python -c "from src.models.database import get_session; print('Database OK')"
+
+# Validate HVAC calculations
+python src/calculations/hvac_validation.py
+```
+
+**Known Issues and Workarounds:**
+- **Coordinate Sync**: Drawing tools may not properly sync coordinates with HVAC path components - check `hvac_path_calculator.py:coordinate_sync_fixes`
+- **Element Cleanup**: HVAC path creation may leave orphaned elements - use element cleanup functions in path dialogs
+- **Scale Management**: Drawing scale may not persist correctly across sessions - verify scale manager state
 
 ## Key Technical Implementation
 
@@ -301,6 +388,19 @@ build/
 - **Testing**: Automated validation of all components
 - **Support**: Complete installation and troubleshooting documentation
 
+**Build Testing:**
+```bash
+# Test current build system
+cd build
+python test_deployment.py
+
+# Validate build requirements
+pip install -r requirements-build.txt
+
+# Test executable generation
+python build.py
+```
+
 ## Notes for Future Development
 
 **Potential Enhancements:**
@@ -322,3 +422,38 @@ build/
 - Export capabilities for professional reporting and documentation
 - Complete test coverage for all major functionality
 - Professional deployment system with automated building and validation
+
+## Development Workflow
+
+**Branch Strategy:**
+- `main`: Stable production-ready code
+- `drawing_ui_debugging`: Active UI and coordinate synchronization work
+- `hvac_features_ui_calcs`: HVAC calculation and UI integration features
+
+**Git Workflow:**
+```bash
+# Check current branch status
+git branch -v
+
+# Switch to development branch
+git checkout drawing_ui_debugging
+
+# View recent development history
+git log --oneline -10
+
+# Check current modifications
+git status
+```
+
+**Development Iteration Process:**
+1. Start with `drawing_ui_debugging` branch for UI/drawing work
+2. Test changes with relevant test suite
+3. Use debug documentation files to track issues
+4. Commit incremental progress with descriptive messages
+5. Merge to main when features are stable
+
+**File Monitoring During Development:**
+- Watch `src/calculations/hvac_path_calculator.py` for coordinate sync changes
+- Monitor `src/ui/dialogs/hvac_path_dialog.py` for UI workflow improvements  
+- Check `src/drawing/drawing_overlay.py` for overlay system modifications
+- Review `src/models/hvac.py` for database model changes
