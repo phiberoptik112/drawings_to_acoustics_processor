@@ -133,7 +133,7 @@ class HVACPathDialog(QDialog):
         self.drawing_id = None
         
         # Calculator
-        self.path_calculator = HVACPathCalculator()
+        self.path_calculator = HVACPathCalculator(self.project_id)
         # Last calculation element results for component context lookups
         self._last_element_results = []
         # Selected Mechanical Unit (library) source data for calculations
@@ -299,6 +299,13 @@ class HVACPathDialog(QDialog):
         self.calculate_btn = QPushButton("Calculate Noise")
         self.calculate_btn.clicked.connect(self.calculate_path_noise)
         button_layout.addWidget(self.calculate_btn)
+        
+        # Debug button (only show if HVAC_DEBUG_EXPORT is enabled or if we have a path ID)
+        import os
+        if os.environ.get('HVAC_DEBUG_EXPORT') or (hasattr(self, 'path_id') and self.path_id):
+            self.debug_btn = QPushButton("Debug Info")
+            self.debug_btn.clicked.connect(self.show_debug_dialog)
+            button_layout.addWidget(self.debug_btn)
         
         self.cancel_btn = QPushButton("Cancel")
         self.cancel_btn.clicked.connect(self.reject)
@@ -590,6 +597,106 @@ class HVACPathDialog(QDialog):
         except Exception as e:
             print(f"Error loading components: {e}")
     
+    def suggest_mechanical_unit_for_component(self, component):
+        """Suggest a mechanical unit match for the given HVAC component"""
+        try:
+            from src.calculations.hvac_path_calculator import HVACPathCalculator
+            calculator = HVACPathCalculator(self.project_id)
+            matched_unit = calculator.find_matching_mechanical_unit(component, self.project_id)
+            
+            if matched_unit:
+                import os
+                if os.environ.get('HVAC_DEBUG_EXPORT'):
+                    print(f"DEBUG: Path dialog suggests unit '{matched_unit.name}' for component '{getattr(component, 'name', 'unnamed')}'")
+                
+                # Show suggestion dialog
+                from PyQt5.QtWidgets import QMessageBox
+                reply = QMessageBox.question(
+                    self, 
+                    "Mechanical Unit Match", 
+                    f"Found mechanical unit match:\n\n"
+                    f"Component: {getattr(component, 'name', 'unnamed')} ({getattr(component, 'component_type', 'unknown')})\n"
+                    f"Suggested Unit: {matched_unit.name} ({matched_unit.unit_type or 'unknown'})\n\n"
+                    f"Add this mechanical unit as the source for this path?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    # Add the mechanical unit to the path as primary source
+                    unit = matched_unit
+                    # Create a lightweight component stub for the mechanical unit
+                    mech_component = type('Component', (), {
+                        'id': None,  # not persisted to hvac_components
+                        'name': unit.name,
+                        'component_type': unit.unit_type or 'ahu',
+                        'noise_level': 80.0,  # Placeholder
+                        '_mechanical_unit_id': unit.id,  # Store reference
+                    })()
+                    
+                    # Insert at the beginning as primary source
+                    self.components.insert(0, mech_component)
+                    self.update_component_list()
+                    self.update_summary()
+                    return True
+            
+        except Exception as e:
+            import os
+            if os.environ.get('HVAC_DEBUG_EXPORT'):
+                print(f"DEBUG: Mechanical unit suggestion failed: {e}")
+        
+        return False
+
+    def show_validation_results(self, validation_result):
+        """Show validation results to the user"""
+        if not validation_result or not validation_result.has_messages():
+            return
+        
+        from PyQt5.QtWidgets import QMessageBox
+        
+        message_parts = []
+        
+        if validation_result.errors:
+            message_parts.append("ERRORS:")
+            for error in validation_result.errors:
+                message_parts.append(f"• {error}")
+            message_parts.append("")
+        
+        if validation_result.warnings:
+            message_parts.append("WARNINGS:")
+            for warning in validation_result.warnings:
+                message_parts.append(f"• {warning}")
+            message_parts.append("")
+        
+        if validation_result.info:
+            message_parts.append("INFORMATION:")
+            for info in validation_result.info:
+                message_parts.append(f"• {info}")
+        
+        if validation_result.errors:
+            QMessageBox.critical(self, "Path Validation Issues", "\n".join(message_parts))
+        elif validation_result.warnings:
+            QMessageBox.warning(self, "Path Validation Issues", "\n".join(message_parts))
+        else:
+            QMessageBox.information(self, "Path Validation", "\n".join(message_parts))
+
+    def show_debug_dialog(self):
+        """Show the HVAC debug dialog"""
+        try:
+            from src.ui.dialogs.hvac_debug_dialog import HVACDebugDialog
+            
+            path_id = getattr(self, 'path_id', None) or (self.path.id if hasattr(self, 'path') and self.path else None)
+            
+            if not path_id:
+                QMessageBox.warning(self, "Debug Not Available", 
+                                  "Debug information is only available for saved paths.")
+                return
+            
+            debug_dialog = HVACDebugDialog(self, self.project_id, path_id)
+            debug_dialog.exec()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Debug Error", f"Failed to open debug dialog:\n{str(e)}")
+
     def load_path_data(self):
         """Load existing path data for editing"""
         if not self.path:
@@ -688,44 +795,32 @@ class HVACPathDialog(QDialog):
     
     def update_segment_list(self):
         """Update the segment list display"""
-        # Re-sort segments by connectivity if possible for consistent display and calculation order
+        # Use unified segment ordering from path calculator for consistency
         try:
-            segs = list(self.segments)
-            from_map = {}
-            to_set = set()
-            for s in segs:
-                fcid = getattr(s, 'from_component_id', None) or (getattr(getattr(s, 'from_component', None), 'id', None))
-                tcid = getattr(s, 'to_component_id', None) or (getattr(getattr(s, 'to_component', None), 'id', None))
-                if fcid is not None and fcid not in from_map:
-                    from_map[fcid] = s
-                if tcid is not None:
-                    to_set.add(tcid)
-            start = None
-            for fcid in list(from_map.keys()):
-                if fcid not in to_set:
-                    start = fcid
-                    break
-            ordered = []
-            visited = set()
-            current = start
-            max_iters = len(segs) + 2
-            iters = 0
-            while current is not None and iters < max_iters:
-                iters += 1
-                seg = from_map.get(current)
-                if seg is None:
-                    break
-                if seg in visited:
-                    break
-                ordered.append(seg)
-                visited.add(seg)
-                current = getattr(seg, 'to_component_id', None) or (getattr(getattr(seg, 'to_component', None), 'id', None))
-            if len(ordered) < len(segs):
-                remaining = [s for s in segs if s not in ordered]
-                ordered.extend(sorted(remaining, key=lambda s: getattr(s, 'segment_order', 0)))
-            # Persist the reordering in-memory for UI and save flow
-            self.segments = ordered
-        except Exception:
+            from src.calculations.hvac_path_calculator import HVACPathCalculator
+            
+            # Get preferred source ID if available
+            preferred_source_id = getattr(self, 'primary_source_component_id', None)
+            
+            # Use the centralized ordering algorithm
+            if hasattr(self, 'project_id'):
+                calculator = HVACPathCalculator(self.project_id)
+                ordered = calculator.order_segments_for_path(list(self.segments), preferred_source_id)
+                # Sync display order into the in-memory segment objects so labels match
+                for idx, seg in enumerate(ordered, start=1):
+                    try:
+                        setattr(seg, 'segment_order', idx)
+                    except Exception:
+                        pass
+                self.segments = ordered
+            else:
+                # Fallback to stored order if no project context
+                self.segments = sorted(list(self.segments), key=lambda s: getattr(s, 'segment_order', 0))
+                
+        except Exception as e:
+            import os
+            if os.environ.get('HVAC_DEBUG_EXPORT'):
+                print(f"DEBUG: Segment ordering in dialog failed: {e}, using stored order")
             # Fallback to stored order
             self.segments = sorted(list(self.segments), key=lambda s: getattr(s, 'segment_order', 0))
 
@@ -857,19 +952,19 @@ class HVACPathDialog(QDialog):
 
         # Iterate segments between components
         segs = sorted(self.segments, key=lambda s: getattr(s, 'segment_order', 0)) if self.segments else []
-        def seg_label(seg):
+        def seg_label(seg, idx):
             length = getattr(seg, 'length', 0) or 0
             shape = getattr(seg, 'duct_shape', '') or ''
             w = getattr(seg, 'duct_width', '') or ''
             h = getattr(seg, 'duct_height', '') or ''
             dim = f" {int(w)}x{int(h)}" if w and h else ""
-            return f"segment {getattr(seg, 'segment_order', '?')}: {length:.1f} ft{dim} {shape}".strip()
+            return f"segment {idx}: {length:.1f} ft{dim} {shape}".strip()
 
         for i, comp in enumerate(components[1:], start=1):
             # arrow + segment info block if available
             lines.append("     |")
             if i-1 < len(segs):
-                seg_text = seg_label(segs[i-1])
+                seg_text = seg_label(segs[i-1], i)
                 start_idx = len(lines)
                 for l in box(seg_text):
                     lines.append("     " + l)
@@ -1081,9 +1176,10 @@ class HVACPathDialog(QDialog):
     def add_existing_component(self, item):
         """Add an existing component to the path"""
         data_obj = item.data(Qt.UserRole)
+        is_mechanical_unit = isinstance(data_obj, MechanicalUnit)
         
         # If this is a MechanicalUnit, wrap into a lightweight component-like object
-        if isinstance(data_obj, MechanicalUnit):
+        if is_mechanical_unit:
             unit = data_obj
             # Create a simple, dialog-scoped component stub
             component = type('Component', (), {
@@ -1102,6 +1198,17 @@ class HVACPathDialog(QDialog):
             return
         
         self.components.append(component)
+        
+        # Auto-suggest mechanical unit for drawn components (but not for already selected mechanical units)
+        if not is_mechanical_unit and len(self.components) == 1:
+            # This is the first component and it's a drawn component, suggest mechanical unit
+            try:
+                self.suggest_mechanical_unit_for_component(component)
+            except Exception as e:
+                import os
+                if os.environ.get('HVAC_DEBUG_EXPORT'):
+                    print(f"DEBUG: Could not suggest mechanical unit: {e}")
+        
         self.update_component_list()
         self.update_summary()
     
@@ -1176,6 +1283,17 @@ class HVACPathDialog(QDialog):
                 self._last_element_results = results['path_elements']
                 self.display_analysis_results(results)
                 self.update_nc_summary(results)
+                
+                # Show validation results if available
+                try:
+                    path_data = self.path_calculator.build_path_data_from_db(self.path)
+                    if path_data and path_data.get('validation_result'):
+                        self.show_validation_results(path_data['validation_result'])
+                except Exception as e:
+                    import os
+                    if os.environ.get('HVAC_DEBUG_EXPORT'):
+                        print(f"DEBUG: Could not show validation results: {e}")
+                
                 return
 
             # In-memory preview for unsaved/new paths
@@ -1247,13 +1365,13 @@ class HVACPathDialog(QDialog):
             html += f"<b>Total Attenuation:</b> {float(total_att):.1f} dB<br>"
             html += f"<b>NC Rating:</b> NC-{results['nc_rating']:.0f}</p>"
             
-            # Segment breakdown
+            # Segment breakdown (exclude non-geometry elements and renumber sequentially)
             html += "<h4>Segment Breakdown</h4>"
             html += "<table border='1' cellpadding='5'>"
             html += "<tr><th>Segment</th><th>Length</th><th>Noise Before</th><th>Noise After</th><th>Attenuation</th></tr>"
             
-            for segment_result in results['path_segments']:
-                seg_num = segment_result.get('segment_number') or segment_result.get('element_order') or ''
+            seg_rows = [s for s in (results.get('path_segments') or []) if (s.get('element_type') in {"duct", "elbow", "junction", "flex_duct"})]
+            for idx, segment_result in enumerate(seg_rows, start=1):
                 length = segment_result.get('length', 0.0) or 0.0
                 nb = float(segment_result.get('noise_before', 0.0) or 0.0)
                 na = float(segment_result.get('noise_after', 0.0) or 0.0)
@@ -1264,7 +1382,7 @@ class HVACPathDialog(QDialog):
                 if att is None:
                     # fallback from parts
                     att = (segment_result.get('duct_loss') or 0.0) - (segment_result.get('generated_dba') or 0.0)
-                html += f"<tr><td>{seg_num}</td>"
+                html += f"<tr><td>{idx}</td>"
                 html += f"<td>{float(length):.1f} ft</td>"
                 html += f"<td>{nb:.1f} dB</td>"
                 html += f"<td>{na:.1f} dB</td>"
@@ -1384,55 +1502,82 @@ class HVACPathDialog(QDialog):
                     QMessageBox.warning(self, "Creation Failed", "Failed to create HVAC path from drawing elements.")
                     return
             else:
-                # Standard database path creation / update
-                session = get_session()
+                # Standard database path creation / update using unified session management
+                from models.database import get_hvac_session
                 
                 if self.is_editing:
-                    # Update existing path (reload session-bound)
-                    db_path = session.query(HVACPath).filter(HVACPath.id == self.path.id).first()
-                    if db_path is None:
-                        session.close()
-                        QMessageBox.warning(self, "Update Failed", "Selected path could not be found.")
-                        return
-                    db_path.name = name
-                    db_path.path_type = self.type_combo.currentText()
-                    db_path.description = self.description_text.toPlainText()
-                    # Update target space
-                    space_id = self.space_combo.currentData()
-                    db_path.target_space_id = space_id
-                    session.commit()
-                    path = db_path
+                    # Update existing path using session context manager
+                    with get_hvac_session() as session:
+                        db_path = session.query(HVACPath).filter(HVACPath.id == self.path.id).first()
+                        if db_path is None:
+                            QMessageBox.warning(self, "Update Failed", "Selected path could not be found.")
+                            return
+                        db_path.name = name
+                        db_path.path_type = self.type_combo.currentText()
+                        db_path.description = self.description_text.toPlainText()
+                        # Update target space
+                        space_id = self.space_combo.currentData()
+                        db_path.target_space_id = space_id
+                        path = db_path
+                        # Commit handled by context manager
                 else:
-                    # Create new path
-                    space_id = self.space_combo.currentData()
-                    
-                    path = HVACPath(
-                        project_id=self.project_id,
-                        name=name,
-                        path_type=self.type_combo.currentText(),
-                        description=self.description_text.toPlainText(),
-                        target_space_id=space_id
-                    )
-                    session.add(path)
-                    session.flush()  # Get ID
-                    
-                    # Create segments (persist new records based on dialog segment stubs)
-                    for i, segment in enumerate(self.segments):
-                        seg = HVACSegment(
-                            hvac_path_id=path.id,
-                            from_component_id=getattr(segment, 'from_component_id', None) or (segment.from_component.id if hasattr(segment, 'from_component') and segment.from_component else None),
-                            to_component_id=getattr(segment, 'to_component_id', None) or (segment.to_component.id if hasattr(segment, 'to_component') and segment.to_component else None),
-                            length=getattr(segment, 'length', None) or getattr(segment, 'length_real', 0) or 0,
-                            segment_order=i + 1,
-                            duct_width=getattr(segment, 'duct_width', None) or 12,
-                            duct_height=getattr(segment, 'duct_height', None) or 8,
-                            duct_shape=getattr(segment, 'duct_shape', None) or 'rectangular',
-                            duct_type=getattr(segment, 'duct_type', None) or 'sheet_metal',
+                    # Create new path using session context manager
+                    with get_hvac_session() as session:
+                        space_id = self.space_combo.currentData()
+                        
+                        path = HVACPath(
+                            project_id=self.project_id,
+                            name=name,
+                            path_type=self.type_combo.currentText(),
+                            description=self.description_text.toPlainText(),
+                            target_space_id=space_id
                         )
-                        session.add(seg)
-                    session.commit()
-                
-                session.close()
+                        session.add(path)
+                        session.flush()  # Get ID
+                        
+                        # Create segments with unified ordering before saving
+                        # Ensure segments are ordered consistently before persisting to database
+                        from src.calculations.hvac_path_calculator import HVACPathCalculator
+                        
+                        ordered_segments = self.segments
+                        try:
+                            calculator = HVACPathCalculator(self.project_id)
+                            preferred_source_id = getattr(path, 'primary_source_id', None)
+                            ordered_segments = calculator.order_segments_for_path(
+                                list(self.segments), 
+                                preferred_source_id
+                            )
+                            
+                            # Debug logging for save ordering
+                            import os
+                            if os.environ.get('HVAC_DEBUG_EXPORT'):
+                                print(f"DEBUG: Saving {len(ordered_segments)} segments in ordered sequence")
+                                for i, seg in enumerate(ordered_segments):
+                                    seg_id = getattr(seg, 'id', f'new_{i}')
+                                    from_id = getattr(seg, 'from_component_id', None) or (getattr(getattr(seg, 'from_component', None), 'id', None))
+                                    to_id = getattr(seg, 'to_component_id', None) or (getattr(getattr(seg, 'to_component', None), 'id', None))
+                                    print(f"DEBUG: Save position {i+1}: Segment {seg_id}: {from_id} -> {to_id}")
+                                    
+                        except Exception as e:
+                            import os
+                            if os.environ.get('HVAC_DEBUG_EXPORT'):
+                                print(f"DEBUG: Failed to order segments for save: {e}, using current order")
+                        
+                        # Create segments (persist new records based on ordered dialog segment stubs)
+                        for i, segment in enumerate(ordered_segments):
+                            seg = HVACSegment(
+                                hvac_path_id=path.id,
+                                from_component_id=getattr(segment, 'from_component_id', None) or (segment.from_component.id if hasattr(segment, 'from_component') and segment.from_component else None),
+                                to_component_id=getattr(segment, 'to_component_id', None) or (segment.to_component.id if hasattr(segment, 'to_component') and segment.to_component else None),
+                                length=getattr(segment, 'length', None) or getattr(segment, 'length_real', 0) or 0,
+                                segment_order=i + 1,  # Now reflects connectivity order
+                                duct_width=getattr(segment, 'duct_width', None) or 12,
+                                duct_height=getattr(segment, 'duct_height', None) or 8,
+                                duct_shape=getattr(segment, 'duct_shape', None) or 'rectangular',
+                                duct_type=getattr(segment, 'duct_type', None) or 'sheet_metal',
+                            )
+                            session.add(seg)
+                        # Commit handled by context manager
                 
                 self.path = path
                 self.path_saved.emit(path)

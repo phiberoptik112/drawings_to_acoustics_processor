@@ -32,27 +32,33 @@ class HVACReceiverDialog(QDialog):
         self.space_id = space_id
         self.space = None
         self.paths: List[HVACPath] = []
-        self.path_calculator = HVACPathCalculator()
         self.room_calc = ReceiverRoomSoundCorrection()
         self.engine = HVACNoiseEngine()
         self._latest_results = None  # Stored after successful calculation
 
         self._load_space()
+        
+        # Initialize path calculator with project_id from the space
+        project_id = self.space.project_id if self.space else None
+        self.path_calculator = HVACPathCalculator(project_id)
+        
         self._init_ui()
 
     # --- Data loading ---
     def _load_space(self) -> None:
-        session = get_session()
-        try:
+        from models.database import get_hvac_session
+        
+        with get_hvac_session() as session:
             self.space = (
                 session.query(Space)
-                .options(selectinload(Space.hvac_paths).selectinload(HVACPath.segments))
+                .options(
+                    selectinload(Space.hvac_paths).selectinload(HVACPath.segments),
+                    selectinload(Space.hvac_paths).selectinload(HVACPath.primary_source)
+                )
                 .filter(Space.id == self.space_id)
                 .first()
             )
             self.paths = list(self.space.hvac_paths) if self.space else []
-        finally:
-            session.close()
 
     # --- UI ---
     def _init_ui(self) -> None:
@@ -255,16 +261,36 @@ class HVACReceiverDialog(QDialog):
             for row, path in enumerate(self.paths):
                 # Get latest spectrum at terminal for this path
                 result = self.path_calculator.calculate_path_noise(path.id)
-                spectrum = result.segment_results and []  # noqa: keep attribute for clarity
+                
+                # Debug logging to understand what we're getting
+                import os
+                debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+                
                 try:
-                    calc = self.path_calculator.noise_calculator.calculate_hvac_path_noise(
-                        self.path_calculator.build_path_data_from_db(path)
-                    )
+                    # Build path data using our new session-based method
+                    path_data = self.path_calculator.build_path_data_from_db(path)
+                    if not path_data:
+                        if debug_enabled:
+                            print(f"DEBUG: No path data for path {path.id} ({getattr(path, 'name', 'unnamed')})")
+                        continue
+                    
+                    # Calculate noise using the noise calculator
+                    calc = self.path_calculator.noise_calculator.calculate_hvac_path_noise(path_data)
                     term_spectrum = calc.get('octave_band_spectrum', [])
-                except Exception:
+                    
+                    if debug_enabled:
+                        print(f"DEBUG: Path {path.id} ({getattr(path, 'name', 'unnamed')}):")
+                        print(f"  Terminal spectrum: {term_spectrum}")
+                        print(f"  Path data source: {path_data.get('source_component', {})}")
+                        
+                except Exception as e:
+                    if debug_enabled:
+                        print(f"DEBUG: Error calculating path {path.id}: {e}")
                     term_spectrum = []
 
                 if not term_spectrum:
+                    if debug_enabled:
+                        print(f"DEBUG: No terminal spectrum for path {path.id}, skipping")
                     continue
 
                 # Convert to 7 bands (drop 8000 Hz if present)

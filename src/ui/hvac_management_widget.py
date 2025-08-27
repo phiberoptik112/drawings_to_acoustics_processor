@@ -41,7 +41,7 @@ class HVACManagementWidget(QWidget):
         self.current_component = None
         
         # Calculator
-        self.path_calculator = HVACPathCalculator()
+        self.path_calculator = HVACPathCalculator(self.project_id)
         
         # Data refresh timer
         self.refresh_timer = QTimer()

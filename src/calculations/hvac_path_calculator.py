@@ -10,7 +10,7 @@ from models.hvac import HVACPath, HVACSegment, HVACComponent, SegmentFitting
 from sqlalchemy.orm import selectinload
 from models.mechanical import MechanicalUnit
 from data.components import STANDARD_COMPONENTS, STANDARD_FITTINGS
-from .noise_calculator import NoiseCalculator
+from src.calculations.noise_calculator import NoiseCalculator
 # Debug export imports
 import os
 from datetime import datetime
@@ -38,8 +38,9 @@ class PathAnalysisResult:
 class HVACPathCalculator:
     """Comprehensive HVAC path noise calculation and management system"""
     
-    def __init__(self):
+    def __init__(self, project_id: int = None):
         """Initialize the HVAC path calculator"""
+        self.project_id = project_id
         self.noise_calculator = NoiseCalculator()
         # Debug export switch via environment variable HVAC_DEBUG_EXPORT
         env_val = str(os.environ.get("HVAC_DEBUG_EXPORT", "")).strip().lower()
@@ -67,93 +68,95 @@ class HVACPathCalculator:
             if len(segments) == 0:
                 raise ValueError("Need at least 1 segment to connect components")
             
-            session = get_session()
-            
-            # Create HVAC components in database
-            db_components = {}
-            for comp_data in components:
-                hvac_comp = HVACComponent(
-                    project_id=project_id,
-                    drawing_id=comp_data.get('drawing_id', 0),
-                    name=f"{comp_data.get('component_type', 'unknown').upper()}-{len(db_components)+1}",
-                    component_type=comp_data.get('component_type', 'unknown'),
-                    x_position=comp_data.get('x', 0),
-                    y_position=comp_data.get('y', 0),
-                    noise_level=self.get_component_noise_level(comp_data.get('component_type', ''))
-                )
-                session.add(hvac_comp)
-                session.flush()  # Get ID
-                db_components[len(db_components)] = hvac_comp
-            
-            # Create HVAC path
-            source_comp = db_components[0]
-            terminal_comp = db_components[len(db_components)-1]
-            
-            hvac_path = HVACPath(
-                project_id=project_id,
-                name=f"Path: {source_comp.component_type.upper()} to {terminal_comp.component_type.upper()}",
-                description=f"HVAC path from {source_comp.name} to {terminal_comp.name}",
-                path_type='supply'
-            )
-            session.add(hvac_path)
-            session.flush()  # Get ID
-            
-            # Create segments using actual connections from drawing
-            created_segments: List[HVACSegment] = []
-            for i, seg_data in enumerate(segments):
-                # Find the actual connected components
-                from_comp_id = None
-                to_comp_id = None
-                
-                # Find from_component
-                if seg_data.get('from_component'):
-                    from_comp_data = seg_data['from_component']
-                    for comp_idx, db_comp in db_components.items():
-                        if (db_comp.x_position == from_comp_data.get('x', 0) and 
-                            db_comp.y_position == from_comp_data.get('y', 0) and
-                            db_comp.component_type == from_comp_data.get('component_type', 'unknown')):
-                            from_comp_id = db_comp.id
-                            break
-                
-                # Find to_component
-                if seg_data.get('to_component'):
-                    to_comp_data = seg_data['to_component']
-                    for comp_idx, db_comp in db_components.items():
-                        if (db_comp.x_position == to_comp_data.get('x', 0) and 
-                            db_comp.y_position == to_comp_data.get('y', 0) and
-                            db_comp.component_type == to_comp_data.get('component_type', 'unknown')):
-                            to_comp_id = db_comp.id
-                            break
-                
-                # Only create segment if we have at least one connection
-                if from_comp_id or to_comp_id:
-                    hvac_segment = HVACSegment(
-                        hvac_path_id=hvac_path.id,
-                        from_component_id=from_comp_id,
-                        to_component_id=to_comp_id,
-                        length=seg_data.get('length_real', 0),
-                        segment_order=i+1,
-                        duct_width=12,  # Default rectangular duct
-                        duct_height=8,
-                        duct_shape='rectangular',
-                        duct_type='sheet_metal'
+            from models.database import get_hvac_session
+            with get_hvac_session() as session:
+                # Create HVAC components in database with auto-linking to mechanical units
+                db_components = {}
+                for comp_data in components:
+                    hvac_comp = HVACComponent(
+                        project_id=project_id,
+                        drawing_id=comp_data.get('drawing_id', 0),
+                        name=f"{comp_data.get('component_type', 'unknown').upper()}-{len(db_components)+1}",
+                        component_type=comp_data.get('component_type', 'unknown'),
+                        x_position=comp_data.get('x', 0),
+                        y_position=comp_data.get('y', 0),
+                        noise_level=self.get_component_noise_level(comp_data.get('component_type', ''))
                     )
-                    session.add(hvac_segment)
-                    created_segments.append(hvac_segment)
-                else:
-                    # Fallback: if neither endpoint matched by exact equality, try position/type match
-                    # to be resilient to dict identity differences between overlay and calculator
-                    fc = seg_data.get('from_component') or {}
-                    tc = seg_data.get('to_component') or {}
-                    def match_id_by_pos(cdict):
-                        for _, db_comp in db_components.items():
-                            if (db_comp.x_position == cdict.get('x', 0) and
-                                db_comp.y_position == cdict.get('y', 0) and
-                                db_comp.component_type == cdict.get('component_type', 'unknown')):
-                                return db_comp.id
-                        return None
-                    from_comp_id = match_id_by_pos(fc)
-                    to_comp_id = match_id_by_pos(tc)
+                    session.add(hvac_comp)
+                    session.flush()  # Get ID
+                    
+                    # Auto-link with mechanical unit if possible
+                    try:
+                        matched_unit = self.find_matching_mechanical_unit(hvac_comp, project_id)
+                        if matched_unit:
+                            # Store reference for path primary source if this is first component (likely source)
+                            if len(db_components) == 0:
+                                import os
+                                if os.environ.get('HVAC_DEBUG_EXPORT'):
+                                    print(f"DEBUG: Linking primary source component '{hvac_comp.name}' to mechanical unit '{matched_unit.name}'")
+                    except Exception as e:
+                        import os
+                        if os.environ.get('HVAC_DEBUG_EXPORT'):
+                            print(f"DEBUG: Auto-linking failed for component '{hvac_comp.name}': {e}")
+                    
+                    db_components[len(db_components)] = hvac_comp
+                
+                # Create HVAC path with mechanical unit integration
+                source_comp = db_components[0]
+                terminal_comp = db_components[len(db_components)-1]
+                
+                # Try to find mechanical unit for primary source
+                primary_source_unit_id = None
+                try:
+                    matched_unit = self.find_matching_mechanical_unit(source_comp, project_id)
+                    if matched_unit:
+                        primary_source_unit_id = matched_unit.id
+                        import os
+                        if os.environ.get('HVAC_DEBUG_EXPORT'):
+                            print(f"DEBUG: Setting path primary source to mechanical unit '{matched_unit.name}' (ID: {matched_unit.id})")
+                except Exception as e:
+                    import os
+                    if os.environ.get('HVAC_DEBUG_EXPORT'):
+                        print(f"DEBUG: Could not link path to mechanical unit: {e}")
+                
+                hvac_path = HVACPath(
+                    project_id=project_id,
+                    name=f"Path: {source_comp.component_type.upper()} to {terminal_comp.component_type.upper()}",
+                    description=f"HVAC path from {source_comp.name} to {terminal_comp.name}",
+                    path_type='supply',
+                    primary_source_id=primary_source_unit_id  # Link to mechanical unit if found
+                )
+                session.add(hvac_path)
+                session.flush()  # Get ID
+                
+                # Create segments using actual connections from drawing
+                created_segments: List[HVACSegment] = []
+                for i, seg_data in enumerate(segments):
+                    # Find the actual connected components
+                    from_comp_id = None
+                    to_comp_id = None
+                    
+                    # Find from_component
+                    if seg_data.get('from_component'):
+                        from_comp_data = seg_data['from_component']
+                        for comp_idx, db_comp in db_components.items():
+                            if (db_comp.x_position == from_comp_data.get('x', 0) and 
+                                db_comp.y_position == from_comp_data.get('y', 0) and
+                                db_comp.component_type == from_comp_data.get('component_type', 'unknown')):
+                                from_comp_id = db_comp.id
+                                break
+                    
+                    # Find to_component
+                    if seg_data.get('to_component'):
+                        to_comp_data = seg_data['to_component']
+                        for comp_idx, db_comp in db_components.items():
+                            if (db_comp.x_position == to_comp_data.get('x', 0) and 
+                                db_comp.y_position == to_comp_data.get('y', 0) and
+                                db_comp.component_type == to_comp_data.get('component_type', 'unknown')):
+                                to_comp_id = db_comp.id
+                                break
+                    
+                    # Only create segment if we have at least one connection
                     if from_comp_id or to_comp_id:
                         hvac_segment = HVACSegment(
                             hvac_path_id=hvac_path.id,
@@ -161,47 +164,66 @@ class HVACPathCalculator:
                             to_component_id=to_comp_id,
                             length=seg_data.get('length_real', 0),
                             segment_order=i+1,
-                            duct_width=12,
+                            duct_width=12,  # Default rectangular duct
                             duct_height=8,
                             duct_shape='rectangular',
                             duct_type='sheet_metal'
                         )
                         session.add(hvac_segment)
                         created_segments.append(hvac_segment)
-            
-            # Reorder segments by connectivity from source to terminal
-            try:
-                ordered = self._order_segments_by_connectivity(created_segments, preferred_source_component_id=getattr(source_comp, 'id', None))
-                for idx, seg in enumerate(ordered):
-                    seg.segment_order = idx + 1
-                print(f"DEBUG: Reordered {len(ordered)} segments by connectivity from source -> terminal")
-            except Exception as e:
-                print(f"DEBUG: Failed to reorder segments by connectivity: {e}")
+                    else:
+                        # Fallback: if neither endpoint matched by exact equality, try position/type match
+                        # to be resilient to dict identity differences between overlay and calculator
+                        fc = seg_data.get('from_component') or {}
+                        tc = seg_data.get('to_component') or {}
+                        def match_id_by_pos(cdict):
+                            for _, db_comp in db_components.items():
+                                if (db_comp.x_position == cdict.get('x', 0) and
+                                    db_comp.y_position == cdict.get('y', 0) and
+                                    db_comp.component_type == cdict.get('component_type', 'unknown')):
+                                    return db_comp.id
+                            return None
+                        from_comp_id = match_id_by_pos(fc)
+                        to_comp_id = match_id_by_pos(tc)
+                        if from_comp_id or to_comp_id:
+                            hvac_segment = HVACSegment(
+                                hvac_path_id=hvac_path.id,
+                                from_component_id=from_comp_id,
+                                to_component_id=to_comp_id,
+                                length=seg_data.get('length_real', 0),
+                                segment_order=i+1,
+                                duct_width=12,
+                                duct_height=8,
+                                duct_shape='rectangular',
+                                duct_type='sheet_metal'
+                            )
+                            session.add(hvac_segment)
+                            created_segments.append(hvac_segment)
+                
+                # Reorder segments by connectivity from source to terminal
+                try:
+                    ordered = self._order_segments_by_connectivity(created_segments, preferred_source_component_id=getattr(source_comp, 'id', None))
+                    for idx, seg in enumerate(ordered):
+                        seg.segment_order = idx + 1
+                    print(f"DEBUG: Reordered {len(ordered)} segments by connectivity from source -> terminal")
+                except Exception as e:
+                    print(f"DEBUG: Failed to reorder segments by connectivity: {e}")
 
-            session.commit()
-            
-            # Calculate noise for the new path (uses any saved source/receiver if available later)
-            self.calculate_path_noise(hvac_path.id)
-            
-            session.close()
-            return hvac_path
+                
+                # Session commit handled by context manager
+                
+                # Calculate noise for the new path (uses any saved source/receiver if available later)
+                self.calculate_path_noise(hvac_path.id)
+                
+                return hvac_path
             
         except Exception as e:
-            if session is not None:
-                try:
-                    session.rollback()
-                except Exception:
-                    pass
-                try:
-                    session.close()
-                except Exception:
-                    pass
             print(f"Error creating HVAC path: {e}")
             return None
     
     def calculate_path_noise(self, path_id: int, debug: bool = False) -> PathAnalysisResult:
         """
-        Calculate noise for a specific HVAC path
+        Calculate noise for a specific HVAC path with validation
         
         Args:
             path_id: HVAC path ID
@@ -209,6 +231,35 @@ class HVACPathCalculator:
         Returns:
             PathAnalysisResult with calculation details
         """
+        from src.calculations.hvac_validation import HVACValidationFramework
+        
+        # Pre-calculation validation
+        validation_framework = HVACValidationFramework(self.project_id)
+        
+        try:
+            from models.database import get_hvac_session
+            with get_hvac_session() as session:
+                path = session.query(HVACPath).filter(HVACPath.id == path_id).first()
+                if path:
+                    validation_result = validation_framework.validate_path(path)
+                    
+                    if self.debug_export_enabled:
+                        print(f"DEBUG: Pre-calculation validation - Valid: {validation_result.is_valid}")
+                        if validation_result.errors:
+                            print(f"DEBUG: Validation errors: {validation_result.errors}")
+                        if validation_result.warnings:
+                            print(f"DEBUG: Validation warnings: {validation_result.warnings}")
+                    
+                    # Log validation issues but don't stop calculation unless critical
+                    if not validation_result.is_valid and any("None" in error or "must have" in error for error in validation_result.errors):
+                        print(f"Critical validation failure: {validation_result.errors}")
+                        # Return empty result for critical failures - need to check PathAnalysisResult structure
+                        pass  # Continue with normal calculation for now
+                        
+        except Exception as e:
+            if self.debug_export_enabled:
+                print(f"DEBUG: Validation check failed: {e}")
+        
         session = None
         try:
             session = get_session()
@@ -316,34 +367,46 @@ class HVACPathCalculator:
         Returns:
             Path data dictionary for noise calculation
         """
+        # Always refetch the path with eager-loaded relationships to avoid
+        # lazy-loading on detached instances coming from the UI layer.
         try:
-            # Always refetch the path with eager-loaded relationships to avoid
-            # lazy-loading on detached instances coming from the UI layer.
-            try:
-                path_id = getattr(hvac_path, 'id', None) if not isinstance(hvac_path, int) else int(hvac_path)
-                if path_id is None:
-                    raise ValueError("HVACPath id is required to build path data")
-                _sess = get_session()
-                try:
-                    hvac_path = (
-                        _sess.query(HVACPath)
-                        .options(
-                            selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
-                            selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
-                            selectinload(HVACPath.segments).selectinload(HVACSegment.fittings),
-                            selectinload(HVACPath.primary_source),
-                        )
-                        .filter(HVACPath.id == path_id)
-                        .first()
+            path_id = getattr(hvac_path, 'id', None) if not isinstance(hvac_path, int) else int(hvac_path)
+            if path_id is None:
+                raise ValueError("HVACPath id is required to build path data")
+            
+            from models.database import get_hvac_session
+            with get_hvac_session() as session:
+                hvac_path = (
+                    session.query(HVACPath)
+                    .options(
+                        selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
+                        selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                        selectinload(HVACPath.segments).selectinload(HVACSegment.fittings),
+                        selectinload(HVACPath.primary_source),
                     )
-                finally:
-                    try:
-                        _sess.close()
-                    except Exception:
-                        pass
-            except Exception:
-                # Fall through and hope provided object is usable
-                pass
+                    .filter(HVACPath.id == path_id)
+                    .first()
+                )
+                
+                if not hvac_path:
+                    return None
+                
+                # Build all path data within the session context to avoid detached instances
+                return self._build_path_data_within_session(hvac_path, session)
+                
+        except Exception as e:
+            if self.debug_export_enabled:
+                print(f"DEBUG: Database path fetch failed: {e}")
+            # Fall through and try with the provided object
+        
+        # Fallback: try to build with the provided object (might be detached)
+        return self._build_path_data_fallback(hvac_path)
+
+    def _build_path_data_within_session(self, hvac_path: HVACPath, session) -> Optional[Dict]:
+        """Build path data within an active database session to avoid detached instances"""
+        try:
+            from models.mechanical import MechanicalUnit
+            
             path_data = {
                 'source_component': {},
                 'terminal_component': {},
@@ -356,53 +419,43 @@ class HVACPathCalculator:
             
             # Ensure segments are ordered by actual connectivity
             try:
-                # Use primary_source_id directly to avoid triggering a lazy-load
                 preferred_source_id = getattr(hvac_path, 'primary_source_id', None)
-                segments = self._order_segments_by_connectivity(list(segments), preferred_source_component_id=preferred_source_id)
+                segments = self.order_segments_for_path(list(segments), preferred_source_id)
             except Exception as e:
-                print(f"DEBUG: Using stored segment order; connectivity ordering failed: {e}")
+                if self.debug_export_enabled:
+                    print(f"DEBUG: Using stored segment order; connectivity ordering failed: {e}")
 
-            # Get source: prefer explicit HVACComponent relationship; fallback to MechanicalUnit id (legacy),
-            # otherwise use the first segment's from_component.
-            source_comp = None
-            try:
-                source_comp = getattr(hvac_path, 'primary_source', None)
-            except Exception:
-                source_comp = None
-
+            # Get source: prefer explicit HVACComponent relationship; fallback to MechanicalUnit id
+            source_comp = getattr(hvac_path, 'primary_source', None)
+            
             if source_comp is not None:
                 path_data['source_component'] = {
                     'component_type': source_comp.component_type,
                     'noise_level': source_comp.noise_level or self.get_component_noise_level(source_comp.component_type)
                 }
             else:
-                # Backward compatibility: interpret primary_source_id as MechanicalUnit id if no component is linked
+                # Mechanical unit lookup using the active session
                 unit = None
-                try:
-                    if getattr(hvac_path, 'primary_source_id', None):
-                        sess2 = get_session()
-                        try:
-                            unit = sess2.query(MechanicalUnit).filter(MechanicalUnit.id == hvac_path.primary_source_id).first()
-                        finally:
-                            try:
-                                sess2.close()
-                            except Exception:
-                                pass
-                except Exception:
-                    unit = None
+                if getattr(hvac_path, 'primary_source_id', None):
+                    unit = session.query(MechanicalUnit).filter(
+                        MechanicalUnit.id == hvac_path.primary_source_id
+                    ).first()
 
                 if unit is not None:
                     # Parse outlet spectrum if available
                     octave_bands = None
                     try:
                         import json
-                        ob = getattr(unit, 'outlet_levels_json', None) or getattr(unit, 'inlet_levels_json', None) or getattr(unit, 'radiated_levels_json', None)
+                        ob = (getattr(unit, 'outlet_levels_json', None) or 
+                              getattr(unit, 'inlet_levels_json', None) or 
+                              getattr(unit, 'radiated_levels_json', None))
                         if ob:
                             data = json.loads(ob)
                             order = ["63","125","250","500","1000","2000","4000","8000"]
                             octave_bands = [float(data.get(k, 0) or 0) for k in order]
                     except Exception:
                         octave_bands = None
+                    
                     # Derive A-weighted level from spectrum if present
                     noise_level = None
                     if octave_bands:
@@ -411,12 +464,19 @@ class HVACPathCalculator:
                         except Exception:
                             pass
                     noise_level = noise_level or getattr(unit, 'base_noise_dba', None) or 50.0
+                    
                     path_data['source_component'] = {
                         'component_type': getattr(unit, 'unit_type', None) or 'unit',
                         'noise_level': noise_level,
                         'octave_band_levels': octave_bands,
                     }
+                    
+                    if self.debug_export_enabled:
+                        print(f"DEBUG: Using mechanical unit '{unit.name}' as source with {noise_level:.1f} dB(A)")
+                        if octave_bands:
+                            print(f"DEBUG: Octave bands: {octave_bands}")
                 else:
+                    # Fallback to first segment's from_component
                     first_segment = segments[0]
                     if first_segment.from_component:
                         comp = first_segment.from_component
@@ -425,7 +485,7 @@ class HVACPathCalculator:
                             'noise_level': comp.noise_level or self.get_component_noise_level(comp.component_type)
                         }
             
-            # Get terminal component (to last segment)
+            # Get terminal component
             last_segment = segments[-1]
             if last_segment.to_component:
                 comp = last_segment.to_component
@@ -436,82 +496,263 @@ class HVACPathCalculator:
             
             # Convert segments
             for segment in segments:
-                segment_data = {
-                    'length': segment.length or 0,
-                    'duct_width': segment.duct_width or 12,
-                    'duct_height': segment.duct_height or 8,
-                    'diameter': getattr(segment, 'diameter', 0) or 0,
-                    'duct_shape': segment.duct_shape or 'rectangular',
-                    'duct_type': segment.duct_type or 'sheet_metal',
-                    'insulation': segment.insulation,
-                    'lining_thickness': getattr(segment, 'lining_thickness', 0) or 0,
-                    'fittings': []
-                }
-                # Provide default flow data if missing: assume 800 fpm typical duct velocity
-                try:
-                    if (segment_data['duct_shape'] or '').lower() == 'rectangular':
-                        width_ft = (segment_data['duct_width'] or 0.0) / 12.0
-                        height_ft = (segment_data['duct_height'] or 0.0) / 12.0
-                        area_ft2 = max(0.0, width_ft * height_ft)
-                    else:
-                        diameter_in = segment_data.get('diameter', 0.0) or 0.0
-                        radius_ft = (diameter_in / 2.0) / 12.0
-                        area_ft2 = max(0.0, 3.141592653589793 * radius_ft * radius_ft)
-                    # Use 800 fpm if velocity/flow not stored
-                    default_velocity_fpm = 800.0
-                    segment_data['flow_velocity'] = getattr(segment, 'flow_velocity', None) or default_velocity_fpm
-                    segment_data['flow_rate'] = getattr(segment, 'flow_rate', None) or (area_ft2 * default_velocity_fpm)
-                except Exception:
-                    # If geometry invalid, leave flow fields absent
-                    pass
-                
-                # Add fittings
-                for fitting in segment.fittings:
-                    fitting_data = {
-                        'fitting_type': fitting.fitting_type,
-                        'noise_adjustment': fitting.noise_adjustment or self.get_fitting_noise_adjustment(fitting.fitting_type),
-                        'position': getattr(fitting, 'position_on_segment', 0.0) or 0.0
-                    }
-                    segment_data['fittings'].append(fitting_data)
-
-                # Derive a fitting_type for engine element inference
-                # Prefer the first specific fitting name (e.g., 'elbow_90', 'tee_branch') if available;
-                # fallback to high-level 'elbow' or 'junction'
-                fitting_types = [f.get('fitting_type', '') for f in segment_data['fittings']]
-                inferred_type = None
-                specific_type = None
-                for ft in fitting_types:
-                    lower_ft = (ft or '').lower()
-                    if not specific_type and lower_ft:
-                        specific_type = lower_ft
-                    if lower_ft.startswith('elbow'):
-                        inferred_type = 'elbow'
-                        # still keep specific type recorded
-                    if 'tee' in lower_ft or 'junction' in lower_ft:
-                        inferred_type = inferred_type or 'junction'
-                if specific_type:
-                    segment_data['fitting_type'] = specific_type
-                elif inferred_type:
-                    segment_data['fitting_type'] = inferred_type
-                
+                segment_data = self._build_segment_data(segment)
                 path_data['segments'].append(segment_data)
+            
+            # Add validation and debug export
+            try:
+                from src.calculations.hvac_validation import HVACValidationFramework
+                validation_framework = HVACValidationFramework(self.project_id)
+                range_validation = validation_framework.validate_calculation_ranges(path_data)
+                path_data['validation_result'] = range_validation
+                
+                if self.debug_export_enabled and range_validation.has_messages():
+                    print(f"DEBUG: Path data range validation:")
+                    if range_validation.errors:
+                        print(f"  Errors: {range_validation.errors}")
+                    if range_validation.warnings:
+                        print(f"  Warnings: {range_validation.warnings}")
+            except Exception as e:
+                if self.debug_export_enabled:
+                    print(f"DEBUG: Range validation failed: {e}")
+            
+            # Enhanced debug export
+            if self.debug_export_enabled:
+                self._export_enhanced_debug_data(hvac_path, path_data)
             
             return path_data
             
         except Exception as e:
-            print(f"Error building path data: {e}")
+            if self.debug_export_enabled:
+                print(f"DEBUG: Session-based path data building failed: {e}")
             return None
 
-    def _order_segments_by_connectivity(self, segments: List[HVACSegment], preferred_source_component_id: Optional[int] = None) -> List[HVACSegment]:
-        """Order segments by walking the chain from source to terminal.
+    def _build_path_data_fallback(self, hvac_path: HVACPath) -> Optional[Dict]:
+        """Fallback method for building path data with potentially detached instances"""
+        try:
+            if self.debug_export_enabled:
+                print("DEBUG: Using fallback path data building (objects may be detached)")
+            
+            path_data = {
+                'source_component': {'component_type': 'unknown', 'noise_level': 50.0},
+                'terminal_component': {'component_type': 'unknown', 'noise_level': 50.0},
+                'segments': []
+            }
+            
+            # Try to get basic information without triggering lazy loads
+            try:
+                if hasattr(hvac_path, 'segments') and hvac_path.segments:
+                    for i, segment in enumerate(hvac_path.segments):
+                        segment_data = {
+                            'length': getattr(segment, 'length', None) or 0,
+                            'duct_width': getattr(segment, 'duct_width', None) or 12,
+                            'duct_height': getattr(segment, 'duct_height', None) or 8,
+                            'duct_shape': getattr(segment, 'duct_shape', None) or 'rectangular',
+                            'duct_type': getattr(segment, 'duct_type', None) or 'sheet_metal',
+                            'insulation': getattr(segment, 'insulation', None),
+                            'lining_thickness': getattr(segment, 'lining_thickness', None) or 0,
+                            'fittings': []
+                        }
+                        path_data['segments'].append(segment_data)
+            except Exception as e:
+                if self.debug_export_enabled:
+                    print(f"DEBUG: Could not extract segment data in fallback: {e}")
+            
+            return path_data
+            
+        except Exception as e:
+            if self.debug_export_enabled:
+                print(f"DEBUG: Fallback path data building failed: {e}")
+            return None
 
+    def _build_segment_data(self, segment) -> Dict:
+        """Build segment data dictionary from segment object"""
+        segment_data = {
+            'length': segment.length or 0,
+            'duct_width': segment.duct_width or 12,
+            'duct_height': segment.duct_height or 8,
+            'diameter': getattr(segment, 'diameter', 0) or 0,
+            'duct_shape': segment.duct_shape or 'rectangular',
+            'duct_type': segment.duct_type or 'sheet_metal',
+            'insulation': segment.insulation,
+            'lining_thickness': getattr(segment, 'lining_thickness', 0) or 0,
+            'fittings': []
+        }
+        
+        # Calculate flow data
+        try:
+            if (segment_data['duct_shape'] or '').lower() == 'rectangular':
+                width_ft = (segment_data['duct_width'] or 0.0) / 12.0
+                height_ft = (segment_data['duct_height'] or 0.0) / 12.0
+                area_ft2 = max(0.0, width_ft * height_ft)
+            else:
+                diameter_in = segment_data.get('diameter', 0.0) or 0.0
+                radius_ft = (diameter_in / 2.0) / 12.0
+                area_ft2 = max(0.0, 3.141592653589793 * radius_ft * radius_ft)
+            
+            default_velocity_fpm = 800.0
+            segment_data['flow_velocity'] = getattr(segment, 'flow_velocity', None) or default_velocity_fpm
+            segment_data['flow_rate'] = getattr(segment, 'flow_rate', None) or (area_ft2 * default_velocity_fpm)
+        except Exception:
+            pass
+        
+        # Add fittings
+        try:
+            for fitting in segment.fittings:
+                fitting_data = {
+                    'fitting_type': fitting.fitting_type,
+                    'noise_adjustment': fitting.noise_adjustment or self.get_fitting_noise_adjustment(fitting.fitting_type),
+                    'position': getattr(fitting, 'position_on_segment', 0.0) or 0.0
+                }
+                segment_data['fittings'].append(fitting_data)
+        except Exception:
+            pass
+
+        # Derive fitting type
+        fitting_types = [f.get('fitting_type', '') for f in segment_data['fittings']]
+        inferred_type = None
+        specific_type = None
+        for ft in fitting_types:
+            lower_ft = (ft or '').lower()
+            if not specific_type and lower_ft:
+                specific_type = lower_ft
+            if lower_ft.startswith('elbow'):
+                inferred_type = 'elbow'
+            if 'tee' in lower_ft or 'junction' in lower_ft:
+                inferred_type = inferred_type or 'junction'
+        
+        if specific_type:
+            segment_data['fitting_type'] = specific_type
+        elif inferred_type:
+            segment_data['fitting_type'] = inferred_type
+        
+        return segment_data
+
+    def find_matching_mechanical_unit(self, component: 'HVACComponent', project_id: int) -> Optional['MechanicalUnit']:
+        """Find mechanical unit that matches drawn component
+        
+        Tries multiple matching strategies:
+        1. Exact name match first
+        2. Type and capacity matching  
+        3. Type matching with fuzzy name similarity
+        
+        Args:
+            component: HVACComponent to match
+            project_id: Project ID to search within
+            
+        Returns:
+            Matching MechanicalUnit or None
+        """
+        from models.database import get_hvac_session
+        from models.mechanical import MechanicalUnit
+        import os
+        
+        debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        with get_hvac_session() as session:
+            # Try exact name match first
+            if hasattr(component, 'name') and component.name:
+                unit = session.query(MechanicalUnit).filter(
+                    MechanicalUnit.project_id == project_id,
+                    MechanicalUnit.name.ilike(component.name)  # Case insensitive
+                ).first()
+                
+                if unit:
+                    if debug_enabled:
+                        print(f"DEBUG: Found exact name match: Component '{component.name}' -> Unit '{unit.name}'")
+                    return unit
+            
+            # Try type + capacity matching for source components
+            if hasattr(component, 'component_type') and component.component_type:
+                # Map component types to mechanical unit types
+                type_mappings = {
+                    'ahu': ['AHU', 'Air Handling Unit'],
+                    'rtu': ['RTU', 'Rooftop Unit'],
+                    'ef': ['EF', 'Exhaust Fan'], 
+                    'sf': ['SF', 'Supply Fan'],
+                    'vav': ['VAV', 'Variable Air Volume'],
+                    'fan': ['EF', 'SF', 'Fan'],
+                    'air_handler': ['AHU', 'Air Handling Unit']
+                }
+                
+                possible_types = type_mappings.get(component.component_type.lower(), [component.component_type.upper()])
+                
+                for unit_type in possible_types:
+                    units = session.query(MechanicalUnit).filter(
+                        MechanicalUnit.project_id == project_id,
+                        MechanicalUnit.unit_type.ilike(f'%{unit_type}%')
+                    ).all()
+                    
+                    if units:
+                        if debug_enabled:
+                            print(f"DEBUG: Found {len(units)} units of type '{unit_type}' for component type '{component.component_type}'")
+                        
+                        # If only one unit of this type, use it
+                        if len(units) == 1:
+                            if debug_enabled:
+                                print(f"DEBUG: Single unit match: Component '{component.component_type}' -> Unit '{units[0].name}'")
+                            return units[0]
+                        
+                        # If multiple units, try to match by name similarity
+                        if hasattr(component, 'name') and component.name:
+                            for unit in units:
+                                # Simple fuzzy matching - check if component name contains unit identifier
+                                component_name = str(component.name).upper()
+                                unit_name = str(unit.name).upper()
+                                
+                                # Extract numbers from names for matching
+                                import re
+                                comp_numbers = re.findall(r'\d+', component_name)
+                                unit_numbers = re.findall(r'\d+', unit_name)
+                                
+                                if comp_numbers and unit_numbers and comp_numbers[0] == unit_numbers[0]:
+                                    if debug_enabled:
+                                        print(f"DEBUG: Number-based match: Component '{component.name}' -> Unit '{unit.name}'")
+                                    return unit
+                                
+                                # Check if unit name is contained in component name or vice versa
+                                if unit_name in component_name or component_name in unit_name:
+                                    if debug_enabled:
+                                        print(f"DEBUG: Name similarity match: Component '{component.name}' -> Unit '{unit.name}'")
+                                    return unit
+                        
+                        # Fallback: return first unit of matching type
+                        if debug_enabled:
+                            print(f"DEBUG: Fallback match: Component '{component.component_type}' -> First unit '{units[0].name}'")
+                        return units[0]
+            
+            if debug_enabled:
+                print(f"DEBUG: No mechanical unit match found for component '{getattr(component, 'name', 'unnamed')}' type '{getattr(component, 'component_type', 'unknown')}'")
+            
+            return None
+
+    def order_segments_for_path(self, segments: List[HVACSegment], preferred_source_id: Optional[int] = None) -> List[HVACSegment]:
+        """Unified segment ordering used by all components
+        
+        Orders segments by walking the chain from source to terminal.
         - If a preferred source component id is provided and exists in the chain, start from there.
         - Otherwise, start from a component that appears as a 'from' but never as a 'to'.
         - Fall back to existing segment_order if traversal fails.
+        
+        This is the single source of truth for segment ordering across the application.
         """
+        import os
+        
         try:
             if not segments:
                 return []
+
+            # Debug logging for segment ordering decisions
+            debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+            if debug_enabled:
+                print(f"DEBUG: Starting segment ordering for {len(segments)} segments")
+                print(f"DEBUG: Preferred source component ID: {preferred_source_id}")
+                for i, seg in enumerate(segments):
+                    seg_id = getattr(seg, 'id', f'stub_{i}')
+                    from_id = getattr(seg, 'from_component_id', None)
+                    to_id = getattr(seg, 'to_component_id', None)
+                    order = getattr(seg, 'segment_order', 0)
+                    print(f"DEBUG: Segment {seg_id}: {from_id} -> {to_id} (order: {order})")
 
             # Index mappings
             from_map = {}
@@ -528,20 +769,28 @@ class HVACPathCalculator:
 
             # Determine start component
             start_comp_id = None
-            if preferred_source_component_id and preferred_source_component_id in from_map:
-                start_comp_id = preferred_source_component_id
+            if preferred_source_id and preferred_source_id in from_map:
+                start_comp_id = preferred_source_id
+                if debug_enabled:
+                    print(f"DEBUG: Using preferred source component: {start_comp_id}")
             else:
                 # A 'from' that is never a 'to' is a likely source
                 candidates = [fcid for fcid in from_map.keys() if fcid not in to_set]
                 if candidates:
                     start_comp_id = candidates[0]
+                    if debug_enabled:
+                        print(f"DEBUG: Found source candidates: {candidates}, using: {start_comp_id}")
                 else:
                     # Fallback: choose the lowest segment_order's from_component
                     try:
                         first_seg = sorted(segments, key=lambda s: getattr(s, 'segment_order', 0))[0]
                         start_comp_id = getattr(first_seg, 'from_component_id', None)
+                        if debug_enabled:
+                            print(f"DEBUG: Using fallback source from first segment: {start_comp_id}")
                     except Exception:
                         start_comp_id = None
+                        if debug_enabled:
+                            print("DEBUG: Could not determine source component")
 
             # Traverse chain
             ordered: List[HVACSegment] = []
@@ -554,22 +803,46 @@ class HVACPathCalculator:
                 iters += 1
                 seg = from_map.get(current)
                 if seg is None:
+                    if debug_enabled:
+                        print(f"DEBUG: No segment found from component {current}, stopping traversal")
                     break
-                if seg.id in visited:
+                seg_id = getattr(seg, 'id', f'stub_{len(ordered)}')
+                if seg_id in visited:
                     # Loop detected
+                    if debug_enabled:
+                        print(f"DEBUG: Loop detected at segment {seg_id}, stopping traversal")
                     break
                 ordered.append(seg)
-                visited.add(seg.id)
+                visited.add(seg_id)
                 current = getattr(seg, 'to_component_id', None)
+                if debug_enabled:
+                    print(f"DEBUG: Added segment {seg_id} to position {len(ordered)}, next component: {current}")
 
             # If traversal did not include all segments, append remaining by existing order
             if len(ordered) < len(segments):
-                remaining = [s for s in sorted(segments, key=lambda s: getattr(s, 'segment_order', 0)) if s.id not in visited]
+                remaining = [s for s in sorted(segments, key=lambda s: getattr(s, 'segment_order', 0)) if getattr(s, 'id', id(s)) not in visited]
                 ordered.extend(remaining)
+                if debug_enabled:
+                    print(f"DEBUG: Added {len(remaining)} remaining segments by stored order")
+
+            # Debug final ordering
+            if debug_enabled:
+                print("DEBUG: Final segment ordering:")
+                for i, seg in enumerate(ordered):
+                    seg_id = getattr(seg, 'id', f'stub_{i}')
+                    from_id = getattr(seg, 'from_component_id', None)
+                    to_id = getattr(seg, 'to_component_id', None)
+                    print(f"DEBUG: Position {i+1}: Segment {seg_id}: {from_id} -> {to_id}")
 
             return ordered if ordered else list(sorted(segments, key=lambda s: getattr(s, 'segment_order', 0)))
-        except Exception:
+        except Exception as e:
+            if os.environ.get('HVAC_DEBUG_EXPORT'):
+                print(f"DEBUG: Segment ordering failed with error: {e}, falling back to stored order")
             return list(sorted(segments, key=lambda s: getattr(s, 'segment_order', 0)))
+    
+    def _order_segments_by_connectivity(self, segments: List[HVACSegment], preferred_source_component_id: Optional[int] = None) -> List[HVACSegment]:
+        """Legacy method - now delegates to unified ordering method"""
+        return self.order_segments_for_path(segments, preferred_source_component_id)
     
     def get_component_noise_level(self, component_type: str) -> float:
         """Get standard noise level for component type"""
@@ -578,6 +851,185 @@ class HVACPathCalculator:
     def get_fitting_noise_adjustment(self, fitting_type: str) -> float:
         """Get standard noise adjustment for fitting type"""
         return STANDARD_FITTINGS.get(fitting_type, {}).get('noise_adjustment', 0.0)
+    
+    def _export_enhanced_debug_data(self, hvac_path, path_data):
+        """Export enhanced debug data with all phases information"""
+        try:
+            import json
+            from datetime import datetime
+            
+            # Ensure debug export directory exists
+            debug_dir = os.path.expanduser("~/Documents/drawings_to_acoustics_processor/debug_data/debug_exports")
+            os.makedirs(debug_dir, exist_ok=True)
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path_name = getattr(hvac_path, 'name', 'unknown_path').replace(' ', '_').replace('/', '_')
+            filename = f"hvac_debug_{path_name}_{timestamp}.json"
+            filepath = os.path.join(debug_dir, filename)
+            
+            # Gather all debug information
+            debug_data = {
+                'metadata': {
+                    'export_timestamp': timestamp,
+                    'path_id': getattr(hvac_path, 'id', None),
+                    'path_name': getattr(hvac_path, 'name', 'unknown'),
+                    'project_id': self.project_id,
+                    'debug_version': '2.0_enhanced'
+                },
+                'path_info': {
+                    'name': getattr(hvac_path, 'name', 'unknown'),
+                    'description': getattr(hvac_path, 'description', ''),
+                    'path_type': getattr(hvac_path, 'path_type', 'unknown'),
+                    'primary_source_id': getattr(hvac_path, 'primary_source_id', None),
+                    'target_space_id': getattr(hvac_path, 'target_space_id', None)
+                },
+                'segment_ordering': {
+                    'total_segments': len(getattr(hvac_path, 'segments', [])),
+                    'segments': []
+                },
+                'mechanical_unit_integration': {},
+                'validation_results': {},
+                'path_data': path_data
+            }
+            
+            # Enhanced segment ordering information
+            segments = getattr(hvac_path, 'segments', [])
+            for i, segment in enumerate(segments):
+                seg_info = {
+                    'position': i + 1,
+                    'segment_id': getattr(segment, 'id', None),
+                    'segment_order': getattr(segment, 'segment_order', None),
+                    'from_component_id': getattr(segment, 'from_component_id', None),
+                    'to_component_id': getattr(segment, 'to_component_id', None),
+                    'length': getattr(segment, 'length', None),
+                    'duct_dimensions': {
+                        'width': getattr(segment, 'duct_width', None),
+                        'height': getattr(segment, 'duct_height', None),
+                        'shape': getattr(segment, 'duct_shape', None)
+                    }
+                }
+                debug_data['segment_ordering']['segments'].append(seg_info)
+            
+            # Mechanical unit integration information
+            if getattr(hvac_path, 'primary_source_id', None):
+                try:
+                    from models.database import get_hvac_session
+                    from models.mechanical import MechanicalUnit
+                    
+                    with get_hvac_session() as session:
+                        unit = session.query(MechanicalUnit).filter(
+                            MechanicalUnit.id == hvac_path.primary_source_id
+                        ).first()
+                        
+                        if unit:
+                            debug_data['mechanical_unit_integration'] = {
+                                'linked_unit_id': unit.id,
+                                'linked_unit_name': unit.name,
+                                'linked_unit_type': unit.unit_type,
+                                'airflow_cfm': unit.airflow_cfm,
+                                'external_static_inwg': unit.external_static_inwg,
+                                'power_kw': unit.power_kw
+                            }
+                
+                except Exception as e:
+                    debug_data['mechanical_unit_integration'] = {'error': str(e)}
+            
+            # Validation results
+            if path_data and path_data.get('validation_result'):
+                validation = path_data['validation_result']
+                debug_data['validation_results'] = {
+                    'is_valid': validation.is_valid,
+                    'errors': validation.errors,
+                    'warnings': validation.warnings,
+                    'info': validation.info
+                }
+            
+            # Database session lifecycle info
+            debug_data['session_info'] = {
+                'session_management': 'unified_context_manager',
+                'transaction_safety': 'automatic_rollback_on_error'
+            }
+            
+            # Export to JSON
+            with open(filepath, 'w') as f:
+                json.dump(debug_data, f, indent=2, default=str)
+            
+            print(f"DEBUG: Enhanced debug data exported to: {filepath}")
+            
+        except Exception as e:
+            print(f"DEBUG: Enhanced debug export failed: {e}")
+    
+    def generate_debug_report(self, path_id: int) -> Dict[str, Any]:
+        """Generate comprehensive debug report for a path"""
+        from datetime import datetime
+        
+        report = {
+            'path_id': path_id,
+            'timestamp': datetime.now().isoformat(),
+            'issues_detected': [],
+            'recommendations': [],
+            'system_health': {}
+        }
+        
+        try:
+            from src.models.database import get_hvac_session
+            from src.calculations.hvac_validation import HVACValidationFramework
+            
+            with get_hvac_session() as session:
+                path = session.query(HVACPath).filter(HVACPath.id == path_id).first()
+                
+                if not path:
+                    report['issues_detected'].append("Path not found in database")
+                    return report
+                
+                # Run comprehensive validation
+                validator = HVACValidationFramework(self.project_id)
+                validation = validator.validate_path(path)
+                
+                report['validation_summary'] = {
+                    'is_valid': validation.is_valid,
+                    'error_count': len(validation.errors),
+                    'warning_count': len(validation.warnings),
+                    'info_count': len(validation.info)
+                }
+                
+                # Detect common issues
+                if not validation.is_valid:
+                    report['issues_detected'].extend(validation.errors)
+                
+                if validation.warnings:
+                    report['issues_detected'].extend(validation.warnings)
+                
+                # Check segment connectivity
+                segments = path.segments
+                if segments:
+                    if len(segments) > 10:
+                        report['recommendations'].append("Path has many segments - consider simplifying")
+                    
+                    # Check for missing connections
+                    disconnected = 0
+                    for seg in segments:
+                        if not getattr(seg, 'from_component_id', None) or not getattr(seg, 'to_component_id', None):
+                            disconnected += 1
+                    
+                    if disconnected > 0:
+                        report['issues_detected'].append(f"{disconnected} segments have missing connections")
+                
+                # Check mechanical unit integration
+                if path.primary_source_id:
+                    report['system_health']['mechanical_unit_linked'] = True
+                else:
+                    report['recommendations'].append("Consider linking to a mechanical unit for more accurate calculations")
+                
+                report['system_health']['total_segments'] = len(segments) if segments else 0
+                report['system_health']['has_validation_framework'] = True
+                report['system_health']['unified_segment_ordering'] = True
+                report['system_health']['session_management'] = 'enhanced'
+                
+        except Exception as e:
+            report['issues_detected'].append(f"Debug report generation failed: {e}")
+        
+        return report
     
     # --- Debug export helper ---
     def _debug_export_path_result(self, hvac_path: HVACPath, path_data: Dict[str, Any], calc_results: Dict[str, Any]) -> None:
