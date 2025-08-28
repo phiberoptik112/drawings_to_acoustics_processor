@@ -24,6 +24,7 @@ class HVACComponent(Base):
     
     # Acoustic properties
     noise_level = Column(Float)  # Base noise level in dB(A)
+    cfm = Column(Float)  # Air flow rate in CFM
     
     # Silencer-specific fields
     is_silencer = Column(Boolean, default=False)
@@ -103,6 +104,10 @@ class HVACSegment(Base):
     duct_type = Column(String(50), default='sheet_metal')   # Material type
     insulation = Column(String(50))  # Lining material type
     lining_thickness = Column(Float) # Lining thickness in inches
+    
+    # Flow properties
+    flow_rate = Column(Float)        # CFM flow rate through segment
+    flow_velocity = Column(Float)    # FPM velocity through segment
     
     # Calculated losses
     distance_loss = Column(Float)    # dB loss due to distance

@@ -3,12 +3,30 @@ HVAC Noise Calculation Engine - Unified system for HVAC acoustic analysis
 Integrates all specialized calculators for complete path analysis
 """
 
+# Custom exceptions for HVAC engine
+class HVACEngineError(Exception):
+    """Base exception for HVAC engine errors"""
+    pass
+
+class PathElementError(HVACEngineError):
+    """Exception raised when path element processing fails"""
+    pass
+
+class CalculationError(HVACEngineError):
+    """Exception raised when calculations fail"""
+    pass
+
 import math
 import os
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Union, Any
 from dataclasses import dataclass
 import warnings
+from .debug_logger import debug_logger
+from .hvac_constants import (
+    NUM_OCTAVE_BANDS, DEFAULT_SPECTRUM_LEVELS, NC_CURVE_DATA,
+    MIN_NC_RATING, MAX_NC_RATING, DEFAULT_NC_RATING
+)
 
 # Import all specialized calculators
 from .circular_duct_calculations import CircularDuctCalculator
@@ -19,8 +37,7 @@ from .junction_elbow_generated_noise_calculations import JunctionElbowNoiseCalcu
 from .rectangular_elbows_calculations import RectangularElbowsCalculator
 from .receiver_room_sound_correction_calculations import ReceiverRoomSoundCorrection
 from .end_reflection_loss import erl_from_equation, compute_effective_diameter_rectangular
-# TODO: Create unlined_rectangular_duct_calculations.py
-# from .unlined_rectangular_duct_calculations import UnlinedRectangularDuctCalculator
+# Note: Unlined rectangular duct calculations are handled by RectangularDuctCalculator.get_unlined_attenuation()
 
 
 @dataclass
@@ -99,7 +116,7 @@ class HVACNoiseEngine:
         self.elbow_calc = ElbowTurningVaneCalculator()
         self.junction_calc = JunctionElbowNoiseCalculator()
         self.room_calc = ReceiverRoomSoundCorrection()
-        self.unlined_rect_calc = None # UnlinedRectangularDuctCalculator() # TODO: Initialize this
+        # Note: unlined_rect_calc functionality integrated into rectangular_calc
         self.rect_elbows_calc = RectangularElbowsCalculator()
         
     def calculate_path_noise(self, path_elements: List[PathElement], 
@@ -128,7 +145,7 @@ class HVACNoiseEngine:
                     terminal_noise_dba=0.0,
                     total_attenuation_dba=0.0,
                     nc_rating=0,
-                    octave_band_spectrum=[0.0] * 8,
+                    octave_band_spectrum=[0.0] * NUM_OCTAVE_BANDS,
                     element_results=[],
                     warnings=["No path elements provided"],
                     calculation_valid=False,
@@ -144,22 +161,22 @@ class HVACNoiseEngine:
             
             if not source_element:
                 warnings_list.append("No source element found, using default 50 dB(A)")
-                current_spectrum = [50.0] * 8  # Default spectrum
+                current_spectrum = DEFAULT_SPECTRUM_LEVELS.copy()  # Default spectrum
                 current_dba = 50.0
             else:
                 if source_element.octave_band_levels:
                     current_spectrum = source_element.octave_band_levels.copy()
                     current_dba = source_element.source_noise_level
-                    if os.environ.get('HVAC_DEBUG_EXPORT'):
-                        print("DEBUG[HVACEngine]: Seeded source from spectrum:", current_spectrum,
-                              "dBA=", f"{float(current_dba):.1f}")
+                    debug_logger.info('HVACEngine', 
+                        "Seeded source from spectrum", 
+                        {'spectrum': current_spectrum, 'dba': current_dba})
                 else:
                     # Estimate spectrum from A-weighted level
                     current_spectrum = self._estimate_spectrum_from_dba(source_element.source_noise_level)
                     current_dba = source_element.source_noise_level
-                    if os.environ.get('HVAC_DEBUG_EXPORT'):
-                        print("DEBUG[HVACEngine]: Estimated source spectrum from dBA=",
-                              f"{float(current_dba):.1f}", "->", current_spectrum)
+                    debug_logger.info('HVACEngine', 
+                        "Estimated source spectrum from dBA", 
+                        {'input_dba': current_dba, 'estimated_spectrum': current_spectrum})
 
             # Add a pseudo element result for the Source so UI numbering starts at 1
             try:
@@ -182,8 +199,8 @@ class HVACNoiseEngine:
                         'element_type': 'source',
                         'spectrum_before': current_spectrum.copy(),
                         'spectrum_after': current_spectrum.copy(),
-                        'attenuation_spectrum': [0.0] * 8,
-                        'generated_spectrum': [0.0] * 8,
+                        'attenuation_spectrum': [0.0] * NUM_OCTAVE_BANDS,
+                        'generated_spectrum': [0.0] * NUM_OCTAVE_BANDS,
                         'dba_before': current_dba,
                         'dba_after': current_dba,
                         'nc_before': self._calculate_nc_rating(current_spectrum),
@@ -203,10 +220,10 @@ class HVACNoiseEngine:
                 noise_before_dba = current_dba
                 spectrum_before = current_spectrum.copy()
                 nc_before = self._calculate_nc_rating(spectrum_before)
-                if os.environ.get('HVAC_DEBUG_EXPORT'):
-                    print(f"DEBUG[HVACEngine]: Element {i} ({element.element_type}) BEFORE: dBA=",
-                          f"{float(noise_before_dba):.1f}", "spectrum=", spectrum_before,
-                          "NC=", nc_before)
+                debug_logger.log_element_processing('HVACEngine', 
+                    element.element_type, 
+                    element.element_id,
+                    input_spectrum=spectrum_before)
                 element_result = self._calculate_element_effect(element, current_spectrum, current_dba)
                 element_result['element_id'] = element.element_id
                 element_result['element_type'] = element.element_type
@@ -219,20 +236,22 @@ class HVACNoiseEngine:
                 if element_result.get('attenuation_spectrum'):
                     attenuation_spectrum = element_result['attenuation_spectrum']
                     if isinstance(attenuation_spectrum, list):
-                        if os.environ.get('HVAC_DEBUG_EXPORT'):
-                            print(f"DEBUG[HVACEngine]: Element {i} attenuation_spectrum:", attenuation_spectrum)
+                        debug_logger.debug('HVACEngine', 
+                            f"Element {i} attenuation_spectrum", 
+                            {'attenuation_spectrum': attenuation_spectrum})
                         # Apply attenuation (subtract)
-                        for j in range(min(8, len(attenuation_spectrum))):
+                        for j in range(min(NUM_OCTAVE_BANDS, len(attenuation_spectrum))):
                             current_spectrum[j] -= attenuation_spectrum[j]
                             current_spectrum[j] = max(0.0, current_spectrum[j])  # Prevent negative
                 
                 if element_result.get('generated_spectrum'):
                     generated_spectrum = element_result['generated_spectrum']
                     if isinstance(generated_spectrum, list):
-                        if os.environ.get('HVAC_DEBUG_EXPORT'):
-                            print(f"DEBUG[HVACEngine]: Element {i} generated_spectrum:", generated_spectrum)
+                        debug_logger.debug('HVACEngine', 
+                            f"Element {i} generated_spectrum", 
+                            {'generated_spectrum': generated_spectrum})
                         # Add generated noise
-                        for j in range(min(8, len(generated_spectrum))):
+                        for j in range(min(NUM_OCTAVE_BANDS, len(generated_spectrum))):
                             if generated_spectrum[j] > 0:
                                 current_spectrum[j] = self._combine_noise_levels(
                                     current_spectrum[j], generated_spectrum[j]
@@ -241,10 +260,11 @@ class HVACNoiseEngine:
                 # Update A-weighted level
                 current_dba = self._calculate_dba_from_spectrum(current_spectrum)
                 nc_after = self._calculate_nc_rating(current_spectrum)
-                if os.environ.get('HVAC_DEBUG_EXPORT'):
-                    print(f"DEBUG[HVACEngine]: Element {i} AFTER: dBA=",
-                          f"{float(current_dba):.1f}", "spectrum=", current_spectrum,
-                          "NC=", nc_after)
+                debug_logger.log_element_processing('HVACEngine', 
+                    element.element_type, 
+                    element.element_id,
+                    output_spectrum=current_spectrum,
+                    attenuation_dba=current_dba - noise_before_dba)
                 
                 # Provide legacy keys expected by UI
                 element_result['noise_before'] = noise_before_dba
@@ -295,6 +315,34 @@ class HVACNoiseEngine:
                 debug_log=debug_steps if debug else None
             )
             
+        except PathElementError as e:
+            return PathResult(
+                path_id=path_id,
+                source_noise_dba=0.0,
+                terminal_noise_dba=0.0,
+                total_attenuation_dba=0.0,
+                nc_rating=0,
+                octave_band_spectrum=[0.0] * 8,
+                element_results=[],
+                warnings=[],
+                calculation_valid=False,
+                error_message=f"Path element error: {e}",
+                debug_log=debug_steps if debug else None
+            )
+        except CalculationError as e:
+            return PathResult(
+                path_id=path_id,
+                source_noise_dba=0.0,
+                terminal_noise_dba=0.0,
+                total_attenuation_dba=0.0,
+                nc_rating=0,
+                octave_band_spectrum=[0.0] * 8,
+                element_results=[],
+                warnings=[],
+                calculation_valid=False,
+                error_message=f"Calculation error: {e}",
+                debug_log=debug_steps if debug else None
+            )
         except Exception as e:
             return PathResult(
                 path_id=path_id,
@@ -306,7 +354,7 @@ class HVACNoiseEngine:
                 element_results=[],
                 warnings=[],
                 calculation_valid=False,
-                error_message=str(e),
+                error_message=f"Unexpected error: {e}",
                 debug_log=debug_steps if debug else None
             )
     
@@ -344,7 +392,7 @@ class HVACNoiseEngine:
     def _calculate_duct_effect(self, element: PathElement) -> Dict[str, Any]:
         """Calculate duct attenuation effect"""
         result: Dict[str, Any] = {
-            'attenuation_spectrum': [0.0] * 8,
+            'attenuation_spectrum': [0.0] * NUM_OCTAVE_BANDS,
             'generated_spectrum': None,
             'attenuation_dba': 0.0,
             'generated_dba': None
@@ -407,7 +455,7 @@ class HVACNoiseEngine:
         """Calculate elbow generated noise effect"""
         result: Dict[str, Any] = {
             'attenuation_spectrum': None,
-            'generated_spectrum': [0.0] * 8,
+            'generated_spectrum': [0.0] * NUM_OCTAVE_BANDS,
             'attenuation_dba': None,
             'generated_dba': 0.0
         }
@@ -415,7 +463,7 @@ class HVACNoiseEngine:
         try:
             # Optional insertion loss due to elbow (rectangular elbows per ASHRAE tables)
             # Apply only for rectangular ducts; circular elbow insertion loss model not integrated here
-            attenuation_spectrum: List[float] = [0.0] * 8
+            attenuation_spectrum: List[float] = [0.0] * NUM_OCTAVE_BANDS
             if (getattr(element, 'duct_shape', 'rectangular') != 'circular'):
                 lined = (element.lining_thickness or 0.0) > 0.0
                 # Determine elbow type from hints
@@ -477,7 +525,7 @@ class HVACNoiseEngine:
         """Calculate junction generated noise effect"""
         result: Dict[str, Any] = {
             'attenuation_spectrum': None,
-            'generated_spectrum': [0.0] * 8,
+            'generated_spectrum': [0.0] * NUM_OCTAVE_BANDS,
             'attenuation_dba': None,
             'generated_dba': 0.0
         }
@@ -518,7 +566,7 @@ class HVACNoiseEngine:
     def _calculate_flex_duct_effect(self, element: PathElement) -> Dict[str, Any]:
         """Calculate flexible duct insertion loss effect"""
         result: Dict[str, Any] = {
-            'attenuation_spectrum': [0.0] * 8,
+            'attenuation_spectrum': [0.0] * NUM_OCTAVE_BANDS,
             'generated_spectrum': None,
             'attenuation_dba': 0.0,
             'generated_dba': None
@@ -577,10 +625,11 @@ class HVACNoiseEngine:
                     erl_spectrum.append(max(0.0, erl_db))
                 result['attenuation_spectrum'] = erl_spectrum
                 result['attenuation_dba'] = self._calculate_dba_from_spectrum(erl_spectrum)
-                if os.environ.get('HVAC_DEBUG_EXPORT'):
-                    print("DEBUG[HVACEngine]: Terminal ERL diameter_in=", diameter_in,
-                          "attenuation_spectrum=", erl_spectrum,
-                          "attenuation_dba=", f"{float(result['attenuation_dba']):.1f}")
+                debug_logger.debug('HVACEngine', 
+                    "Terminal ERL attenuation", 
+                    {'diameter_in': diameter_in, 
+                     'attenuation_spectrum': erl_spectrum,
+                     'attenuation_dba': result['attenuation_dba']})
 
             # 2) Optional receiver room correction metadata (non-blocking)
             try:

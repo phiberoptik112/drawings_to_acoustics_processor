@@ -1,3 +1,4 @@
+from typing import Union, Optional
 from PySide6.QtWidgets import QWidget
 from PySide6.QtCore import Qt, QPoint, Signal, QRect
 from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont
@@ -47,16 +48,16 @@ class DrawingOverlay(QWidget):
         self.show_measurements = True
         self.show_grid = False
         self.path_only_mode = False
-        self._highlighted_path_id: int | None = None
+        self._highlighted_path_id: Optional[int] = None
 
         # Selection/drag state
-        self._selection_rect: QRect | None = None
+        self._selection_rect: Optional[QRect] = None
         self._selected_components: list[dict] = []
         self._selected_segments: list[dict] = []
         self._drag_active = False
-        self._drag_last_point: QPoint | None = None
+        self._drag_last_point: Optional[QPoint] = None
         # {'type': 'segment'|'component', 'ref': dict, 'endpoint': 'start'|'end'|None}
-        self._hit_target: dict | None = None
+        self._hit_target: Optional[dict] = None
         self._select_modifiers = Qt.NoModifier
         # Snapping threshold in pixels
         self._snap_threshold_px: int = 20
@@ -291,7 +292,7 @@ class DrawingOverlay(QWidget):
         except Exception:
             return None
     
-    def set_highlighted_path(self, path_id: int | None) -> None:
+    def set_highlighted_path(self, path_id: Optional[int]) -> None:
         self._highlighted_path_id = path_id
         self.update()
         

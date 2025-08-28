@@ -22,7 +22,7 @@ from __future__ import annotations
 import argparse
 import math
 from dataclasses import dataclass
-from typing import Iterable, List, Literal, Sequence, Tuple
+from typing import Iterable, List, Literal, Sequence, Tuple, Union, Optional
 
 import numpy as np
 
@@ -253,7 +253,7 @@ def compute_erl_equation_for_frequencies(
 DEFAULT_OCTAVE_FREQS = [63, 125, 250, 500, 1000]
 
 
-def _parse_frequencies(arg: str | None) -> List[float]:
+def _parse_frequencies(arg: Optional[str]) -> List[float]:
     if arg is None or arg.strip().lower() in {"octave", "default"}:
         return list(DEFAULT_OCTAVE_FREQS)
     # parse comma-separated numbers
@@ -318,7 +318,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_effective_diameter(units: Literal["in", "ft"], circular_diameter: float | None, rect_w: float | None, rect_h: float | None) -> Tuple[float, Literal["in", "ft"]]:
+def _resolve_effective_diameter(units: Literal["in", "ft"], circular_diameter: Optional[float], rect_w: Optional[float], rect_h: Optional[float]) -> Tuple[float, Literal["in", "ft"]]:
     """Return (effective_diameter, units) based on provided geometry.
 
     - If circular_diameter is provided, use it directly.

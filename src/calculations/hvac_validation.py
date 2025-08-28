@@ -306,3 +306,226 @@ class HVACValidationFramework:
             result.add_error(f"Range validation failed: {e}")
         
         return result
+    
+    def validate_path_element(self, element_data: Dict[str, Any], element_type: str) -> ValidationResult:
+        """Comprehensive validation for path elements before calculation"""
+        result = ValidationResult(is_valid=True, errors=[], warnings=[], info=[])
+        
+        try:
+            # Required fields validation
+            if element_type == 'source':
+                self._validate_source_element(element_data, result)
+            elif element_type == 'duct':
+                self._validate_duct_element(element_data, result)
+            elif element_type in ['elbow', 'junction']:
+                self._validate_fitting_element(element_data, result)
+            elif element_type == 'terminal':
+                self._validate_terminal_element(element_data, result)
+            
+            # Physical constraints validation
+            self._validate_physical_constraints(element_data, result)
+            
+        except Exception as e:
+            result.add_error(f"Element validation failed: {e}")
+        
+        return result
+    
+    def _validate_source_element(self, element_data: Dict[str, Any], result: ValidationResult):
+        """Validate source element data"""
+        # Check octave band levels
+        octave_bands = element_data.get('octave_band_levels')
+        if octave_bands:
+            if not isinstance(octave_bands, list) or len(octave_bands) != 8:
+                result.add_error("Source octave band levels must be a list of 8 values")
+            else:
+                # Validate individual band levels
+                for i, level in enumerate(octave_bands):
+                    if not isinstance(level, (int, float)):
+                        result.add_error(f"Octave band {i+1} level must be numeric, got {type(level)}")
+                    elif level < 0 or level > 150:
+                        result.add_warning(f"Octave band {i+1} level ({level} dB) outside typical range (0-150 dB)")
+        
+        # Check A-weighted level consistency
+        noise_level = element_data.get('noise_level')
+        if noise_level is not None:
+            if not isinstance(noise_level, (int, float)):
+                result.add_error(f"Source noise level must be numeric, got {type(noise_level)}")
+            elif noise_level < 20 or noise_level > 140:
+                result.add_warning(f"Source noise level ({noise_level} dBA) outside typical range (20-140 dBA)")
+    
+    def _validate_duct_element(self, element_data: Dict[str, Any], result: ValidationResult):
+        """Validate duct element data"""
+        # Length validation
+        length = element_data.get('length', 0)
+        if not isinstance(length, (int, float)) or length <= 0:
+            result.add_error(f"Duct length must be positive, got {length}")
+        elif length > 1000:
+            result.add_warning(f"Duct length ({length} ft) is unusually long")
+        
+        # Dimension validation
+        duct_shape = element_data.get('duct_shape', 'rectangular').lower()
+        if duct_shape == 'rectangular':
+            width = element_data.get('width', 0)
+            height = element_data.get('height', 0)
+            
+            if not isinstance(width, (int, float)) or width <= 0:
+                result.add_error(f"Duct width must be positive, got {width}")
+            elif width > 120:
+                result.add_warning(f"Duct width ({width} in) is unusually large")
+            
+            if not isinstance(height, (int, float)) or height <= 0:
+                result.add_error(f"Duct height must be positive, got {height}")
+            elif height > 120:
+                result.add_warning(f"Duct height ({height} in) is unusually large")
+                
+        elif duct_shape == 'circular':
+            diameter = element_data.get('diameter', 0)
+            if not isinstance(diameter, (int, float)) or diameter <= 0:
+                result.add_error(f"Duct diameter must be positive, got {diameter}")
+            elif diameter > 120:
+                result.add_warning(f"Duct diameter ({diameter} in) is unusually large")
+    
+    def _validate_fitting_element(self, element_data: Dict[str, Any], result: ValidationResult):
+        """Validate fitting element data (elbows, junctions)"""
+        # Flow rate validation
+        flow_rate = element_data.get('flow_rate', 0)
+        if not isinstance(flow_rate, (int, float)) or flow_rate <= 0:
+            result.add_error(f"Fitting flow rate must be positive, got {flow_rate}")
+        elif flow_rate > 50000:
+            result.add_warning(f"Flow rate ({flow_rate} CFM) is very high")
+        
+        # Pressure drop validation
+        pressure_drop = element_data.get('pressure_drop')
+        if pressure_drop is not None:
+            if not isinstance(pressure_drop, (int, float)) or pressure_drop < 0:
+                result.add_error(f"Pressure drop must be non-negative, got {pressure_drop}")
+            elif pressure_drop > 5.0:
+                result.add_warning(f"Pressure drop ({pressure_drop} in. w.g.) is very high")
+    
+    def _validate_terminal_element(self, element_data: Dict[str, Any], result: ValidationResult):
+        """Validate terminal element data"""
+        # Room correction parameters
+        room_volume = element_data.get('room_volume')
+        if room_volume is not None:
+            if not isinstance(room_volume, (int, float)) or room_volume <= 0:
+                result.add_error(f"Room volume must be positive, got {room_volume}")
+            elif room_volume > 1000000:
+                result.add_warning(f"Room volume ({room_volume} ft³) is very large")
+        
+        room_absorption = element_data.get('room_absorption')
+        if room_absorption is not None:
+            if not isinstance(room_absorption, (int, float)) or room_absorption <= 0:
+                result.add_error(f"Room absorption must be positive, got {room_absorption}")
+    
+    def _validate_physical_constraints(self, element_data: Dict[str, Any], result: ValidationResult):
+        """Validate physical constraints and relationships"""
+        # Flow velocity validation
+        flow_rate = element_data.get('flow_rate')
+        width = element_data.get('width')
+        height = element_data.get('height')
+        diameter = element_data.get('diameter')
+        
+        if flow_rate and isinstance(flow_rate, (int, float)) and flow_rate > 0:
+            area = None
+            if width and height:
+                area = (width * height) / 144  # Convert to sq ft
+            elif diameter:
+                area = 3.14159 * (diameter/24)**2  # Convert to sq ft
+            
+            if area and area > 0:
+                velocity = flow_rate / area
+                if velocity < 100:
+                    result.add_info(f"Low air velocity ({velocity:.0f} fpm) - check for oversized ductwork")
+                elif velocity > 6000:
+                    result.add_warning(f"Very high air velocity ({velocity:.0f} fpm) - noise and pressure issues likely")
+    
+    def validate_calculation_inputs(self, path_data: Dict[str, Any]) -> ValidationResult:
+        """Comprehensive validation of all calculation inputs"""
+        result = ValidationResult(is_valid=True, errors=[], warnings=[], info=[])
+        
+        try:
+            # Validate overall path structure
+            if not isinstance(path_data, dict):
+                result.add_error(f"Path data must be a dictionary, got {type(path_data)}")
+                return result
+            
+            # Validate source component
+            source_component = path_data.get('source_component')
+            if not source_component:
+                result.add_error("Missing source component")
+            else:
+                source_validation = self.validate_path_element(source_component, 'source')
+                result.merge(source_validation)
+            
+            # Validate segments
+            segments = path_data.get('segments', [])
+            if not segments:
+                result.add_warning("No segments in path")
+            else:
+                for i, segment in enumerate(segments):
+                    if not isinstance(segment, dict):
+                        result.add_error(f"Segment {i+1} must be a dictionary")
+                        continue
+                    
+                    segment_validation = self.validate_path_element(segment, 'duct')
+                    result.merge(segment_validation)
+                    
+                    # Check for fittings
+                    fittings = segment.get('fittings', [])
+                    for j, fitting in enumerate(fittings):
+                        fitting_type = fitting.get('fitting_type', 'unknown')
+                        fitting_validation = self.validate_path_element(fitting, fitting_type)
+                        result.merge(fitting_validation)
+            
+            # Validate terminal component
+            terminal_component = path_data.get('terminal_component')
+            if terminal_component:
+                terminal_validation = self.validate_path_element(terminal_component, 'terminal')
+                result.merge(terminal_validation)
+            
+            # Cross-validate path consistency
+            self._validate_path_consistency(path_data, result)
+            
+        except Exception as e:
+            result.add_error(f"Input validation failed: {e}")
+        
+        return result
+    
+    def _validate_path_consistency(self, path_data: Dict[str, Any], result: ValidationResult):
+        """Validate consistency across the entire path"""
+        segments = path_data.get('segments', [])
+        
+        # Check flow rate consistency
+        flow_rates = []
+        for segment in segments:
+            flow_rate = segment.get('flow_rate')
+            if flow_rate and isinstance(flow_rate, (int, float)):
+                flow_rates.append(flow_rate)
+        
+        if len(flow_rates) > 1:
+            max_flow = max(flow_rates)
+            min_flow = min(flow_rates)
+            if max_flow > 0 and (max_flow - min_flow) / max_flow > 0.5:
+                result.add_warning(f"Large flow rate variation in path: {min_flow:.0f} to {max_flow:.0f} CFM")
+        
+        # Check duct sizing consistency
+        areas = []
+        for segment in segments:
+            width = segment.get('width')
+            height = segment.get('height')
+            diameter = segment.get('diameter')
+            
+            if width and height:
+                area = width * height
+            elif diameter:
+                area = 3.14159 * (diameter/2)**2
+            else:
+                continue
+            
+            areas.append(area)
+        
+        if len(areas) > 1:
+            max_area = max(areas)
+            min_area = min(areas)
+            if max_area > 0 and (max_area - min_area) / max_area > 0.8:
+                result.add_info("Significant duct size changes detected - verify transitions are properly modeled")

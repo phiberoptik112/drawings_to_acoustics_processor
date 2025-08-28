@@ -2,6 +2,7 @@
 HVAC Component Dialog - Add and edit HVAC components with noise properties
 """
 
+from typing import Union, Optional
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QLabel, QLineEdit, QTextEdit, QComboBox, 
                              QPushButton, QGroupBox, QDoubleSpinBox,
@@ -13,6 +14,7 @@ from models import get_session
 from models.mechanical import MechanicalUnit
 from models.hvac import HVACComponent, HVACPath, HVACSegment
 from data.components import STANDARD_COMPONENTS
+from calculations.hvac_constants import get_default_cfm_for_component, is_valid_cfm_value
 
 
 class HVACComponentDialog(QDialog):
@@ -108,8 +110,15 @@ class HVACComponentDialog(QDialog):
         self.noise_spin.setDecimals(1)
         acoustic_layout.addRow("Base Noise Level:", self.noise_spin)
         
+        # CFM (airflow rate)
+        self.cfm_spin = QDoubleSpinBox()
+        self.cfm_spin.setRange(10, 100000)
+        self.cfm_spin.setSuffix(" CFM")
+        self.cfm_spin.setDecimals(0)
+        acoustic_layout.addRow("Airflow Rate:", self.cfm_spin)
+        
         # Use standard checkbox
-        self.use_standard_cb = QCheckBox("Use standard noise level for component type")
+        self.use_standard_cb = QCheckBox("Use standard values for component type")
         self.use_standard_cb.setChecked(True)
         self.use_standard_cb.toggled.connect(self.on_use_standard_toggled)
         acoustic_layout.addRow("", self.use_standard_cb)
@@ -320,6 +329,12 @@ class HVACComponentDialog(QDialog):
             except Exception:
                 self._selected_mech_unit_id = None
 
+            # Set CFM from mechanical unit if available
+            if hasattr(unit, 'airflow_cfm') and unit.airflow_cfm:
+                self.cfm_spin.setValue(unit.airflow_cfm)
+                self.use_standard_cb.setChecked(False)
+                self.cfm_spin.setEnabled(True)
+            
             # If no band data is available, fall back to standard noise behavior
             if not (inlet or radiated or outlet):
                 # Fallback to standard noise when no bands
@@ -331,7 +346,7 @@ class HVACComponentDialog(QDialog):
             self.on_use_standard_toggled(True)
 
     @staticmethod
-    def _map_unit_type_to_component_type(unit_type_text: str | None) -> str:
+    def _map_unit_type_to_component_type(unit_type_text: Optional[str]) -> str:
         if not unit_type_text:
             return 'ahu'
         t = unit_type_text.strip().lower()
@@ -365,7 +380,9 @@ class HVACComponentDialog(QDialog):
         """Handle component type change"""
         if component_type in STANDARD_COMPONENTS:
             standard_noise = STANDARD_COMPONENTS[component_type].get('noise_level', 50.0)
+            standard_cfm = STANDARD_COMPONENTS[component_type].get('cfm', get_default_cfm_for_component(component_type))
             self.noise_spin.setValue(standard_noise)
+            self.cfm_spin.setValue(standard_cfm)
             
             # Update name suggestion
             if not self.name_edit.text():
@@ -377,10 +394,14 @@ class HVACComponentDialog(QDialog):
             component_type = self.type_combo.currentText()
             if component_type in STANDARD_COMPONENTS:
                 standard_noise = STANDARD_COMPONENTS[component_type].get('noise_level', 50.0)
+                standard_cfm = STANDARD_COMPONENTS[component_type].get('cfm', get_default_cfm_for_component(component_type))
                 self.noise_spin.setValue(standard_noise)
+                self.cfm_spin.setValue(standard_cfm)
             self.noise_spin.setEnabled(False)
+            self.cfm_spin.setEnabled(False)
         else:
             self.noise_spin.setEnabled(True)
+            self.cfm_spin.setEnabled(True)
     
     def load_component_data(self):
         """Load existing component data for editing"""
@@ -403,6 +424,16 @@ class HVACComponentDialog(QDialog):
             self.noise_spin.setValue(self.component.noise_level)
             self.use_standard_cb.setChecked(False)
             self.noise_spin.setEnabled(True)
+            
+        # Set CFM value
+        if hasattr(self.component, 'cfm') and self.component.cfm is not None:
+            self.cfm_spin.setValue(self.component.cfm)
+            self.use_standard_cb.setChecked(False)
+            self.cfm_spin.setEnabled(True)
+        else:
+            # Use default CFM for component type
+            default_cfm = get_default_cfm_for_component(self.component.component_type)
+            self.cfm_spin.setValue(default_cfm)
         # Try to restore frequency preview from a Mechanical Unit association on any path
         try:
             session = get_session()
@@ -481,6 +512,7 @@ class HVACComponentDialog(QDialog):
                 db_comp.x_position = self.x_spin.value()
                 db_comp.y_position = self.y_spin.value()
                 db_comp.noise_level = self.noise_spin.value()
+                db_comp.cfm = self.cfm_spin.value()
                 session.commit()
                 print("DEBUG[HVACComponentDialog]: Saved component", {"id": db_comp.id, "name": db_comp.name, "type": db_comp.component_type, "noise": db_comp.noise_level})
                 # Mirror saved values back into the in-memory object used by the UI
@@ -489,6 +521,7 @@ class HVACComponentDialog(QDialog):
                 self.component.x_position = db_comp.x_position
                 self.component.y_position = db_comp.y_position
                 self.component.noise_level = db_comp.noise_level
+                self.component.cfm = db_comp.cfm
                 # If user imported a Mechanical Unit in this edit, propagate association to any paths
                 try:
                     if self._selected_mech_unit_id:
@@ -519,7 +552,8 @@ class HVACComponentDialog(QDialog):
                     component_type=self.type_combo.currentText(),
                     x_position=self.x_spin.value(),
                     y_position=self.y_spin.value(),
-                    noise_level=self.noise_spin.value()
+                    noise_level=self.noise_spin.value(),
+                    cfm=self.cfm_spin.value()
                 )
                 
                 session.add(component)
