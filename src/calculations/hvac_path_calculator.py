@@ -80,7 +80,7 @@ class HVACPathCalculator:
                         component_type=comp_data.get('component_type', 'unknown'),
                         x_position=comp_data.get('x', 0),
                         y_position=comp_data.get('y', 0),
-                        noise_level=self.get_component_noise_level(comp_data.get('component_type', ''))
+                        noise_level=None
                     )
                     session.add(hvac_comp)
                     session.flush()  # Get ID
@@ -425,45 +425,158 @@ class HVACPathCalculator:
                 if self.debug_export_enabled:
                     print(f"DEBUG: Using stored segment order; connectivity ordering failed: {e}")
 
-            # Get source: prefer explicit HVACComponent relationship; fallback to MechanicalUnit id
+            # Get source: prefer explicit HVACComponent relationship; otherwise derive from MechanicalUnit or first component
             source_comp = getattr(hvac_path, 'primary_source', None)
             
             if source_comp is not None:
+                # Seed from component; attempt to enrich with Mechanical Unit spectrum by matching
+                if self.debug_export_enabled:
+                    try:
+                        print("DEBUG: Source component present:", {
+                            'id': getattr(source_comp, 'id', None),
+                            'type': getattr(source_comp, 'component_type', None),
+                            'noise_level': getattr(source_comp, 'noise_level', None),
+                        })
+                    except Exception:
+                        pass
                 path_data['source_component'] = {
                     'component_type': source_comp.component_type,
-                    'noise_level': source_comp.noise_level or self.get_component_noise_level(source_comp.component_type)
+                    'noise_level': source_comp.noise_level
                 }
+                try:
+                    unit = self.find_matching_mechanical_unit(source_comp, getattr(hvac_path, 'project_id', self.project_id))
+                except Exception:
+                    unit = None
+                bands_set = False
+                if unit is not None:
+                    try:
+                        import json
+                        origin = None
+                        ob = None
+                        if getattr(unit, 'outlet_levels_json', None):
+                            ob = getattr(unit, 'outlet_levels_json', None); origin = 'outlet'
+                        elif getattr(unit, 'inlet_levels_json', None):
+                            ob = getattr(unit, 'inlet_levels_json', None); origin = 'inlet'
+                        elif getattr(unit, 'radiated_levels_json', None):
+                            ob = getattr(unit, 'radiated_levels_json', None); origin = 'radiated'
+                        if self.debug_export_enabled:
+                            print(f"DEBUG: MU '{unit.name}' band origin:", origin, 'has_data=', bool(ob))
+                        octave_bands = None
+                        if ob:
+                            data = json.loads(ob)
+                            if self.debug_export_enabled:
+                                try:
+                                    dtype = type(data).__name__
+                                    dkeys = list(data.keys()) if hasattr(data, 'keys') else None
+                                    print("DEBUG: MU bands JSON loaded:", {'type': dtype, 'keys': dkeys})
+                                except Exception:
+                                    pass
+                            order = ["63","125","250","500","1000","2000","4000","8000"]
+                            if hasattr(data, 'get'):
+                                octave_bands = [float(data.get(k, 0) or 0) for k in order]
+                            elif isinstance(data, list) and len(data) >= 8:
+                                octave_bands = [float(x or 0) for x in data[:8]]
+                            if self.debug_export_enabled:
+                                print("DEBUG: MU octave_bands parsed:", octave_bands)
+                        path_data['source_component']['octave_band_levels'] = octave_bands
+                        bands_set = bool(octave_bands)
+                        if self.debug_export_enabled:
+                            print(f"DEBUG: Enriched source from matched Mechanical Unit '{unit.name}' with bands: {octave_bands}")
+                    except Exception as e:
+                        if self.debug_export_enabled:
+                            print(f"DEBUG: Failed to enrich source with Mechanical Unit bands: {e}")
+                # Fallback: if primary source had no MU bands, try the first segment's from_component (likely the fan)
+                if not bands_set:
+                    try:
+                        first_seg = segments[0] if segments else None
+                        from_comp = getattr(first_seg, 'from_component', None) if first_seg else None
+                        if from_comp is not None:
+                            if self.debug_export_enabled:
+                                print("DEBUG: Fallback to first segment's from_component for MU bands:", {
+                                    'id': getattr(from_comp, 'id', None),
+                                    'type': getattr(from_comp, 'component_type', None),
+                                    'name': getattr(from_comp, 'name', None),
+                                })
+                            mu2 = self.find_matching_mechanical_unit(from_comp, getattr(hvac_path, 'project_id', self.project_id))
+                            if mu2 is not None:
+                                import json
+                                ob2 = (getattr(mu2, 'outlet_levels_json', None) or
+                                       getattr(mu2, 'inlet_levels_json', None) or
+                                       getattr(mu2, 'radiated_levels_json', None))
+                                bands2 = None
+                                if ob2:
+                                    data2 = json.loads(ob2)
+                                    order = ["63","125","250","500","1000","2000","4000","8000"]
+                                    if hasattr(data2, 'get'):
+                                        bands2 = [float(data2.get(k, 0) or 0) for k in order]
+                                    elif isinstance(data2, list) and len(data2) >= 8:
+                                        bands2 = [float(x or 0) for x in data2[:8]]
+                                if bands2:
+                                    path_data['source_component'] = {
+                                        'component_type': getattr(mu2, 'unit_type', None) or 'unit',
+                                        'noise_level': getattr(mu2, 'base_noise_dba', None),
+                                        'octave_band_levels': bands2,
+                                    }
+                                    if self.debug_export_enabled:
+                                        print(f"DEBUG: Fallback MU match '{mu2.name}' provided bands: {bands2}")
+                    except Exception as e:
+                        if self.debug_export_enabled:
+                            print("DEBUG: Fallback MU band extraction failed:", e)
             else:
-                # Mechanical unit lookup using the active session
+                # 1) If primary_source_id was stored (legacy), try to interpret it as a MechanicalUnit id
                 unit = None
                 if getattr(hvac_path, 'primary_source_id', None):
                     unit = session.query(MechanicalUnit).filter(
                         MechanicalUnit.id == hvac_path.primary_source_id
                     ).first()
 
+                # 2) If no direct unit link, try to match a MechanicalUnit to the first component
+                matched_by_name = None
+                try:
+                    first_segment = segments[0]
+                    if first_segment.from_component:
+                        matched_by_name = self.find_matching_mechanical_unit(first_segment.from_component, getattr(hvac_path, 'project_id', self.project_id))
+                except Exception:
+                    matched_by_name = None
+
+                unit = unit or matched_by_name
+
                 if unit is not None:
                     # Parse outlet spectrum if available
                     octave_bands = None
                     try:
                         import json
-                        ob = (getattr(unit, 'outlet_levels_json', None) or 
-                              getattr(unit, 'inlet_levels_json', None) or 
-                              getattr(unit, 'radiated_levels_json', None))
+                        origin = None
+                        ob = None
+                        if getattr(unit, 'outlet_levels_json', None):
+                            ob = getattr(unit, 'outlet_levels_json', None); origin = 'outlet'
+                        elif getattr(unit, 'inlet_levels_json', None):
+                            ob = getattr(unit, 'inlet_levels_json', None); origin = 'inlet'
+                        elif getattr(unit, 'radiated_levels_json', None):
+                            ob = getattr(unit, 'radiated_levels_json', None); origin = 'radiated'
+                        if self.debug_export_enabled:
+                            print(f"DEBUG: MU '{unit.name}' band origin:", origin, 'has_data=', bool(ob))
                         if ob:
                             data = json.loads(ob)
+                            if self.debug_export_enabled:
+                                try:
+                                    dtype = type(data).__name__
+                                    dkeys = list(data.keys()) if hasattr(data, 'keys') else None
+                                    print("DEBUG: MU bands JSON loaded:", {'type': dtype, 'keys': dkeys})
+                                except Exception:
+                                    pass
                             order = ["63","125","250","500","1000","2000","4000","8000"]
-                            octave_bands = [float(data.get(k, 0) or 0) for k in order]
+                            if hasattr(data, 'get'):
+                                octave_bands = [float(data.get(k, 0) or 0) for k in order]
+                            elif isinstance(data, list) and len(data) >= 8:
+                                octave_bands = [float(x or 0) for x in data[:8]]
+                            if self.debug_export_enabled:
+                                print("DEBUG: MU octave_bands parsed:", octave_bands)
                     except Exception:
                         octave_bands = None
                     
-                    # Derive A-weighted level from spectrum if present
-                    noise_level = None
-                    if octave_bands:
-                        try:
-                            noise_level = self.noise_calculator.hvac_engine._calculate_dba_from_spectrum(octave_bands)
-                        except Exception:
-                            pass
-                    noise_level = noise_level or getattr(unit, 'base_noise_dba', None) or 50.0
+                    # Do not derive A-weighted level from spectrum here; the engine uses the spectrum directly
+                    noise_level = getattr(unit, 'base_noise_dba', None)
                     
                     path_data['source_component'] = {
                         'component_type': getattr(unit, 'unit_type', None) or 'unit',
@@ -472,26 +585,34 @@ class HVACPathCalculator:
                     }
                     
                     if self.debug_export_enabled:
-                        print(f"DEBUG: Using mechanical unit '{unit.name}' as source with {noise_level:.1f} dB(A)")
+                        noise_str = f"{float(noise_level):.1f} dB(A)" if isinstance(noise_level, (int, float)) else "n/a"
+                        print(f"DEBUG: Using mechanical unit '{unit.name}' as source with {noise_str}")
                         if octave_bands:
                             print(f"DEBUG: Octave bands: {octave_bands}")
                 else:
-                    # Fallback to first segment's from_component
+                    # 3) Fallback to first segment's from_component base noise level (no spectrum)
                     first_segment = segments[0]
                     if first_segment.from_component:
                         comp = first_segment.from_component
+                        if self.debug_export_enabled:
+                            print("DEBUG: No linked/matched MU. Using from_component as source:", {
+                                'comp_id': getattr(comp, 'id', None),
+                                'name': getattr(comp, 'name', None),
+                                'type': getattr(comp, 'component_type', None),
+                                'noise_level': getattr(comp, 'noise_level', None),
+                            })
                         path_data['source_component'] = {
                             'component_type': comp.component_type,
-                            'noise_level': comp.noise_level or self.get_component_noise_level(comp.component_type)
+                            'noise_level': comp.noise_level
                         }
-            
+
             # Get terminal component
             last_segment = segments[-1]
             if last_segment.to_component:
                 comp = last_segment.to_component
                 path_data['terminal_component'] = {
                     'component_type': comp.component_type,
-                    'noise_level': comp.noise_level or self.get_component_noise_level(comp.component_type)
+                    'noise_level': comp.noise_level
                 }
             
             # Convert segments
@@ -516,6 +637,32 @@ class HVACPathCalculator:
                 if self.debug_export_enabled:
                     print(f"DEBUG: Range validation failed: {e}")
             
+            # Require valid source octave-band spectrum; abort if missing
+            try:
+                src = path_data.get('source_component') or {}
+                bands = src.get('octave_band_levels') if isinstance(src, dict) else None
+                valid_bands = isinstance(bands, list) and len(bands) == 8 and any(isinstance(b, (int, float)) for b in bands)
+                if not valid_bands:
+                    if self.debug_export_enabled:
+                        print("DEBUG: Aborting path data build - missing source octave-band spectrum; source_component=", src)
+                    return None
+            except Exception:
+                if self.debug_export_enabled:
+                    print("DEBUG: Aborting path data build - exception while validating source bands")
+                return None
+
+            # Require valid source octave-band spectrum; abort if missing
+            try:
+                src = path_data.get('source_component') or {}
+                bands = src.get('octave_band_levels') if isinstance(src, dict) else None
+                valid_bands = isinstance(bands, list) and len(bands) == 8 and any(isinstance(b, (int, float)) for b in bands)
+                if not valid_bands:
+                    if self.debug_export_enabled:
+                        print("DEBUG: Aborting path data build - missing source octave-band spectrum")
+                    return None
+            except Exception:
+                return None
+
             # Enhanced debug export
             if self.debug_export_enabled:
                 self._export_enhanced_debug_data(hvac_path, path_data)
@@ -528,41 +675,17 @@ class HVACPathCalculator:
             return None
 
     def _build_path_data_fallback(self, hvac_path: HVACPath) -> Optional[Dict]:
-        """Fallback method for building path data with potentially detached instances"""
+        """Fallback debug helper: log context and return None to force failure upstream."""
         try:
             if self.debug_export_enabled:
-                print("DEBUG: Using fallback path data building (objects may be detached)")
-            
-            path_data = {
-                'source_component': {'component_type': 'unknown', 'noise_level': 50.0},
-                'terminal_component': {'component_type': 'unknown', 'noise_level': 50.0},
-                'segments': []
-            }
-            
-            # Try to get basic information without triggering lazy loads
-            try:
-                if hasattr(hvac_path, 'segments') and hvac_path.segments:
-                    for i, segment in enumerate(hvac_path.segments):
-                        segment_data = {
-                            'length': getattr(segment, 'length', None) or 0,
-                            'duct_width': getattr(segment, 'duct_width', None) or 12,
-                            'duct_height': getattr(segment, 'duct_height', None) or 8,
-                            'duct_shape': getattr(segment, 'duct_shape', None) or 'rectangular',
-                            'duct_type': getattr(segment, 'duct_type', None) or 'sheet_metal',
-                            'insulation': getattr(segment, 'insulation', None),
-                            'lining_thickness': getattr(segment, 'lining_thickness', None) or 0,
-                            'fittings': []
-                        }
-                        path_data['segments'].append(segment_data)
-            except Exception as e:
-                if self.debug_export_enabled:
-                    print(f"DEBUG: Could not extract segment data in fallback: {e}")
-            
-            return path_data
-            
-        except Exception as e:
-            if self.debug_export_enabled:
-                print(f"DEBUG: Fallback path data building failed: {e}")
+                print("DEBUG: Fallback invoked for path data build (objects may be detached). Collecting minimal debug info...")
+                try:
+                    seg_count = len(getattr(hvac_path, 'segments', []) or [])
+                    print(f"DEBUG: Fallback: segment count={seg_count}")
+                except Exception:
+                    pass
+            return None
+        except Exception:
             return None
 
     def _build_segment_data(self, segment) -> Dict:
@@ -625,6 +748,21 @@ class HVACPathCalculator:
             segment_data['fitting_type'] = specific_type
         elif inferred_type:
             segment_data['fitting_type'] = inferred_type
+        else:
+            # Infer from connected component types when no explicit fitting data is present
+            try:
+                from_comp_type = (getattr(segment, 'from_component', None) or getattr(segment, 'from_component', None)).component_type if getattr(segment, 'from_component', None) else ''
+                to_comp_type = (getattr(segment, 'to_component', None) or getattr(segment, 'to_component', None)).component_type if getattr(segment, 'to_component', None) else ''
+                fct = (from_comp_type or '').lower()
+                tct = (to_comp_type or '').lower()
+                # Common mappings
+                if 'elbow' in fct or 'elbow' in tct:
+                    segment_data['fitting_type'] = 'elbow'
+                elif 'branch' in fct or 'branch' in tct or 'tee' in fct or 'tee' in tct:
+                    segment_data['fitting_type'] = 'junction'
+                # Grille/diffuser do not change fitting_type; they are terminals
+            except Exception:
+                pass
         
         return segment_data
 
@@ -668,10 +806,10 @@ class HVACPathCalculator:
                 type_mappings = {
                     'ahu': ['AHU', 'Air Handling Unit'],
                     'rtu': ['RTU', 'Rooftop Unit'],
-                    'ef': ['EF', 'Exhaust Fan'], 
+                    'rf': ['RF', 'Return Fan'], 
                     'sf': ['SF', 'Supply Fan'],
                     'vav': ['VAV', 'Variable Air Volume'],
-                    'fan': ['EF', 'SF', 'Fan'],
+                    'fan': ['RF', 'SF', 'Fan', 'EF'],
                     'air_handler': ['AHU', 'Air Handling Unit']
                 }
                 
@@ -845,8 +983,8 @@ class HVACPathCalculator:
         return self.order_segments_for_path(segments, preferred_source_component_id)
     
     def get_component_noise_level(self, component_type: str) -> float:
-        """Get standard noise level for component type"""
-        return STANDARD_COMPONENTS.get(component_type, {}).get('noise_level', 50.0)
+        """Deprecated: standard base noise no longer used for path seeding."""
+        return float('nan')
     
     def get_fitting_noise_adjustment(self, fitting_type: str) -> float:
         """Get standard noise adjustment for fitting type"""

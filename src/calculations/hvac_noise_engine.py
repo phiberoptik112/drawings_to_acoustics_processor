@@ -4,6 +4,7 @@ Integrates all specialized calculators for complete path analysis
 """
 
 import math
+import os
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Union, Any
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from .elbow_turning_vane_generated_noise_calculations import ElbowTurningVaneCal
 from .junction_elbow_generated_noise_calculations import JunctionElbowNoiseCalculator, JunctionType
 from .rectangular_elbows_calculations import RectangularElbowsCalculator
 from .receiver_room_sound_correction_calculations import ReceiverRoomSoundCorrection
+from .end_reflection_loss import erl_from_equation, compute_effective_diameter_rectangular
 # TODO: Create unlined_rectangular_duct_calculations.py
 # from .unlined_rectangular_duct_calculations import UnlinedRectangularDuctCalculator
 
@@ -148,10 +150,16 @@ class HVACNoiseEngine:
                 if source_element.octave_band_levels:
                     current_spectrum = source_element.octave_band_levels.copy()
                     current_dba = source_element.source_noise_level
+                    if os.environ.get('HVAC_DEBUG_EXPORT'):
+                        print("DEBUG[HVACEngine]: Seeded source from spectrum:", current_spectrum,
+                              "dBA=", f"{float(current_dba):.1f}")
                 else:
                     # Estimate spectrum from A-weighted level
                     current_spectrum = self._estimate_spectrum_from_dba(source_element.source_noise_level)
                     current_dba = source_element.source_noise_level
+                    if os.environ.get('HVAC_DEBUG_EXPORT'):
+                        print("DEBUG[HVACEngine]: Estimated source spectrum from dBA=",
+                              f"{float(current_dba):.1f}", "->", current_spectrum)
 
             # Add a pseudo element result for the Source so UI numbering starts at 1
             try:
@@ -195,6 +203,10 @@ class HVACNoiseEngine:
                 noise_before_dba = current_dba
                 spectrum_before = current_spectrum.copy()
                 nc_before = self._calculate_nc_rating(spectrum_before)
+                if os.environ.get('HVAC_DEBUG_EXPORT'):
+                    print(f"DEBUG[HVACEngine]: Element {i} ({element.element_type}) BEFORE: dBA=",
+                          f"{float(noise_before_dba):.1f}", "spectrum=", spectrum_before,
+                          "NC=", nc_before)
                 element_result = self._calculate_element_effect(element, current_spectrum, current_dba)
                 element_result['element_id'] = element.element_id
                 element_result['element_type'] = element.element_type
@@ -207,6 +219,8 @@ class HVACNoiseEngine:
                 if element_result.get('attenuation_spectrum'):
                     attenuation_spectrum = element_result['attenuation_spectrum']
                     if isinstance(attenuation_spectrum, list):
+                        if os.environ.get('HVAC_DEBUG_EXPORT'):
+                            print(f"DEBUG[HVACEngine]: Element {i} attenuation_spectrum:", attenuation_spectrum)
                         # Apply attenuation (subtract)
                         for j in range(min(8, len(attenuation_spectrum))):
                             current_spectrum[j] -= attenuation_spectrum[j]
@@ -215,6 +229,8 @@ class HVACNoiseEngine:
                 if element_result.get('generated_spectrum'):
                     generated_spectrum = element_result['generated_spectrum']
                     if isinstance(generated_spectrum, list):
+                        if os.environ.get('HVAC_DEBUG_EXPORT'):
+                            print(f"DEBUG[HVACEngine]: Element {i} generated_spectrum:", generated_spectrum)
                         # Add generated noise
                         for j in range(min(8, len(generated_spectrum))):
                             if generated_spectrum[j] > 0:
@@ -225,6 +241,10 @@ class HVACNoiseEngine:
                 # Update A-weighted level
                 current_dba = self._calculate_dba_from_spectrum(current_spectrum)
                 nc_after = self._calculate_nc_rating(current_spectrum)
+                if os.environ.get('HVAC_DEBUG_EXPORT'):
+                    print(f"DEBUG[HVACEngine]: Element {i} AFTER: dBA=",
+                          f"{float(current_dba):.1f}", "spectrum=", current_spectrum,
+                          "NC=", nc_after)
                 
                 # Provide legacy keys expected by UI
                 element_result['noise_before'] = noise_before_dba
@@ -529,13 +549,47 @@ class HVACNoiseEngine:
         }
         
         try:
-            if element.room_volume > 0 and element.room_absorption > 0:
-                # Apply room correction using the room calculator
-                # This would typically be applied to the final spectrum
-                # For now, we'll note that room correction is available
-                result['room_correction_available'] = True
-                result['room_volume'] = element.room_volume
-                result['room_absorption'] = element.room_absorption
+            # 1) End Reflection Loss at terminal (treat grille/diffuser termination as 'flush')
+            diameter_in: float = 0.0
+            try:
+                if (getattr(element, 'duct_shape', 'rectangular') or '').lower() == 'circular':
+                    diameter_in = float(getattr(element, 'diameter', 0.0) or 0.0)
+                else:
+                    width_in = float(getattr(element, 'width', 0.0) or 0.0)
+                    height_in = float(getattr(element, 'height', 0.0) or 0.0)
+                    if width_in > 0 and height_in > 0:
+                        diameter_in = float(compute_effective_diameter_rectangular(width_in, height_in))
+            except Exception:
+                diameter_in = 0.0
+
+            if diameter_in > 0:
+                erl_spectrum: List[float] = []
+                for freq in self.FREQUENCY_BANDS:
+                    try:
+                        erl_db = float(erl_from_equation(
+                            diameter=diameter_in,
+                            frequency_hz=float(freq),
+                            diameter_units='in',
+                            termination='flush',
+                        ))
+                    except Exception:
+                        erl_db = 0.0
+                    erl_spectrum.append(max(0.0, erl_db))
+                result['attenuation_spectrum'] = erl_spectrum
+                result['attenuation_dba'] = self._calculate_dba_from_spectrum(erl_spectrum)
+                if os.environ.get('HVAC_DEBUG_EXPORT'):
+                    print("DEBUG[HVACEngine]: Terminal ERL diameter_in=", diameter_in,
+                          "attenuation_spectrum=", erl_spectrum,
+                          "attenuation_dba=", f"{float(result['attenuation_dba']):.1f}")
+
+            # 2) Optional receiver room correction metadata (non-blocking)
+            try:
+                if element.room_volume > 0 and element.room_absorption > 0:
+                    result['room_correction_available'] = True
+                    result['room_volume'] = element.room_volume
+                    result['room_absorption'] = element.room_absorption
+            except Exception:
+                pass
                 
         except Exception as e:
             result['error'] = f"Terminal calculation error: {str(e)}"

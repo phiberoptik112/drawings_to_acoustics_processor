@@ -13,7 +13,6 @@ from models import get_session
 from models.mechanical import MechanicalUnit
 from models.hvac import HVACComponent, HVACPath, HVACSegment
 from data.components import STANDARD_COMPONENTS
-from calculations.hvac_noise_engine import HVACNoiseEngine
 
 
 class HVACComponentDialog(QDialog):
@@ -185,17 +184,6 @@ class HVACComponentDialog(QDialog):
             et = str(self._passive_context_elem.get('element_type', '') or '')
             # Only auto-derive for passive/inline types
             if et in {'duct', 'flex_duct', 'elbow', 'junction'}:
-                # Prefer noise_after A-weighted if provided; else derive from spectrum
-                after_dba = self._passive_context_elem.get('noise_after')
-                if not isinstance(after_dba, (int, float)):
-                    bands = self._passive_context_elem.get('noise_after_spectrum')
-                    if isinstance(bands, list) and len(bands) >= 8:
-                        engine = HVACNoiseEngine()
-                        after_dba = engine._calculate_dba_from_spectrum([float(x) for x in bands])
-                if isinstance(after_dba, (int, float)):
-                    self.use_standard_cb.setChecked(False)
-                    self.noise_spin.setEnabled(True)
-                    self.noise_spin.setValue(float(after_dba))
                 # Fill preview labels from spectra where available
                 def fmt(vals):
                     if not vals:
@@ -332,58 +320,8 @@ class HVACComponentDialog(QDialog):
             except Exception:
                 self._selected_mech_unit_id = None
 
-            # Choose best available row to compute A-weighted seed (prefer Outlet)
-            engine = HVACNoiseEngine()
-            seed = outlet or inlet or radiated
-            if seed:
-                # Replace None with 0.0 for calculation
-                seed_clean = [0.0 if v is None else float(v) for v in seed]
-                dba = engine._calculate_dba_from_spectrum(seed_clean)
-                self.use_standard_cb.setChecked(False)
-                self.noise_spin.setEnabled(True)
-                self.noise_spin.setValue(max(0.0, float(dba)))
-                print(f"DEBUG[HVACComponentDialog]: Set base noise from spectrum -> {dba:.1f} dB(A)")
-                # If editing an existing component, persist immediately so closing the window keeps changes
-                if self.is_editing and self.component is not None:
-                    try:
-                        session = get_session()
-                        db_comp = session.query(HVACComponent).filter(HVACComponent.id == self.component.id).first()
-                        if db_comp:
-                            db_comp.name = self.name_edit.text().strip() or db_comp.name
-                            db_comp.component_type = self.type_combo.currentText()
-                            db_comp.noise_level = float(self.noise_spin.value())
-                            session.commit()
-                            print("DEBUG[HVACComponentDialog]: Immediate component save after unit apply:",
-                                  {"id": db_comp.id, "name": db_comp.name, "type": db_comp.component_type, "noise": db_comp.noise_level})
-                            # Also mirror into in-memory object so UI reflects save
-                            self.component.name = db_comp.name
-                            self.component.component_type = db_comp.component_type
-                            self.component.noise_level = db_comp.noise_level
-                            # If this component is source for any paths, associate selected Mechanical Unit to paths
-                            try:
-                                if self._selected_mech_unit_id:
-                                    paths = (
-                                        session.query(HVACPath)
-                                        .join(HVACSegment, HVACSegment.hvac_path_id == HVACPath.id)
-                                        .filter((HVACSegment.from_component_id == db_comp.id) | (HVACSegment.to_component_id == db_comp.id))
-                                        .all()
-                                    )
-                                    for p in paths:
-                                        # Consider this component the source if it appears as the 'from' on the first segment
-                                        if not p.segments:
-                                            continue
-                                        first_seg = sorted(p.segments, key=lambda s: getattr(s, 'segment_order', 0))[0]
-                                        if getattr(first_seg, 'from_component_id', None) == db_comp.id:
-                                            p.primary_source_id = self._selected_mech_unit_id
-                                            print(f"DEBUG[HVACComponentDialog]: Linked path id={p.id} primary_source_id -> MechanicalUnit id {self._selected_mech_unit_id}")
-                                    session.commit()
-                            except Exception:
-                                pass
-                        session.close()
-                    except Exception:
-                        # Non-fatal; user can still click Update to save
-                        pass
-            else:
+            # If no band data is available, fall back to standard noise behavior
+            if not (inlet or radiated or outlet):
                 # Fallback to standard noise when no bands
                 self.use_standard_cb.setChecked(True)
                 self.on_use_standard_toggled(True)

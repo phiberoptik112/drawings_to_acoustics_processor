@@ -2,13 +2,13 @@
 HVAC Debug Dialog - Comprehensive debugging information for HVAC paths
 """
 
-from PyQt5.QtWidgets import (
+from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QTextEdit, 
     QLabel, QTreeWidget, QTreeWidgetItem, QTabWidget, QWidget,
     QSplitter, QMessageBox, QFileDialog
 )
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QFont
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
 import json
 import os
 
@@ -172,12 +172,13 @@ class HVACDebugDialog(QDialog):
             
             calculator = HVACPathCalculator(self.project_id)
             self.debug_report = calculator.generate_debug_report(self.path_id)
-            
-            # Also try to get enhanced debug data
+
+            # Also try to get enhanced JSON + CSV exports directly from the calculator
             try:
-                # Force debug export to generate fresh data
+                # Force debug export to generate fresh data (JSON + CSV)
                 os.environ['HVAC_DEBUG_EXPORT'] = '1'
-                calculator.build_path_data_from_db_by_id(self.path_id)
+                # Running the calculation ensures _debug_export_path_result is invoked
+                calculator.calculate_path_noise(self.path_id, debug=True)
             except Exception:
                 pass
             finally:
