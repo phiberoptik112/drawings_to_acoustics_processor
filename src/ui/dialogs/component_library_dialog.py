@@ -16,7 +16,7 @@ import os
 import subprocess
 import sys
 import csv
-from typing import List
+from typing import List, Union, Optional
 
 from PySide6.QtWidgets import (
     QDialog,
@@ -48,12 +48,13 @@ from PySide6.QtWidgets import QSizePolicy
 from models import get_session
 from models.mechanical import MechanicalUnit, NoiseSource
 from models.hvac import SilencerProduct
+from calculations.hvac_constants import is_valid_cfm_value
 
 
 class ComponentLibraryDialog(QDialog):
     """Project-level component library management dialog."""
 
-    def __init__(self, parent=None, project_id: int | None = None):
+    def __init__(self, parent=None, project_id: Optional[int] = None):
         super().__init__(parent)
         self.project_id = project_id
         self.setWindowTitle("Component Library")
@@ -315,7 +316,8 @@ class ComponentLibraryDialog(QDialog):
             )
             self.mechanical_list.clear()
             for u in units:
-                text = f"{u.name} — {u.unit_type or ''}  {u.airflow_cfm or ''} CFM"
+                cfm_text = f"{u.airflow_cfm:.0f}" if u.airflow_cfm else "—"
+                text = f"{u.name} ({u.unit_type or 'unit'}) — {cfm_text} CFM"
                 item = QListWidgetItem(text)
                 item.setData(Qt.UserRole, u.id)
                 self.mechanical_list.addItem(item)
@@ -607,7 +609,7 @@ class ComponentLibraryDialog(QDialog):
                 self._clear_freq_preview()
                 return
             import json
-            def fill_row(json_str: str | None, row_index: int) -> None:
+            def fill_row(json_str: Optional[str], row_index: int) -> None:
                 # row_index: 0 Inlet, 1 Radiated, 2 Outlet
                 for c in range(self.freq_table.columnCount()):
                     self.freq_table.item(row_index, c).setText("")
@@ -1044,7 +1046,7 @@ class ComponentLibraryDialog(QDialog):
 class MechanicalUnitEditDialog(QDialog):
     """Simple editor for MechanicalUnit properties, including extras JSON."""
 
-    def __init__(self, parent: QWidget | None, unit: MechanicalUnit):
+    def __init__(self, parent: Optional[QWidget], unit: MechanicalUnit):
         super().__init__(parent)
         self.unit = unit
         self.setWindowTitle(f"Edit Mechanical Unit: {unit.name}")
@@ -1069,6 +1071,7 @@ class MechanicalUnitEditDialog(QDialog):
         self.cfm_spin = QDoubleSpinBox()
         self.cfm_spin.setRange(0, 1_000_000)
         self.cfm_spin.setDecimals(1)
+        self.cfm_spin.setToolTip("Design supply CFM - used for HVAC component calculations")
         if unit.airflow_cfm is not None:
             self.cfm_spin.setValue(float(unit.airflow_cfm))
         form.addRow("Airflow (CFM):", self.cfm_spin)
@@ -1116,7 +1119,13 @@ class MechanicalUnitEditDialog(QDialog):
             db_unit.unit_type = self.type_edit.text().strip() or None
             db_unit.manufacturer = self.mfr_edit.text().strip() or None
             db_unit.model_number = self.model_edit.text().strip() or None
-            db_unit.airflow_cfm = float(self.cfm_spin.value()) if self.cfm_spin.value() > 0 else None
+            
+            # Validate and set CFM
+            cfm_value = self.cfm_spin.value() if self.cfm_spin.value() > 0 else None
+            if cfm_value and not is_valid_cfm_value(cfm_value):
+                QMessageBox.warning(self, "CFM Validation", f"CFM value {cfm_value:.0f} is outside typical range.")
+            db_unit.airflow_cfm = cfm_value
+            
             db_unit.external_static_inwg = float(self.esp_spin.value()) if self.esp_spin.value() > 0 else None
             txt = self.extra_text.toPlainText().strip()
             if txt:
@@ -1137,7 +1146,7 @@ class MechanicalUnitEditDialog(QDialog):
 
 
 class SilencerEditDialog(QDialog):
-    def __init__(self, parent=None, silencer: SilencerProduct | None = None):
+    def __init__(self, parent=None, silencer: Optional[SilencerProduct] = None):
         super().__init__(parent)
         self.silencer = silencer
         self.setWindowTitle("Edit Silencer" if silencer else "Add Silencer")
@@ -1371,7 +1380,7 @@ class SilencerEditDialog(QDialog):
                 unit.external_static_inwg = as_float(row[idx_esp]) if idx_esp is not None and idx_esp < len(row) else None
 
                 # Frequency preview: if we detected blocks, assign them to inlet/radiated/outlet
-                def pick_val(i: int | None) -> str:
+                def pick_val(i: Optional[int]) -> str:
                     return row[i] if i is not None and i < len(row) else ""
                 if band_blocks:
                     try:
@@ -1443,7 +1452,7 @@ class SilencerEditDialog(QDialog):
 class ManualMechanicalUnitAddDialog(QDialog):
     """Dialog to manually add a MechanicalUnit with octave-band data."""
 
-    def __init__(self, parent: QWidget | None, project_id: int | None):
+    def __init__(self, parent: Optional[QWidget], project_id: Optional[int]):
         super().__init__(parent)
         self.project_id = project_id
         self.setWindowTitle("Manual Component Add")
@@ -1463,6 +1472,13 @@ class ManualMechanicalUnitAddDialog(QDialog):
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("e.g., 1-1 or AHU-1")
 
+        # CFM input
+        self.cfm_spin = QDoubleSpinBox()
+        self.cfm_spin.setRange(10, 100000)
+        self.cfm_spin.setDecimals(0)
+        self.cfm_spin.setSuffix(" CFM")
+        self.cfm_spin.setValue(1000)  # Default value
+
         # Entry type (sound power/pressure)
         self.entry_type_combo = QComboBox()
         self.entry_type_combo.addItem("Sound Power (Lw)", userData="sound_power")
@@ -1470,6 +1486,7 @@ class ManualMechanicalUnitAddDialog(QDialog):
 
         form.addRow("Type:", self.type_combo)
         form.addRow("Name:", self.name_edit)
+        form.addRow("Airflow (CFM):", self.cfm_spin)
         form.addRow("Entry Type:", self.entry_type_combo)
         v.addLayout(form)
 
@@ -1530,6 +1547,13 @@ class ManualMechanicalUnitAddDialog(QDialog):
         try:
             session = get_session()
             unit = MechanicalUnit(project_id=self.project_id, name=name, unit_type=unit_type)
+            
+            # Set CFM
+            cfm_value = self.cfm_spin.value()
+            if cfm_value and not is_valid_cfm_value(cfm_value, unit_type):
+                QMessageBox.warning(self, "CFM Validation", f"CFM value {cfm_value:.0f} may be unusual for {unit_type or 'this component type'}.")
+            unit.airflow_cfm = cfm_value
+            
             inlet = self._collect_band_values(self.inlet_edits)
             radiated = self._collect_band_values(self.radiated_edits)
             outlet = self._collect_band_values(self.outlet_edits)

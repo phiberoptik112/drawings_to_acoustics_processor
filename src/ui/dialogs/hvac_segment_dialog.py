@@ -2,6 +2,7 @@
 HVAC Segment Dialog - Configure duct segments with fittings and acoustic properties
 """
 
+from typing import Union, Optional
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QLabel, QLineEdit, QTextEdit, QComboBox, 
                              QPushButton, QGroupBox, QDoubleSpinBox,
@@ -422,7 +423,7 @@ class HVACSegmentDialog(QDialog):
         return self.noise_engine.__class__.PathElement if False else None  # placeholder to keep type hints quiet
     
     def _endpoint_allows_fitting(self, component) -> tuple:
-        """Return (allowed: bool, default_fitting: str | None) for a component endpoint.
+        """Return (allowed: bool, default_fitting: Optional[str]) for a component endpoint.
         - Elbow components suggest 'elbow_90'
         - Branch/Junction/Tee components suggest 'tee_branch'
         - Other components do not allow endpoint fittings here.

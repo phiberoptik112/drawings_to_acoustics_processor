@@ -1216,11 +1216,12 @@ class DrawingInterface(QMainWindow):
             }
             
             # Create HVAC path in database
-            hvac_path = self.hvac_path_calculator.create_hvac_path_from_drawing(
+            hvac_path_result = self.hvac_path_calculator.create_hvac_path_from_drawing(
                 self.project_id, drawing_data
             )
             
-            if hvac_path:
+            if hvac_path_result.success:
+                hvac_path = hvac_path_result.data
                 # Register path elements in drawing overlay for show/hide functionality
                 if self.drawing_overlay:
                     self.drawing_overlay.register_path_elements(hvac_path.id, components, path_segments)
@@ -1261,7 +1262,8 @@ class DrawingInterface(QMainWindow):
                 except Exception:
                     pass
             else:
-                QMessageBox.warning(self, "Creation Failed", "Failed to create HVAC path from drawing elements.")
+                error_msg = getattr(hvac_path_result, 'error_message', 'Unknown error occurred')
+                QMessageBox.warning(self, "Creation Failed", f"Failed to create HVAC path from drawing elements.\n\nError: {error_msg}")
                 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")

@@ -10,7 +10,15 @@ from models.hvac import HVACPath, HVACSegment, HVACComponent, SegmentFitting
 from sqlalchemy.orm import selectinload
 from models.mechanical import MechanicalUnit
 from data.components import STANDARD_COMPONENTS, STANDARD_FITTINGS
-from src.calculations.noise_calculator import NoiseCalculator
+from .noise_calculator import NoiseCalculator
+from .debug_logger import debug_logger
+from .result_types import CalculationResult, PathCreationResult, OperationResult
+from .hvac_constants import (
+    DEFAULT_DUCT_WIDTH_IN, DEFAULT_DUCT_HEIGHT_IN, DEFAULT_FLOW_VELOCITY_FPM,
+    NUM_OCTAVE_BANDS, FREQUENCY_BAND_LABELS, DEFAULT_SPECTRUM_LEVELS,
+    DEFAULT_NC_RATING, MAX_PATH_ELEMENTS, INCHES_PER_FOOT,
+    DEFAULT_CFM_VALUES, DEFAULT_CFM_FALLBACK, get_default_cfm_for_component
+)
 # Debug export imports
 import os
 from datetime import datetime
@@ -18,6 +26,13 @@ import json as _json
 import csv as _csv
 from utils import get_user_data_directory
 
+
+def _env_truthy(value: Optional[str]) -> bool:
+    """Interpret common truthy strings for environment flags."""
+    try:
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    except Exception:
+        return False
 
 @dataclass
 class PathAnalysisResult:
@@ -42,11 +57,13 @@ class HVACPathCalculator:
         """Initialize the HVAC path calculator"""
         self.project_id = project_id
         self.noise_calculator = NoiseCalculator()
-        # Debug export switch via environment variable HVAC_DEBUG_EXPORT
-        env_val = str(os.environ.get("HVAC_DEBUG_EXPORT", "")).strip().lower()
-        self.debug_export_enabled = env_val in {"1", "true", "yes", "on"}
+        # Debug logging is now handled by centralized logger
+        self.debug_logger = debug_logger
+        # Unified flag used throughout this class; avoids AttributeError in debug guards
+        import os as _os
+        self.debug_export_enabled = _env_truthy(_os.environ.get('HVAC_DEBUG_EXPORT'))
     
-    def create_hvac_path_from_drawing(self, project_id: int, drawing_data: Dict) -> Optional[HVACPath]:
+    def create_hvac_path_from_drawing(self, project_id: int, drawing_data: Dict) -> CalculationResult[HVACPath]:
         """
         Create HVAC path from drawing elements (components and segments)
         
@@ -55,7 +72,7 @@ class HVACPathCalculator:
             drawing_data: Dictionary containing components and segments from drawing
             
         Returns:
-            Created HVACPath or None if creation failed
+            CalculationResult containing HVACPath on success or error details on failure
         """
         session = None
         try:
@@ -73,14 +90,17 @@ class HVACPathCalculator:
                 # Create HVAC components in database with auto-linking to mechanical units
                 db_components = {}
                 for comp_data in components:
+                    component_type = comp_data.get('component_type', 'unknown')
+                    
                     hvac_comp = HVACComponent(
                         project_id=project_id,
                         drawing_id=comp_data.get('drawing_id', 0),
-                        name=f"{comp_data.get('component_type', 'unknown').upper()}-{len(db_components)+1}",
-                        component_type=comp_data.get('component_type', 'unknown'),
+                        name=f"{component_type.upper()}-{len(db_components)+1}",
+                        component_type=component_type,
                         x_position=comp_data.get('x', 0),
                         y_position=comp_data.get('y', 0),
-                        noise_level=None
+                        noise_level=None,
+                        cfm=comp_data.get('cfm') or get_default_cfm_for_component(component_type)
                     )
                     session.add(hvac_comp)
                     session.flush()  # Get ID
@@ -105,7 +125,7 @@ class HVACPathCalculator:
                 source_comp = db_components[0]
                 terminal_comp = db_components[len(db_components)-1]
                 
-                # Try to find mechanical unit for primary source
+                # Try to find mechanical unit for primary source (for enrichment only)
                 primary_source_unit_id = None
                 try:
                     matched_unit = self.find_matching_mechanical_unit(source_comp, project_id)
@@ -113,18 +133,19 @@ class HVACPathCalculator:
                         primary_source_unit_id = matched_unit.id
                         import os
                         if os.environ.get('HVAC_DEBUG_EXPORT'):
-                            print(f"DEBUG: Setting path primary source to mechanical unit '{matched_unit.name}' (ID: {matched_unit.id})")
+                            print(f"DEBUG: Matched primary source component '{source_comp.name}' to mechanical unit '{matched_unit.name}' for spectrum enrichment")
                 except Exception as e:
                     import os
                     if os.environ.get('HVAC_DEBUG_EXPORT'):
-                        print(f"DEBUG: Could not link path to mechanical unit: {e}")
+                        print(f"DEBUG: Could not match primary source to mechanical unit: {e}")
                 
                 hvac_path = HVACPath(
                     project_id=project_id,
                     name=f"Path: {source_comp.component_type.upper()} to {terminal_comp.component_type.upper()}",
                     description=f"HVAC path from {source_comp.name} to {terminal_comp.name}",
                     path_type='supply',
-                    primary_source_id=primary_source_unit_id  # Link to mechanical unit if found
+                    # Store the HVACComponent as the primary source per schema
+                    primary_source_id=source_comp.id
                 )
                 session.add(hvac_path)
                 session.flush()  # Get ID
@@ -156,18 +177,27 @@ class HVACPathCalculator:
                                 to_comp_id = db_comp.id
                                 break
                     
-                    # Only create segment if we have at least one connection
-                    if from_comp_id or to_comp_id:
+                    # Only create segment if BOTH endpoints are resolved to satisfy NOT NULL FKs
+                    if from_comp_id is not None and to_comp_id is not None:
+                        # Get CFM from source component, fallback to defaults
+                        from_comp = next((c for c in db_components.values() if c.id == from_comp_id), None)
+                        segment_cfm = DEFAULT_CFM_FALLBACK
+                        if from_comp and hasattr(from_comp, 'cfm') and from_comp.cfm:
+                            segment_cfm = from_comp.cfm
+                        elif from_comp and hasattr(from_comp, 'component_type'):
+                            segment_cfm = get_default_cfm_for_component(from_comp.component_type)
+                            
                         hvac_segment = HVACSegment(
                             hvac_path_id=hvac_path.id,
                             from_component_id=from_comp_id,
                             to_component_id=to_comp_id,
                             length=seg_data.get('length_real', 0),
                             segment_order=i+1,
-                            duct_width=12,  # Default rectangular duct
-                            duct_height=8,
+                            duct_width=DEFAULT_DUCT_WIDTH_IN,  # Default rectangular duct
+                            duct_height=DEFAULT_DUCT_HEIGHT_IN,
                             duct_shape='rectangular',
-                            duct_type='sheet_metal'
+                            duct_type='sheet_metal',
+                            flow_rate=segment_cfm
                         )
                         session.add(hvac_segment)
                         created_segments.append(hvac_segment)
@@ -185,20 +215,32 @@ class HVACPathCalculator:
                             return None
                         from_comp_id = match_id_by_pos(fc)
                         to_comp_id = match_id_by_pos(tc)
-                        if from_comp_id or to_comp_id:
+                        if from_comp_id is not None and to_comp_id is not None:
+                            # Get CFM from fallback logic too
+                            from_comp = next((c for c in db_components.values() if c.id == from_comp_id), None)
+                            segment_cfm = DEFAULT_CFM_FALLBACK
+                            if from_comp and hasattr(from_comp, 'cfm') and from_comp.cfm:
+                                segment_cfm = from_comp.cfm
+                            elif from_comp and hasattr(from_comp, 'component_type'):
+                                segment_cfm = get_default_cfm_for_component(from_comp.component_type)
+                                
                             hvac_segment = HVACSegment(
                                 hvac_path_id=hvac_path.id,
                                 from_component_id=from_comp_id,
                                 to_component_id=to_comp_id,
                                 length=seg_data.get('length_real', 0),
                                 segment_order=i+1,
-                                duct_width=12,
-                                duct_height=8,
+                                duct_width=DEFAULT_DUCT_WIDTH_IN,
+                                duct_height=DEFAULT_DUCT_HEIGHT_IN,
                                 duct_shape='rectangular',
-                                duct_type='sheet_metal'
+                                duct_type='sheet_metal',
+                                flow_rate=segment_cfm
                             )
                             session.add(hvac_segment)
                             created_segments.append(hvac_segment)
+                        else:
+                            if self.debug_export_enabled:
+                                print(f"DEBUG: Skipping segment {i} creation - endpoints not both resolved (from={from_comp_id}, to={to_comp_id})")
                 
                 # Reorder segments by connectivity from source to terminal
                 try:
@@ -215,11 +257,18 @@ class HVACPathCalculator:
                 # Calculate noise for the new path (uses any saved source/receiver if available later)
                 self.calculate_path_noise(hvac_path.id)
                 
-                return hvac_path
+                return CalculationResult.success(
+                    hvac_path,
+                    metadata={
+                        'components_created': len(db_components),
+                        'segments_created': len(created_segments),
+                        'mechanical_unit_linked': primary_source_unit_id is not None
+                    }
+                )
             
         except Exception as e:
-            print(f"Error creating HVAC path: {e}")
-            return None
+            self.debug_logger.error('PathCalculator', 'Error creating HVAC path', error=e)
+            return CalculationResult.error(f"Failed to create HVAC path: {str(e)}")
     
     def calculate_path_noise(self, path_id: int, debug: bool = False) -> PathAnalysisResult:
         """
@@ -357,7 +406,7 @@ class HVACPathCalculator:
         
         return results
     
-    def build_path_data_from_db(self, hvac_path: HVACPath) -> Optional[Dict]:
+    def build_path_data_from_db(self, hvac_path: HVACPath) -> CalculationResult[Dict]:
         """
         Build path data structure from database HVAC path
         
@@ -641,7 +690,7 @@ class HVACPathCalculator:
             try:
                 src = path_data.get('source_component') or {}
                 bands = src.get('octave_band_levels') if isinstance(src, dict) else None
-                valid_bands = isinstance(bands, list) and len(bands) == 8 and any(isinstance(b, (int, float)) for b in bands)
+                valid_bands = isinstance(bands, list) and len(bands) == NUM_OCTAVE_BANDS and any(isinstance(b, (int, float)) for b in bands)
                 if not valid_bands:
                     if self.debug_export_enabled:
                         print("DEBUG: Aborting path data build - missing source octave-band spectrum; source_component=", src)
@@ -649,18 +698,6 @@ class HVACPathCalculator:
             except Exception:
                 if self.debug_export_enabled:
                     print("DEBUG: Aborting path data build - exception while validating source bands")
-                return None
-
-            # Require valid source octave-band spectrum; abort if missing
-            try:
-                src = path_data.get('source_component') or {}
-                bands = src.get('octave_band_levels') if isinstance(src, dict) else None
-                valid_bands = isinstance(bands, list) and len(bands) == 8 and any(isinstance(b, (int, float)) for b in bands)
-                if not valid_bands:
-                    if self.debug_export_enabled:
-                        print("DEBUG: Aborting path data build - missing source octave-band spectrum")
-                    return None
-            except Exception:
                 return None
 
             # Enhanced debug export
@@ -702,8 +739,9 @@ class HVACPathCalculator:
             'fittings': []
         }
         
-        # Calculate flow data
+        # Calculate flow data with CFM priority
         try:
+            # Calculate duct area
             if (segment_data['duct_shape'] or '').lower() == 'rectangular':
                 width_ft = (segment_data['duct_width'] or 0.0) / 12.0
                 height_ft = (segment_data['duct_height'] or 0.0) / 12.0
@@ -713,11 +751,24 @@ class HVACPathCalculator:
                 radius_ft = (diameter_in / 2.0) / 12.0
                 area_ft2 = max(0.0, 3.141592653589793 * radius_ft * radius_ft)
             
-            default_velocity_fpm = 800.0
-            segment_data['flow_velocity'] = getattr(segment, 'flow_velocity', None) or default_velocity_fpm
-            segment_data['flow_rate'] = getattr(segment, 'flow_rate', None) or (area_ft2 * default_velocity_fpm)
+            # Priority order: segment.flow_rate → calculated from area×velocity → default CFM
+            segment_cfm = getattr(segment, 'flow_rate', None)
+            if not segment_cfm:
+                segment_cfm = area_ft2 * DEFAULT_FLOW_VELOCITY_FPM
+            if not segment_cfm or segment_cfm <= 0:
+                segment_cfm = DEFAULT_CFM_FALLBACK
+                
+            segment_data['flow_rate'] = segment_cfm
+            
+            # Calculate velocity from CFM and area
+            if area_ft2 > 0:
+                segment_data['flow_velocity'] = segment_cfm / area_ft2
+            else:
+                segment_data['flow_velocity'] = DEFAULT_FLOW_VELOCITY_FPM
+                
         except Exception:
-            pass
+            segment_data['flow_rate'] = DEFAULT_CFM_FALLBACK
+            segment_data['flow_velocity'] = DEFAULT_FLOW_VELOCITY_FPM
         
         # Add fittings
         try:
@@ -805,6 +856,7 @@ class HVACPathCalculator:
                 # Map component types to mechanical unit types
                 type_mappings = {
                     'ahu': ['AHU', 'Air Handling Unit'],
+                    'doas': ['DOAS', 'Ducted Outdoor Air System'],
                     'rtu': ['RTU', 'Rooftop Unit'],
                     'rf': ['RF', 'Return Fan'], 
                     'sf': ['SF', 'Supply Fan'],

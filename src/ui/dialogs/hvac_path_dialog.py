@@ -610,7 +610,7 @@ class HVACPathDialog(QDialog):
                     print(f"DEBUG: Path dialog suggests unit '{matched_unit.name}' for component '{getattr(component, 'name', 'unnamed')}'")
                 
                 # Show suggestion dialog
-                from PyQt5.QtWidgets import QMessageBox
+                from PySide6.QtWidgets import QMessageBox
                 reply = QMessageBox.question(
                     self, 
                     "Mechanical Unit Match", 
@@ -651,7 +651,7 @@ class HVACPathDialog(QDialog):
         if not validation_result or not validation_result.has_messages():
             return
         
-        from PyQt5.QtWidgets import QMessageBox
+        from PySide6.QtWidgets import QMessageBox
         
         message_parts = []
         
@@ -1469,11 +1469,12 @@ class HVACPathDialog(QDialog):
                 }
                 
                 # Create HVAC path using the calculator
-                created_path = self.path_calculator.create_hvac_path_from_drawing(
+                created_path_result = self.path_calculator.create_hvac_path_from_drawing(
                     self.project_id, drawing_data
                 )
                 
-                if created_path:
+                if created_path_result.success:
+                    created_path = created_path_result.data
                     # Update path using a fresh session-bound instance
                     session = get_session()
                     try:
@@ -1499,7 +1500,8 @@ class HVACPathDialog(QDialog):
                     finally:
                         session.close()
                 else:
-                    QMessageBox.warning(self, "Creation Failed", "Failed to create HVAC path from drawing elements.")
+                    error_msg = getattr(created_path_result, 'error_message', 'Unknown error occurred')
+                    QMessageBox.warning(self, "Creation Failed", f"Failed to create HVAC path from drawing elements.\n\nError: {error_msg}")
                     return
             else:
                 # Standard database path creation / update using unified session management
