@@ -16,6 +16,7 @@ from data.materials import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS, get_materials
 from calculations.rt60_calculator import RT60Calculator
 from ui.rt60_plot_widget import RT60PlotContainer
 from ui.dialogs.material_search_dialog import MaterialSearchDialog
+from data.materials_database import get_all_materials
 
 
 class MaterialSearchWidget(QWidget):
@@ -27,6 +28,7 @@ class MaterialSearchWidget(QWidget):
         super().__init__(parent)
         self.category = category
         self.filtered_materials = {}
+        self.all_materials = get_all_materials()
         self.init_ui()
         self.resize(500, 400)
         
@@ -37,7 +39,7 @@ class MaterialSearchWidget(QWidget):
         # Search bar
         search_layout = QHBoxLayout()
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText(f"Search {self.category} materials...")
+        self.search_edit.setPlaceholderText("Search materials...")
         self.search_edit.textChanged.connect(self.filter_materials)
         search_layout.addWidget(self.search_edit)
         
@@ -82,16 +84,11 @@ class MaterialSearchWidget(QWidget):
         
     def populate_materials(self):
         """Populate the materials list"""
-        # Get materials for this category
-        category_materials = get_materials_by_category(self.category)
-        if not category_materials:
-            category_materials = STANDARD_MATERIALS
-            
-        # Sort by name
-        sorted_materials = sorted(category_materials.items(), key=lambda x: x[1]['name'])
+        # Get all materials from the unified database (no surface filtering)
+        sorted_materials = sorted(self.all_materials.items(), key=lambda x: x[1]['name'])
         
         for key, material in sorted_materials:
-            coeff_display = material.get('nrc', material['absorption_coeff'])
+            coeff_display = material.get('nrc', material.get('absorption_coeff', 0))
             display_name = f"{material['name']} (α={coeff_display:.2f})"
             
             item = QListWidgetItem(display_name)
@@ -170,6 +167,7 @@ class MaterialListWidget(QWidget):
         self.surface_type = surface_type
         self.materials_data = []  # List of dicts with material_key and square_footage
         self.total_surface_area = 0  # Total available surface area
+        self.all_materials = get_all_materials()
         self.init_ui()
         
     def init_ui(self):
@@ -244,7 +242,7 @@ class MaterialListWidget(QWidget):
             print(f"DEBUG:   Material already exists")
             return
             
-        if material_key in STANDARD_MATERIALS:
+        if material_key in self.all_materials:
             # Calculate default area (remaining area or 10% of total, whichever is smaller)
             used_area = sum(m['square_footage'] for m in self.materials_data)
             remaining_area = max(0, self.total_surface_area - used_area)
@@ -263,7 +261,7 @@ class MaterialListWidget(QWidget):
             self.update_display()
             self.material_changed.emit()
         else:
-            print(f"DEBUG:   Material not found in STANDARD_MATERIALS")
+            print(f"DEBUG:   Material not found in unified materials database")
             
     def remove_selected_material(self):
         """Remove the selected material from the list"""
@@ -289,8 +287,8 @@ class MaterialListWidget(QWidget):
             square_footage = material_data['square_footage']
             total_used_area += square_footage
             
-            if material_key in STANDARD_MATERIALS:
-                material = STANDARD_MATERIALS[material_key]
+            if material_key in self.all_materials:
+                material = self.all_materials[material_key]
                 
                 # Material name
                 name_item = QTableWidgetItem(material['name'])
@@ -299,7 +297,7 @@ class MaterialListWidget(QWidget):
                 self.materials_table.setItem(row, 0, name_item)
                 
                 # NRC
-                nrc = material.get('nrc', material['absorption_coeff'])
+                nrc = material.get('nrc', material.get('absorption_coeff', 0))
                 nrc_item = QTableWidgetItem(f"{nrc:.2f}")
                 nrc_item.setFlags(nrc_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.materials_table.setItem(row, 1, nrc_item)
@@ -800,10 +798,11 @@ class SpaceEditDialog(QDialog):
         total_coeff = 0.0
         valid_materials = 0
         
+        all_materials = get_all_materials()
         for key in material_keys:
-            if key in STANDARD_MATERIALS:
-                material = STANDARD_MATERIALS[key]
-                total_coeff += material['absorption_coeff']
+            material = all_materials.get(key)
+            if material:
+                total_coeff += material.get('absorption_coeff', material.get('nrc', 0.0))
                 valid_materials += 1
                 
         return total_coeff / valid_materials if valid_materials > 0 else 0.0
@@ -816,18 +815,19 @@ class SpaceEditDialog(QDialog):
         print(f"DEBUG: find_material_key_by_name called with: '{material_name}'")
             
         # First try exact key match
-        if material_name in STANDARD_MATERIALS:
+        all_materials = get_all_materials()
+        if material_name in all_materials:
             print(f"DEBUG: Found exact key match: '{material_name}'")
             return material_name
             
         # Then try to find by name
-        for key, material in STANDARD_MATERIALS.items():
+        for key, material in all_materials.items():
             if material['name'].lower() == material_name.lower():
                 print(f"DEBUG: Found name match: '{material_name}' -> '{key}'")
                 return key
                 
         # Try partial name match
-        for key, material in STANDARD_MATERIALS.items():
+        for key, material in all_materials.items():
             if material_name.lower() in material['name'].lower():
                 print(f"DEBUG: Found partial name match: '{material_name}' -> '{key}'")
                 return key
@@ -995,12 +995,13 @@ class SpaceEditDialog(QDialog):
         # Update materials preview
         materials_text = "Selected Materials:\n"
         
+        all_materials = get_all_materials()
         if ceiling_materials:
             materials_text += "Ceiling:\n"
             for key in ceiling_materials:
-                if key in STANDARD_MATERIALS:
-                    material = STANDARD_MATERIALS[key]
-                    coeff = material.get('nrc', material['absorption_coeff'])
+                if key in all_materials:
+                    material = all_materials[key]
+                    coeff = material.get('nrc', material.get('absorption_coeff', 0))
                     materials_text += f"  • {material['name']} (α={coeff:.2f})\n"
         else:
             materials_text += "Ceiling: No materials selected\n"
@@ -1008,9 +1009,9 @@ class SpaceEditDialog(QDialog):
         if wall_materials:
             materials_text += "Walls:\n"
             for key in wall_materials:
-                if key in STANDARD_MATERIALS:
-                    material = STANDARD_MATERIALS[key]
-                    coeff = material.get('nrc', material['absorption_coeff'])
+                if key in all_materials:
+                    material = all_materials[key]
+                    coeff = material.get('nrc', material.get('absorption_coeff', 0))
                     materials_text += f"  • {material['name']} (α={coeff:.2f})\n"
         else:
             materials_text += "Walls: No materials selected\n"
@@ -1018,9 +1019,9 @@ class SpaceEditDialog(QDialog):
         if floor_materials:
             materials_text += "Floor:\n"
             for key in floor_materials:
-                if key in STANDARD_MATERIALS:
-                    material = STANDARD_MATERIALS[key]
-                    coeff = material.get('nrc', material['absorption_coeff'])
+                if key in all_materials:
+                    material = all_materials[key]
+                    coeff = material.get('nrc', material.get('absorption_coeff', 0))
                     materials_text += f"  • {material['name']} (α={coeff:.2f})\n"
         else:
             materials_text += "Floor: No materials selected\n"

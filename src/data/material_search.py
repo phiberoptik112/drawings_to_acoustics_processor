@@ -150,7 +150,9 @@ class MaterialSearchEngine:
         scored_materials = []
         for material in materials:
             freq_str = str(frequency)
-            absorption_coeff = material['coefficients'].get(freq_str, 0)
+            # Be robust to fallback entries without 'coefficients'
+            coefficients = material.get('coefficients', {}) or {}
+            absorption_coeff = coefficients.get(freq_str, material.get('absorption_coeff', material.get('nrc', 0)))
             
             if absorption_coeff <= 0:
                 continue
