@@ -111,6 +111,68 @@ class HVACSegmentDialog(QDialog):
         self.hvac_path_id = hvac_path_id
         self.from_component = from_component
         self.to_component = to_component
+        
+        # Handle the case where segment is passed as an integer ID
+        if isinstance(segment, int):
+            segment_id = segment
+            import os
+            debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+            if debug_enabled:
+                print(f"DEBUG_SEG: Dialog received segment ID {segment_id}, loading from database")
+            
+            try:
+                from models.database import get_hvac_session
+                from models.hvac import HVACSegment
+                from sqlalchemy.orm import selectinload
+                
+                with get_hvac_session() as session:
+                    segment = (
+                        session.query(HVACSegment)
+                        .options(
+                            selectinload(HVACSegment.from_component),
+                            selectinload(HVACSegment.to_component),
+                            selectinload(HVACSegment.fittings)
+                        )
+                        .filter_by(id=segment_id)
+                        .first()
+                    )
+                    
+                    if not segment:
+                        raise ValueError(f"Segment with ID {segment_id} not found")
+                    
+                    # Pre-load relationships while session is active
+                    from_component = segment.from_component
+                    to_component = segment.to_component  
+                    fittings = list(segment.fittings)
+                    
+                    if debug_enabled:
+                        print(f"DEBUG_SEG: Successfully loaded segment {segment_id} from database:")
+                        print(f"DEBUG_SEG:   length = {segment.length}")
+                        print(f"DEBUG_SEG:   duct_width = {segment.duct_width}")
+                        print(f"DEBUG_SEG:   duct_height = {segment.duct_height}")
+                        
+                    # Store the loaded data in case the segment becomes detached
+                    self._segment_data = {
+                        'id': segment.id,
+                        'length': segment.length,
+                        'duct_width': segment.duct_width,
+                        'duct_height': segment.duct_height,
+                        'duct_shape': segment.duct_shape,
+                        'duct_type': segment.duct_type,
+                        'segment_order': segment.segment_order,
+                        'flow_rate': segment.flow_rate,
+                        'flow_velocity': segment.flow_velocity,
+                        'from_component': from_component,
+                        'to_component': to_component,
+                        'fittings': fittings
+                    }
+                        
+            except Exception as e:
+                if debug_enabled:
+                    print(f"DEBUG_SEG: Failed to load segment {segment_id}: {e}")
+                # Fall back to None to create new segment
+                segment = None
+        
         self.segment = segment  # Existing segment for editing
         self.is_editing = segment is not None
         
@@ -508,6 +570,11 @@ class HVACSegmentDialog(QDialog):
         try:
             if not self.hvac_path_id:
                 raise ValueError('no path id')
+            
+            # Update the in-memory segment object with current UI values before calculation
+            if self.segment:
+                self.update_segment_properties(self.segment)
+            
             result = self.path_calculator.calculate_path_noise(self.hvac_path_id)
             order = self.order_spin.value() or (self.segment.segment_order if self.segment else 1)
             # If first segment, use source
@@ -651,33 +718,84 @@ class HVACSegmentDialog(QDialog):
     
     def load_segment_data(self):
         """Load existing segment data for editing"""
+        import os
+        debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
         if not self.segment:
+            if debug_enabled:
+                print("DEBUG_SEG: No segment to load")
             return
+        
+        if debug_enabled:
+            print(f"\nDEBUG_SEG: Loading segment data for segment ID {getattr(self.segment, 'id', 'unknown')}")
+            print(f"DEBUG_SEG: segment.length = {getattr(self.segment, 'length', 'missing')}")
+            print(f"DEBUG_SEG: segment.duct_width = {getattr(self.segment, 'duct_width', 'missing')}")
+            print(f"DEBUG_SEG: segment.duct_height = {getattr(self.segment, 'duct_height', 'missing')}")
+            print(f"DEBUG_SEG: segment.duct_shape = {getattr(self.segment, 'duct_shape', 'missing')}")
+            print(f"DEBUG_SEG: segment attributes: {[attr for attr in dir(self.segment) if not attr.startswith('_')]}")
+        
+        # Check if we have cached segment data from constructor loading
+        if hasattr(self, '_segment_data') and self._segment_data:
+            if debug_enabled:
+                print("DEBUG_SEG: Using cached segment data from constructor")
+            data = self._segment_data
+            self.length_spin.setValue(data.get('length', 0))
+            self.order_spin.setValue(data.get('segment_order', 1))
             
-        self.length_spin.setValue(self.segment.length or 0)
-        self.order_spin.setValue(self.segment.segment_order or 1)
+            # Duct properties
+            if data.get('duct_shape'):
+                index = self.shape_combo.findText(data['duct_shape'])
+                if index >= 0:
+                    self.shape_combo.setCurrentIndex(index)
+            
+            self.width_spin.setValue(data.get('duct_width', 12))
+            self.height_spin.setValue(data.get('duct_height', 8))
+            self.diameter_spin.setValue(data.get('diameter', 0))
+            
+            if debug_enabled:
+                print(f"DEBUG_SEG: Loaded from cache: length={data.get('length')}, width={data.get('duct_width')}, height={data.get('duct_height')}")
+        else:
+            # Fallback to direct segment access (original logic)
+            if debug_enabled:
+                print("DEBUG_SEG: Using direct segment access (fallback)")
+            self.length_spin.setValue(self.segment.length or 0)
+            self.order_spin.setValue(self.segment.segment_order or 1)
+            
+            # Duct properties
+            if self.segment.duct_shape:
+                index = self.shape_combo.findText(self.segment.duct_shape)
+                if index >= 0:
+                    self.shape_combo.setCurrentIndex(index)
+            
+            self.width_spin.setValue(self.segment.duct_width or 12)
+            self.height_spin.setValue(self.segment.duct_height or 8)
+            self.diameter_spin.setValue(getattr(self.segment, 'diameter', 0) or 0)
         
-        # Duct properties
-        if self.segment.duct_shape:
-            index = self.shape_combo.findText(self.segment.duct_shape)
-            if index >= 0:
-                self.shape_combo.setCurrentIndex(index)
+        # Get duct_type and other properties from cache or segment
+        duct_type = None
+        insulation = None
+        lining_thickness = 0
         
-        self.width_spin.setValue(self.segment.duct_width or 12)
-        self.height_spin.setValue(self.segment.duct_height or 8)
-        self.diameter_spin.setValue(getattr(self.segment, 'diameter', 0) or 0)
+        if hasattr(self, '_segment_data') and self._segment_data:
+            duct_type = self._segment_data.get('duct_type')
+            insulation = self._segment_data.get('insulation')
+            lining_thickness = self._segment_data.get('lining_thickness', 0)
+        else:
+            duct_type = getattr(self.segment, 'duct_type', None)
+            insulation = getattr(self.segment, 'insulation', None)
+            lining_thickness = getattr(self.segment, 'lining_thickness', 0) or 0
         
-        if self.segment.duct_type:
-            index = self.duct_type_combo.findText(self.segment.duct_type)
+        if duct_type:
+            index = self.duct_type_combo.findText(duct_type)
             if index >= 0:
                 self.duct_type_combo.setCurrentIndex(index)
         
-        if self.segment.insulation:
-            index = self.insulation_combo.findText(self.segment.insulation)
+        if insulation:
+            index = self.insulation_combo.findText(insulation)
             if index >= 0:
                 self.insulation_combo.setCurrentIndex(index)
-        if getattr(self.segment, 'lining_thickness', None) is not None:
-            self.lining_thickness_spin.setValue(self.segment.lining_thickness or 0)
+        
+        self.lining_thickness_spin.setValue(lining_thickness)
         
         # Acoustic properties
         self.distance_loss_spin.setValue(self.segment.distance_loss or 0)

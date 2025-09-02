@@ -152,7 +152,16 @@ class HVACPathCalculator:
                 
                 # Create segments using actual connections from drawing
                 created_segments: List[HVACSegment] = []
+                import os
+                debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+                if debug_enabled:
+                    print(f"DEBUG_PATH: Creating {len(segments)} segments from drawing data:")
                 for i, seg_data in enumerate(segments):
+                    if debug_enabled:
+                        print(f"DEBUG_PATH: Segment {i} data keys: {list(seg_data.keys())}")
+                        print(f"DEBUG_PATH: Segment {i} length_real: {seg_data.get('length_real', 'MISSING')}")
+                        print(f"DEBUG_PATH: Segment {i} duct_width: {seg_data.get('duct_width', 'MISSING')}")
+                        print(f"DEBUG_PATH: Segment {i} duct_height: {seg_data.get('duct_height', 'MISSING')}")
                     # Find the actual connected components
                     from_comp_id = None
                     to_comp_id = None
@@ -323,8 +332,26 @@ class HVACPathCalculator:
             if not path_data:
                 raise ValueError("Could not build path data from database")
             
-            # Perform calculation
+            # Perform calculation with enhanced debugging
+            if self.debug_export_enabled:
+                print(f"DEBUG: Pre-calculation path_data structure:")
+                print(f"DEBUG: - Source component: {path_data.get('source_component', {})[:100] if isinstance(path_data.get('source_component'), dict) else path_data.get('source_component')}")
+                print(f"DEBUG: - Terminal component: {path_data.get('terminal_component', {})}")
+                print(f"DEBUG: - Segments count: {len(path_data.get('segments', []))}")
+                for i, seg in enumerate(path_data.get('segments', [])):
+                    print(f"DEBUG: - Segment {i+1}: length={seg.get('length')}, flow_rate={seg.get('flow_rate')}, duct={seg.get('duct_width')}x{seg.get('duct_height')}")
+                
             calc_results = self.noise_calculator.calculate_hvac_path_noise(path_data, debug=debug)
+            
+            if self.debug_export_enabled:
+                print(f"DEBUG: Post-calculation results:")
+                print(f"DEBUG: - Source noise: {calc_results.get('source_noise')} dB(A)")
+                print(f"DEBUG: - Terminal noise: {calc_results.get('terminal_noise')} dB(A)")
+                print(f"DEBUG: - Calculation valid: {calc_results.get('calculation_valid')}")
+                print(f"DEBUG: - Error: {calc_results.get('error')}")
+                print(f"DEBUG: - Path segments count: {len(calc_results.get('path_segments', []))}")
+                if calc_results.get('warnings'):
+                    print(f"DEBUG: - Warnings: {calc_results.get('warnings')}")
             
             # Optional debug export
             try:
@@ -340,6 +367,12 @@ class HVACPathCalculator:
                 session.commit()
             
             # Create result object
+            if self.debug_export_enabled:
+                print(f"DEBUG: Creating PathAnalysisResult with:")
+                print(f"DEBUG: - calc_results['calculation_valid']: {calc_results['calculation_valid']}")
+                print(f"DEBUG: - calc_results['source_noise']: {calc_results['source_noise']}")
+                print(f"DEBUG: - calc_results['terminal_noise']: {calc_results['terminal_noise']}")
+            
             result = PathAnalysisResult(
                 path_id=path_id,
                 path_name=hvac_path.name,
