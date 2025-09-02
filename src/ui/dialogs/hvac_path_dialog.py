@@ -80,7 +80,8 @@ class SegmentListWidget(QListWidget):
             to_comp = segment.to_component.name if segment.to_component else "Unknown"
             item_text = f"{from_comp} → {to_comp} ({segment.length:.1f} ft)"
             item = QListWidgetItem(item_text)
-            item.setData(Qt.UserRole, segment)
+            # Store segment ID instead of the object to avoid DetachedInstanceError
+            item.setData(Qt.UserRole, segment.id if hasattr(segment, 'id') else segment)
             self.addItem(item)
     
     def on_item_clicked(self, item):
@@ -745,6 +746,19 @@ class HVACPathDialog(QDialog):
                         ordered_components.append(comp)
                         seen_ids.add(comp.id)
             self.segments = list(segs)
+            
+            # Debug: Check if segments have correct data when loaded
+            import os
+            debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+            if debug_enabled:
+                print(f"\nDEBUG_UI: load_path_data loaded {len(self.segments)} segments:")
+                for i, seg in enumerate(self.segments):
+                    print(f"DEBUG_UI: Segment {i+1} (ID {seg.id}):")
+                    print(f"DEBUG_UI:   length = {getattr(seg, 'length', 'missing')}")
+                    print(f"DEBUG_UI:   duct_width = {getattr(seg, 'duct_width', 'missing')}")
+                    print(f"DEBUG_UI:   duct_height = {getattr(seg, 'duct_height', 'missing')}")
+                    print(f"DEBUG_UI:   duct_shape = {getattr(seg, 'duct_shape', 'missing')}")
+            
             # Components used by this path, in traversal order
             self.components = ordered_components
             # Also populate "Available Components" from the project for adding to the path
@@ -824,6 +838,8 @@ class HVACPathDialog(QDialog):
             # Fallback to stored order
             self.segments = sorted(list(self.segments), key=lambda s: getattr(s, 'segment_order', 0))
 
+        # Ensure segments have fresh data before displaying
+        self._refresh_segments_if_needed()
         self.segment_list.set_segments(self.segments)
         self.update_path_diagram()
         # Auto-calc when enabled and path is minimally defined
@@ -833,6 +849,62 @@ class HVACPathDialog(QDialog):
                     self.calculate_path_noise()
         except Exception:
             pass
+    
+    def _refresh_segments_if_needed(self):
+        """Refresh segments from database if they appear to be detached or missing data"""
+        if not self.segments or not hasattr(self, 'path_id') or not self.path_id:
+            return
+        
+        import os
+        debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        try:
+            # Check if any segments are missing key data or appear detached
+            needs_refresh = False
+            for seg in self.segments:
+                if not hasattr(seg, 'length') or seg.length is None:
+                    needs_refresh = True
+                    break
+                if not hasattr(seg, 'duct_width') or seg.duct_width is None:
+                    needs_refresh = True
+                    break
+            
+            if needs_refresh:
+                if debug_enabled:
+                    print(f"DEBUG_UI: Segments appear to be missing data, refreshing from database...")
+                
+                # Re-load segments from database with proper eager loading
+                from models.database import get_session
+                from models.hvac import HVACSegment
+                from sqlalchemy.orm import selectinload
+                
+                session = get_session()
+                try:
+                    fresh_segments = (
+                        session.query(HVACSegment)
+                        .options(
+                            selectinload(HVACSegment.from_component),
+                            selectinload(HVACSegment.to_component),
+                            selectinload(HVACSegment.fittings),
+                        )
+                        .filter(HVACSegment.hvac_path_id == self.path_id)
+                        .order_by(HVACSegment.segment_order)
+                        .all()
+                    )
+                    
+                    if fresh_segments:
+                        self.segments = list(fresh_segments)
+                        if debug_enabled:
+                            print(f"DEBUG_UI: Refreshed {len(self.segments)} segments from database")
+                            for i, seg in enumerate(self.segments):
+                                print(f"DEBUG_UI: Refreshed Segment {i+1}: length={seg.length}, width={seg.duct_width}")
+                
+                finally:
+                    session.close()
+                    
+        except Exception as e:
+            if debug_enabled:
+                print(f"DEBUG_UI: Could not refresh segments: {e}")
     
     def update_summary(self):
         """Update the path summary"""
@@ -1231,15 +1303,132 @@ class HVACPathDialog(QDialog):
     
     def edit_segment(self, segment=None):
         """Edit a segment"""
+        import os
+        debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
         if not segment:
             # Get selected segment
             current_item = self.segment_list.currentItem()
             if not current_item:
                 return
-            segment = current_item.data(Qt.UserRole)
+            segment_data = current_item.data(Qt.UserRole)
+            
+            # Check if we got a segment ID or a segment object
+            if isinstance(segment_data, int):
+                # We have a segment ID, load from database
+                segment_id = segment_data
+                if debug_enabled:
+                    print(f"DEBUG_UI: Got segment ID {segment_id} from list, loading from database")
+                
+                try:
+                    from models.database import get_hvac_session
+                    from models.hvac import HVACSegment
+                    from sqlalchemy.orm import selectinload
+                    
+                    with get_hvac_session() as session:
+                        segment = (
+                            session.query(HVACSegment)
+                            .options(
+                                selectinload(HVACSegment.from_component),
+                                selectinload(HVACSegment.to_component),
+                                selectinload(HVACSegment.fittings)
+                            )
+                            .filter_by(id=segment_id)
+                            .first()
+                        )
+                        
+                        if not segment:
+                            QMessageBox.warning(self, "Error", f"Segment with ID {segment_id} not found")
+                            return
+                            
+                        # Pre-load component relationships while session is active
+                        from_component = segment.from_component
+                        to_component = segment.to_component
+                        _ = list(segment.fittings)  # Force load fittings
+                        
+                        if debug_enabled:
+                            print(f"DEBUG_UI: Loaded segment {segment_id} from database:")
+                            print(f"DEBUG_UI:   length = {segment.length}")
+                            print(f"DEBUG_UI:   duct_width = {segment.duct_width}")
+                            print(f"DEBUG_UI:   duct_height = {segment.duct_height}")
+                            
+                except Exception as e:
+                    QMessageBox.critical(self, "Database Error", f"Failed to load segment: {e}")
+                    return
+            else:
+                # We have a segment object (fallback for compatibility)
+                segment = segment_data
+        else:
+            # segment was passed directly to edit_segment() method
+            # Check if it's an integer ID that needs loading
+            if isinstance(segment, int):
+                segment_id = segment
+                if debug_enabled:
+                    print(f"DEBUG_UI: Got segment ID {segment_id} as parameter, loading from database")
+                
+                try:
+                    from models.database import get_hvac_session
+                    from models.hvac import HVACSegment
+                    from sqlalchemy.orm import selectinload
+                    
+                    with get_hvac_session() as session:
+                        segment = (
+                            session.query(HVACSegment)
+                            .options(
+                                selectinload(HVACSegment.from_component),
+                                selectinload(HVACSegment.to_component),
+                                selectinload(HVACSegment.fittings)
+                            )
+                            .filter_by(id=segment_id)
+                            .first()
+                        )
+                        
+                        if not segment:
+                            QMessageBox.warning(self, "Error", f"Segment with ID {segment_id} not found")
+                            return
+                            
+                        # Pre-load component relationships while session is active
+                        from_component = segment.from_component
+                        to_component = segment.to_component
+                        _ = list(segment.fittings)  # Force load fittings
+                        
+                        if debug_enabled:
+                            print(f"DEBUG_UI: Loaded segment {segment_id} from database (parameter):")
+                            print(f"DEBUG_UI:   length = {segment.length}")
+                            print(f"DEBUG_UI:   duct_width = {segment.duct_width}")
+                            print(f"DEBUG_UI:   duct_height = {segment.duct_height}")
+                            
+                except Exception as e:
+                    QMessageBox.critical(self, "Database Error", f"Failed to load segment: {e}")
+                    return
+        
+        if debug_enabled:
+            print(f"DEBUG_UI: Final segment for dialog:")
+            print(f"DEBUG_UI: segment ID = {getattr(segment, 'id', 'unknown')}")
+            print(f"DEBUG_UI: segment.length = {getattr(segment, 'length', 'missing')}")
+            print(f"DEBUG_UI: segment.duct_width = {getattr(segment, 'duct_width', 'missing')}")
+            print(f"DEBUG_UI: segment.duct_height = {getattr(segment, 'duct_height', 'missing')}")
+        
+        # Get component relationships safely
+        try:
+            from_component = getattr(segment, 'from_component', None)
+        except Exception:
+            from_component = None
+            
+        try:
+            to_component = getattr(segment, 'to_component', None)
+        except Exception:
+            to_component = None
+        
+        if debug_enabled:
+            print(f"DEBUG_UI: Opening dialog with from_component={from_component}, to_component={to_component}")
+            print(f"DEBUG_UI: Final segment being passed to dialog:")
+            print(f"DEBUG_UI:   segment.length = {getattr(segment, 'length', 'missing')}")
+            print(f"DEBUG_UI:   segment.duct_width = {getattr(segment, 'duct_width', 'missing')}")
+            print(f"DEBUG_UI:   segment.duct_height = {getattr(segment, 'duct_height', 'missing')}")
         
         dialog = HVACSegmentDialog(self, self.path_id if self.path_id else None,
-                                 segment.from_component, segment.to_component, segment)
+                                 from_component, to_component, segment)
         if dialog.exec() == QDialog.Accepted:
             # Segment was updated, refresh list
             self.update_segment_list()
@@ -1269,7 +1458,23 @@ class HVACPathDialog(QDialog):
             # selections like primary source Mechanical Unit (set from the Component dialog)
             # are honored in the analysis.
             if self.path_id and not self.drawing_components:
+                import os
+                debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+                
+                if debug_enabled:
+                    print(f"\nDEBUG_UI: Using database-backed path calculation for path_id={self.path_id}")
+                
                 res = self.path_calculator.calculate_path_noise(int(self.path_id))
+                
+                if debug_enabled:
+                    print(f"DEBUG_UI: Path calculator returned:")
+                    print(f"DEBUG_UI:   result type: {type(res)}")
+                    print(f"DEBUG_UI:   calculation_valid: {res.calculation_valid}")
+                    print(f"DEBUG_UI:   source_noise: {res.source_noise}")
+                    print(f"DEBUG_UI:   terminal_noise: {res.terminal_noise}")
+                    print(f"DEBUG_UI:   error_message: {res.error_message}")
+                    print(f"DEBUG_UI:   segment_results count: {len(res.segment_results) if res.segment_results else 0}")
+                
                 results = {
                     'calculation_valid': bool(res.calculation_valid),
                     'source_noise': float(res.source_noise or 0.0),
@@ -1279,7 +1484,31 @@ class HVACPathDialog(QDialog):
                     'path_segments': list(res.segment_results or []),
                     'path_elements': list(res.segment_results or []),
                     'warnings': list(res.warnings or []),
+                    'error': res.error_message
                 }
+                
+                if debug_enabled:
+                    print(f"DEBUG_UI: Converted to results dict:")
+                    print(f"DEBUG_UI:   calculation_valid: {results['calculation_valid']}")
+                
+                # If database-backed calculation failed, try direct calculation as fallback
+                if not results['calculation_valid']:
+                    if debug_enabled:
+                        print(f"DEBUG_UI: Database-backed calculation failed, trying direct calculation fallback...")
+                    
+                    # Build path_data and try direct calculation
+                    try:
+                        path_data = self.path_calculator.build_path_data_from_db(self.path_id)
+                        if path_data:
+                            fallback_results = self.path_calculator.noise_calculator.calculate_hvac_path_noise(path_data)
+                            if fallback_results.get('calculation_valid'):
+                                if debug_enabled:
+                                    print(f"DEBUG_UI: Fallback calculation succeeded! Using fallback results.")
+                                results = fallback_results
+                    except Exception as e:
+                        if debug_enabled:
+                            print(f"DEBUG_UI: Fallback calculation also failed: {e}")
+                
                 self._last_element_results = results['path_elements']
                 self.display_analysis_results(results)
                 self.update_nc_summary(results)
@@ -1346,7 +1575,25 @@ class HVACPathDialog(QDialog):
 
                 path_data['segments'].append(segment_data)
 
+            import os
+            debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+            
+            if debug_enabled:
+                print(f"\nDEBUG_UI: About to call calculate_hvac_path_noise")
+                print(f"DEBUG_UI: path_data keys: {list(path_data.keys())}")
+                if path_data.get('source_component'):
+                    sc = path_data['source_component']
+                    print(f"DEBUG_UI: source_component octave_bands: {sc.get('octave_band_levels')}")
+            
             results = self.path_calculator.noise_calculator.calculate_hvac_path_noise(path_data)
+            
+            if debug_enabled:
+                print(f"DEBUG_UI: Received results from calculate_hvac_path_noise")
+                print(f"DEBUG_UI: results type: {type(results)}")
+                print(f"DEBUG_UI: results keys: {list(results.keys()) if isinstance(results, dict) else 'Not a dict'}")
+                if isinstance(results, dict):
+                    print(f"DEBUG_UI: calculation_valid in results: {results.get('calculation_valid')}")
+            
             self._last_element_results = results.get('path_elements', results.get('path_segments', [])) or []
             self.display_analysis_results(results)
             self.update_nc_summary(results)
@@ -1356,6 +1603,20 @@ class HVACPathDialog(QDialog):
     
     def display_analysis_results(self, results):
         """Display analysis results"""
+        import os
+        debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        if debug_enabled:
+            print(f"\nDEBUG_UI: display_analysis_results called")
+            print(f"DEBUG_UI: results keys: {list(results.keys())}")
+            print(f"DEBUG_UI: calculation_valid = {results.get('calculation_valid')}")
+            print(f"DEBUG_UI: source_noise = {results.get('source_noise')}")
+            print(f"DEBUG_UI: terminal_noise = {results.get('terminal_noise')}")
+            print(f"DEBUG_UI: nc_rating = {results.get('nc_rating')}")
+            print(f"DEBUG_UI: error = {results.get('error')}")
+            if results.get('path_segments'):
+                print(f"DEBUG_UI: path_segments count = {len(results.get('path_segments'))}")
+        
         html = "<h3>HVAC Path Noise Analysis</h3>"
         
         if results['calculation_valid']:

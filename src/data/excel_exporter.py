@@ -573,13 +573,13 @@ class ExcelExporter:
     
     def auto_size_columns(self, ws):
         """Auto-size all columns in worksheet"""
-        for column in ws.columns:
+        for column_cells in ws.columns:
             max_length = 0
-            column_letter = get_column_letter(column[0].column)
+            column_letter = get_column_letter(column_cells[0].column)
             
-            for cell in column:
+            for cell in column_cells:
                 try:
-                    if len(str(cell.value)) > max_length:
+                    if cell.value is not None and len(str(cell.value)) > max_length:
                         max_length = len(str(cell.value))
                 except:
                     pass

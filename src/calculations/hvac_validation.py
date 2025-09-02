@@ -282,8 +282,8 @@ class HVACValidationFramework:
             # Validate segments
             segments = path_data.get('segments', [])
             for i, segment in enumerate(segments):
-                # Validate airflow
-                airflow = segment.get('airflow_cfm', 0)
+                # Validate airflow - use flow_rate key that matches segment data structure
+                airflow = segment.get('flow_rate', 0) or segment.get('airflow_cfm', 0)
                 if airflow < 50:
                     result.add_warning(f"Segment {i+1} airflow ({airflow} CFM) is very low")
                 elif airflow > 20000:

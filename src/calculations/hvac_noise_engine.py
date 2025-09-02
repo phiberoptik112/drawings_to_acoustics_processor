@@ -132,6 +132,26 @@ class HVACNoiseEngine:
         Returns:
             PathResult with complete analysis
         """
+        # Enhanced debugging for calculation pipeline
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        if debug_export_enabled:
+            print(f"\n=== HVAC ENGINE DEBUG START for path_id={path_id} ===")
+            print(f"DEBUG_ENGINE: Received {len(path_elements)} path elements")
+            for i, elem in enumerate(path_elements):
+                print(f"DEBUG_ENGINE: Element {i}: type={elem.element_type}, id={elem.element_id}")
+                if elem.element_type == 'source':
+                    print(f"DEBUG_ENGINE:   Source - noise_level={elem.source_noise_level}, bands={elem.octave_band_levels}")
+                elif elem.element_type in ['duct', 'elbow', 'junction', 'flex_duct']:
+                    length_val = elem.length if elem.length is not None else 0.0
+                    flow_val = elem.flow_rate if elem.flow_rate is not None else 0.0
+                    width_val = elem.width if elem.width is not None else 0.0
+                    height_val = elem.height if elem.height is not None else 0.0
+                    print(f"DEBUG_ENGINE:   {elem.element_type} - length={length_val}, flow_rate={flow_val}, duct={width_val}x{height_val}")
+                elif elem.element_type == 'terminal':
+                    room_vol = elem.room_volume if elem.room_volume is not None else 0.0
+                    room_abs = elem.room_absorption if elem.room_absorption is not None else 0.0
+                    print(f"DEBUG_ENGINE:   Terminal - room_vol={room_vol}, room_abs={room_abs}")
+            
         try:
             warnings_list = []
             element_results = []
@@ -163,13 +183,17 @@ class HVACNoiseEngine:
                 warnings_list.append("No source element found, using default 50 dB(A)")
                 current_spectrum = DEFAULT_SPECTRUM_LEVELS.copy()  # Default spectrum
                 current_dba = 50.0
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE: No source element - using defaults: dBA={current_dba}, spectrum={current_spectrum}")
             else:
                 if source_element.octave_band_levels:
                     current_spectrum = source_element.octave_band_levels.copy()
-                    current_dba = source_element.source_noise_level
+                    current_dba = source_element.source_noise_level or self._calculate_dba_from_spectrum(current_spectrum)
                     debug_logger.info('HVACEngine', 
                         "Seeded source from spectrum", 
                         {'spectrum': current_spectrum, 'dba': current_dba})
+                    if debug_export_enabled:
+                        print(f"DEBUG_ENGINE: Source from spectrum - dBA={current_dba}, spectrum={current_spectrum}")
                 else:
                     # Estimate spectrum from A-weighted level
                     current_spectrum = self._estimate_spectrum_from_dba(source_element.source_noise_level)
@@ -177,6 +201,8 @@ class HVACNoiseEngine:
                     debug_logger.info('HVACEngine', 
                         "Estimated source spectrum from dBA", 
                         {'input_dba': current_dba, 'estimated_spectrum': current_spectrum})
+                    if debug_export_enabled:
+                        print(f"DEBUG_ENGINE: Source estimated - dBA={current_dba}, spectrum={current_spectrum}")
 
             # Add a pseudo element result for the Source so UI numbering starts at 1
             try:
@@ -220,11 +246,27 @@ class HVACNoiseEngine:
                 noise_before_dba = current_dba
                 spectrum_before = current_spectrum.copy()
                 nc_before = self._calculate_nc_rating(spectrum_before)
+                
+                if debug_export_enabled:
+                    print(f"\nDEBUG_ENGINE: Processing element {i}: {element.element_type} ({element.element_id})")
+                    print(f"DEBUG_ENGINE:   Input - dBA={noise_before_dba:.1f}, spectrum={[f'{x:.1f}' for x in spectrum_before]}")
+                    length_val = element.length if element.length is not None else 0.0
+                    flow_val = element.flow_rate if element.flow_rate is not None else 0.0
+                    print(f"DEBUG_ENGINE:   Element props - length={length_val}, flow_rate={flow_val}")
+                    
                 debug_logger.log_element_processing('HVACEngine', 
                     element.element_type, 
                     element.element_id,
                     input_spectrum=spectrum_before)
                 element_result = self._calculate_element_effect(element, current_spectrum, current_dba)
+                
+                if debug_export_enabled:
+                    att_dba = element_result.get('attenuation_dba') or 0.0
+                    gen_dba = element_result.get('generated_dba') or 0.0
+                    print(f"DEBUG_ENGINE:   Element result: attenuation_dba={att_dba}, generated_dba={gen_dba}")
+                    if element_result.get('error'):
+                        print(f"DEBUG_ENGINE:   ERROR in element calculation: {element_result.get('error')}")
+                
                 element_result['element_id'] = element.element_id
                 element_result['element_type'] = element.element_type
                 element_result['element_order'] = i
@@ -260,6 +302,11 @@ class HVACNoiseEngine:
                 # Update A-weighted level
                 current_dba = self._calculate_dba_from_spectrum(current_spectrum)
                 nc_after = self._calculate_nc_rating(current_spectrum)
+                
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE:   Output - dBA={current_dba:.1f}, spectrum={[f'{x:.1f}' for x in current_spectrum]}, NC={nc_after}")
+                    print(f"DEBUG_ENGINE:   Change - dBA_delta={current_dba - noise_before_dba:.1f}")
+                
                 debug_logger.log_element_processing('HVACEngine', 
                     element.element_type, 
                     element.element_id,
@@ -302,9 +349,30 @@ class HVACNoiseEngine:
             # Calculate NC rating
             nc_rating = self._calculate_nc_rating(current_spectrum)
             
+            if debug_export_enabled:
+                print(f"\nDEBUG_ENGINE: Final calculation results:")
+                source_dba = (source_element.source_noise_level if source_element and source_element.source_noise_level is not None else 50.0)
+                print(f"DEBUG_ENGINE:   Source dBA: {source_dba:.1f}")
+                print(f"DEBUG_ENGINE:   Terminal dBA: {current_dba:.1f}")
+                print(f"DEBUG_ENGINE:   Total attenuation: {total_attenuation_dba:.1f}")
+                print(f"DEBUG_ENGINE:   NC rating: {nc_rating}")
+                print(f"DEBUG_ENGINE:   Final spectrum: {[f'{x:.1f}' for x in current_spectrum]}")
+                print(f"DEBUG_ENGINE:   Element results count: {len(element_results)}")
+                print(f"DEBUG_ENGINE:   Warnings: {warnings_list}")
+                print(f"=== HVAC ENGINE DEBUG END ===\n")
+            
+            # Calculate final source dBA for result
+            final_source_dba = 50.0  # Default
+            if source_element:
+                if source_element.source_noise_level is not None:
+                    final_source_dba = source_element.source_noise_level
+                elif source_element.octave_band_levels:
+                    # Calculate from spectrum if available
+                    final_source_dba = self._calculate_dba_from_spectrum(source_element.octave_band_levels)
+            
             return PathResult(
                 path_id=path_id,
-                source_noise_dba=source_element.source_noise_level if source_element else 50.0,
+                source_noise_dba=final_source_dba,
                 terminal_noise_dba=current_dba,
                 total_attenuation_dba=total_attenuation_dba,
                 nc_rating=nc_rating,
@@ -369,7 +437,12 @@ class HVACNoiseEngine:
             'generated_dba': None
         }
         
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
         try:
+            if debug_export_enabled:
+                print(f"DEBUG_ENGINE:     Calculating {element.element_type} effect...")
+                
             if element.element_type == 'duct':
                 result = self._calculate_duct_effect(element)
             elif element.element_type == 'elbow':
@@ -382,10 +455,25 @@ class HVACNoiseEngine:
                 result = self._calculate_terminal_effect(element)
             else:
                 # Unknown element type - pass through
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE:     Unknown element type '{element.element_type}' - passing through")
                 pass
+                
+            if debug_export_enabled:
+                att_spec = result.get('attenuation_spectrum')
+                gen_spec = result.get('generated_spectrum')
+                att_dba = result.get('attenuation_dba') or 0.0
+                gen_dba = result.get('generated_dba') or 0.0
+                print(f"DEBUG_ENGINE:     Result - att_dba={att_dba}, gen_dba={gen_dba}")
+                if att_spec and isinstance(att_spec, list):
+                    print(f"DEBUG_ENGINE:     Attenuation spectrum: {[f'{x:.1f}' for x in att_spec if x is not None]}")
+                if gen_spec and isinstance(gen_spec, list):
+                    print(f"DEBUG_ENGINE:     Generated spectrum: {[f'{x:.1f}' for x in gen_spec if x is not None]}")
                 
         except Exception as e:
             result['error'] = str(e)
+            if debug_export_enabled:
+                print(f"DEBUG_ENGINE:     ERROR in {element.element_type} calculation: {e}")
             
         return result
     

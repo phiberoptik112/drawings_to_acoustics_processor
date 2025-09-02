@@ -46,17 +46,41 @@ class NoiseCalculator:
         Returns:
             Dictionary with calculation results
         """
+        import os
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
         try:
+            if debug_export_enabled:
+                print(f"\n=== NOISE CALCULATOR DEBUG START ===")
+                print(f"DEBUG_NC: Input path_data keys: {list(path_data.keys())}")
+                
             # Convert path_data to PathElement objects
             path_elements = self._convert_path_data_to_elements(path_data)
             
+            if debug_export_enabled:
+                print(f"DEBUG_NC: Converted to {len(path_elements)} PathElements")
+                for i, elem in enumerate(path_elements):
+                    print(f"DEBUG_NC:   Element {i}: {elem.element_type} - {elem.element_id}")
+                    if elem.element_type == 'source':
+                        print(f"DEBUG_NC:     Source noise_level: {elem.source_noise_level}")
+                        print(f"DEBUG_NC:     Source octave_bands: {elem.octave_band_levels}")
+            
             # Use the HVAC engine to calculate
             result = self.hvac_engine.calculate_path_noise(path_elements, debug=debug)
+            
+            if debug_export_enabled:
+                print(f"DEBUG_NC: Engine returned - valid: {result.calculation_valid}, error: {result.error_message}")
+                print(f"DEBUG_NC: Source dBA: {result.source_noise_dba}, Terminal dBA: {result.terminal_noise_dba}")
+                print(f"=== NOISE CALCULATOR DEBUG END ===\n")
             
             # Convert back to the expected format
             return self._convert_result_to_dict(result)
             
         except Exception as e:
+            if debug_export_enabled:
+                print(f"DEBUG_NC: Exception in calculate_hvac_path_noise: {e}")
+                import traceback
+                print(f"DEBUG_NC: Traceback: {traceback.format_exc()}")
             return {
                 'source_noise': 0.0,
                 'terminal_noise': 0.0,
