@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from models import get_session
+from models.database import get_hvac_session
 from models.mechanical import MechanicalUnit
 from models.hvac import HVACComponent, HVACPath, HVACSegment
 from data.components import STANDARD_COMPONENTS
@@ -491,84 +492,109 @@ class HVACComponentDialog(QDialog):
             print("DEBUG[HVACComponentDialog]: Failed to restore Mechanical Unit preview:", e)
     
     def save_component(self):
-        """Save the HVAC component"""
-        # Validate inputs
-        name = self.name_edit.text().strip()
-        if not name:
-            QMessageBox.warning(self, "Validation Error", "Please enter a component name.")
+        """Save the HVAC component using standardized session management"""
+        # Validate inputs first
+        if not self.validate_component_inputs():
             return
         
         try:
-            session = get_session()
-            
-            if self.is_editing:
-                # Update existing component using a DB-attached instance to ensure persistence
-                db_comp = session.query(HVACComponent).filter(HVACComponent.id == self.component.id).first()
-                if not db_comp:
-                    raise RuntimeError("Component not found")
-                print("DEBUG[HVACComponentDialog]: Saving existing component", {"id": db_comp.id, "prev_name": db_comp.name, "prev_type": db_comp.component_type, "prev_noise": db_comp.noise_level})
-                db_comp.name = name
-                db_comp.component_type = self.type_combo.currentText()
-                db_comp.x_position = self.x_spin.value()
-                db_comp.y_position = self.y_spin.value()
-                db_comp.noise_level = self.noise_spin.value()
-                db_comp.cfm = self.cfm_spin.value()
-                session.commit()
-                print("DEBUG[HVACComponentDialog]: Saved component", {"id": db_comp.id, "name": db_comp.name, "type": db_comp.component_type, "noise": db_comp.noise_level})
-                # Mirror saved values back into the in-memory object used by the UI
-                self.component.name = db_comp.name
-                self.component.component_type = db_comp.component_type
-                self.component.x_position = db_comp.x_position
-                self.component.y_position = db_comp.y_position
-                self.component.noise_level = db_comp.noise_level
-                self.component.cfm = db_comp.cfm
-                # If user imported a Mechanical Unit in this edit, propagate association to any paths
-                try:
-                    if self._selected_mech_unit_id:
-                        print(f"DEBUG[HVACComponentDialog]: Propagating Mechanical Unit id {self._selected_mech_unit_id} to paths for component id {db_comp.id}")
-                        paths = (
-                            session.query(HVACPath)
-                            .join(HVACSegment, HVACSegment.hvac_path_id == HVACPath.id)
-                            .filter((HVACSegment.from_component_id == db_comp.id) | (HVACSegment.to_component_id == db_comp.id))
-                            .all()
-                        )
-                        for p in paths:
-                            if not p.segments:
-                                continue
-                            first_seg = sorted(p.segments, key=lambda s: getattr(s, 'segment_order', 0))[0]
-                            if getattr(first_seg, 'from_component_id', None) == db_comp.id:
-                                p.primary_source_id = self._selected_mech_unit_id
-                                print(f"DEBUG[HVACComponentDialog]: Updated path id={p.id} primary_source_id -> MechanicalUnit id {self._selected_mech_unit_id}")
-                        session.commit()
-                except Exception as e:
-                    print("DEBUG[HVACComponentDialog]: Failed to update paths with Mechanical Unit:", e)
-                component = self.component
-            else:
-                # Create new component
-                component = HVACComponent(
-                    project_id=self.project_id,
-                    drawing_id=self.drawing_id,
-                    name=name,
-                    component_type=self.type_combo.currentText(),
-                    x_position=self.x_spin.value(),
-                    y_position=self.y_spin.value(),
-                    noise_level=self.noise_spin.value(),
-                    cfm=self.cfm_spin.value()
-                )
+            with get_hvac_session() as session:
+                if self.is_editing:
+                    # Always re-query to get session-attached instance
+                    component = session.query(HVACComponent).filter(HVACComponent.id == self.component.id).first()
+                    if not component:
+                        raise ValueError("Component not found in database")
+                    
+                    print("DEBUG[HVACComponentDialog]: Updating existing component", {
+                        "id": component.id, "prev_name": component.name, 
+                        "prev_type": component.component_type, "prev_noise": component.noise_level
+                    })
+                    
+                    # Apply changes to session-attached instance
+                    self.apply_changes_to_component(component, session)
+                    
+                    # Update our dialog reference to the session-attached instance
+                    self.component = component
+                    
+                    print("DEBUG[HVACComponentDialog]: Saved component", {
+                        "id": component.id, "name": component.name, 
+                        "type": component.component_type, "noise": component.noise_level
+                    })
+                else:
+                    # Create new component
+                    component = self.create_new_component()
+                    session.add(component)
+                    session.flush()  # Get ID before commit
+                    self.component = component
+                    
+                    print("DEBUG[HVACComponentDialog]: Created new component", {
+                        "id": component.id, "name": component.name, "type": component.component_type
+                    })
                 
-                session.add(component)
-                session.commit()
-                print("DEBUG[HVACComponentDialog]: Created new component", {"id": component.id, "name": component.name, "type": component.component_type})
+                # Commit handled by context manager
             
-            session.close()
-            
-            self.component_saved.emit(component)
+            self.component_saved.emit(self.component)
             self.accept()
             
         except Exception as e:
-            session.rollback()
-            session.close()
-            QMessageBox.critical(self, "Error", f"Failed to save component:\n{str(e)}")
+            QMessageBox.critical(self, "Save Error", f"Failed to save component:\n{str(e)}")
+    
+    def validate_component_inputs(self):
+        """Validate component input fields"""
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Validation Error", "Please enter a component name.")
+            return False
+        return True
+    
+    def apply_changes_to_component(self, component, session):
+        """Apply UI changes to the session-attached component instance"""
+        name = self.name_edit.text().strip()
+        component.name = name
+        component.component_type = self.type_combo.currentText()
+        component.x_position = self.x_spin.value()
+        component.y_position = self.y_spin.value()
+        component.noise_level = self.noise_spin.value()
+        component.cfm = self.cfm_spin.value()
+        
+        # Handle mechanical unit association propagation
+        self.update_mechanical_unit_associations(component, session)
+    
+    def create_new_component(self):
+        """Create a new component instance from UI values"""
+        name = self.name_edit.text().strip()
+        return HVACComponent(
+            project_id=self.project_id,
+            drawing_id=self.drawing_id,
+            name=name,
+            component_type=self.type_combo.currentText(),
+            x_position=self.x_spin.value(),
+            y_position=self.y_spin.value(),
+            noise_level=self.noise_spin.value(),
+            cfm=self.cfm_spin.value()
+        )
+    
+    def update_mechanical_unit_associations(self, component, session):
+        """Update mechanical unit associations for paths containing this component"""
+        # If user imported a Mechanical Unit in this edit, propagate association to any paths
+        try:
+            if self._selected_mech_unit_id:
+                print(f"DEBUG[HVACComponentDialog]: Propagating Mechanical Unit id {self._selected_mech_unit_id} to paths for component id {component.id}")
+                paths = (
+                    session.query(HVACPath)
+                    .join(HVACSegment, HVACSegment.hvac_path_id == HVACPath.id)
+                    .filter((HVACSegment.from_component_id == component.id) | (HVACSegment.to_component_id == component.id))
+                    .all()
+                )
+                for p in paths:
+                    if not p.segments:
+                        continue
+                    first_seg = sorted(p.segments, key=lambda s: getattr(s, 'segment_order', 0))[0]
+                    if getattr(first_seg, 'from_component_id', None) == component.id:
+                        p.primary_source_id = self._selected_mech_unit_id
+                        print(f"DEBUG[HVACComponentDialog]: Updated path id={p.id} primary_source_id -> MechanicalUnit id {self._selected_mech_unit_id}")
+        except Exception as e:
+            print("DEBUG[HVACComponentDialog]: Failed to update paths with Mechanical Unit:", e)
     
     def delete_component(self):
         """Delete the HVAC component"""

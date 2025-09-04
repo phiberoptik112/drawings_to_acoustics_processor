@@ -2576,6 +2576,11 @@ class DrawingInterface(QMainWindow):
                 print("DEBUG[DrawingInterface]: Opening HVACComponentDialog for component id=", getattr(comp, 'id', None),
                       " name=", getattr(comp, 'name', None))
                 dlg = HVACComponentDialog(self, self.project_id, self.drawing.id if self.drawing else None, comp)
+                try:
+                    # Keep the drawing overlay in sync when a component is saved from the dialog
+                    dlg.component_saved.connect(self._on_component_saved)
+                except Exception:
+                    pass
                 dlg.exec()
                 return
             if etype == 'segment':
@@ -2870,6 +2875,9 @@ class DrawingInterface(QMainWindow):
         segment to reflect the new length so UI values stay linked.
         """
         try:
+            # Refresh from database to ensure we have the latest state
+            self.refresh_segment_from_database(segment.id)
+            
             if not self.drawing_overlay:
                 return
             seg_id = getattr(segment, 'id', None)
@@ -2958,6 +2966,76 @@ class DrawingInterface(QMainWindow):
             self.drawing_overlay.path_only_mode = checked
             self.drawing_overlay.update()
             print(f"DEBUG: Path-only mode set to {checked}")
+    
+    def _on_component_saved(self, component) -> None:
+        """After editing a component in the dialog, refresh component data from database"""
+        try:
+            # Refresh from database to ensure we have the latest state
+            self.refresh_component_from_database(component.id)
+            
+        except Exception as e:
+            print(f"DEBUG: _on_component_saved failed: {e}")
+
+    def refresh_segment_from_database(self, segment_id):
+        """Refresh segment data from database to ensure UI displays latest values"""
+        try:
+            from models import get_session
+            from models.hvac import HVACSegment
+            session = get_session()
+            segment = session.query(HVACSegment).filter(HVACSegment.id == segment_id).first()
+            if segment:
+                # Update any cached segment data or UI elements
+                self.update_cached_segment_data(segment)
+            session.close()
+        except Exception as e:
+            print(f"DEBUG: refresh_segment_from_database failed: {e}")
+    
+    def refresh_component_from_database(self, component_id):
+        """Refresh component data from database to ensure UI displays latest values"""
+        try:
+            from models import get_session
+            from models.hvac import HVACComponent
+            session = get_session()
+            component = session.query(HVACComponent).filter(HVACComponent.id == component_id).first()
+            if component:
+                # Update any cached component data or UI elements
+                self.update_cached_component_data(component)
+            session.close()
+        except Exception as e:
+            print(f"DEBUG: refresh_component_from_database failed: {e}")
+    
+    def refresh_space_from_database(self, space_id):
+        """Refresh space data from database to ensure UI displays latest values"""
+        try:
+            from models import get_session
+            from models.space import Space
+            session = get_session()
+            space = session.query(Space).filter(Space.id == space_id).first()
+            if space:
+                # Update any cached space data or UI elements
+                self.update_cached_space_data(space)
+            session.close()
+        except Exception as e:
+            print(f"DEBUG: refresh_space_from_database failed: {e}")
+    
+    def update_cached_segment_data(self, segment):
+        """Update any cached segment data with fresh database values"""
+        # This method can be extended to update specific UI elements
+        # For now, just refresh the overlay display
+        if self.drawing_overlay:
+            self.drawing_overlay.update()
+    
+    def update_cached_component_data(self, component):
+        """Update any cached component data with fresh database values"""
+        # This method can be extended to update specific UI elements
+        # For now, just refresh the overlay display
+        if self.drawing_overlay:
+            self.drawing_overlay.update()
+    
+    def update_cached_space_data(self, space):
+        """Update any cached space data with fresh database values"""
+        # This method can be extended to update specific UI elements
+        pass
 
     def closeEvent(self, event):
         """Handle window close event"""

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
 from PySide6.QtCore import Qt, Signal, QTimer
 
 from models import get_session
+from models.database import get_hvac_session
 from models.space import Space, SurfaceType
 from data.materials import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS, get_materials_by_category
 from calculations.rt60_calculator import RT60Calculator
@@ -1074,105 +1075,106 @@ class SpaceEditDialog(QDialog):
         self.update_calculations_preview()
         
     def save_changes(self):
-        """Save changes to the space"""
-        # Validate inputs
-        name = self.name_edit.text().strip()
-        if not name:
-            QMessageBox.warning(self, "Validation Error", "Room name is required.")
-            self.name_edit.setFocus()
+        """Save changes to the space using standardized session management"""
+        # Validate inputs first
+        if not self.validate_space_inputs():
             return
             
-        # Get material selections
-        ceiling_materials = self.ceiling_materials.get_materials()
-        wall_materials = self.wall_materials.get_materials()
-        floor_materials = self.floor_materials.get_materials()
-        
-        print(f"DEBUG: save_changes - Current materials in widgets:")
-        print(f"  ceiling_materials: {ceiling_materials}")
-        print(f"  wall_materials: {wall_materials}")
-        print(f"  floor_materials: {floor_materials}")
-        
-        # For backward compatibility, use the first material of each type
-        # In a future update, the database schema could be modified to store multiple materials
-        ceiling_key = ceiling_materials[0] if ceiling_materials else None
-        wall_key = wall_materials[0] if wall_materials else None
-        floor_key = floor_materials[0] if floor_materials else None
-        
-        print(f"DEBUG: save_changes - Materials to save:")
-        print(f"  ceiling_materials: {ceiling_materials}")
-        print(f"  wall_materials: {wall_materials}")
-        print(f"  floor_materials: {floor_materials}")
-        
-        if not any([ceiling_materials, wall_materials, floor_materials]):
-            QMessageBox.warning(self, "Validation Error", "Please select at least one material for surfaces.")
-            return
-            
-        session = None
         try:
-            session = get_session()
+            with get_hvac_session() as session:
+                # Always re-query to get session-attached instance
+                space = session.query(Space).filter(Space.id == self.space.id).first()
+                if not space:
+                    raise ValueError("Space not found in database")
+                
+                # Apply changes to session-attached instance
+                self.apply_changes_to_space(space, session)
+                
+                # Update our dialog reference to the session-attached instance
+                self.space = space
+                
+                # Verify save with fresh query
+                self.verify_space_save(session, space.id)
+                
+                # Commit handled by context manager
             
-            # Merge the space object into this session to ensure it's tracked
-            space = session.merge(self.space)
-            
-            # Update space properties
-            space.name = name
-            space.description = self.description_edit.toPlainText().strip()
-            space.floor_area = self.area_spin.value()
-            space.ceiling_height = self.ceiling_height_spin.value()
-            space.wall_area = self.wall_area_spin.value()
-            space.target_rt60 = self.target_rt60_spin.value()
-            
-            # Store multiple materials using new system
-            space.set_surface_materials(SurfaceType.CEILING, ceiling_materials, session)
-            space.set_surface_materials(SurfaceType.WALL, wall_materials, session)
-            space.set_surface_materials(SurfaceType.FLOOR, floor_materials, session)
-            
-            # Update legacy fields for backward compatibility (use first material)
-            space.ceiling_material = ceiling_materials[0] if ceiling_materials else None
-            space.wall_material = wall_materials[0] if wall_materials else None
-            space.floor_material = floor_materials[0] if floor_materials else None
-            
-            print(f"DEBUG: save_changes - Multiple materials saved to space object")
-            print(f"DEBUG: save_changes - Legacy compatibility fields updated:")
-            print(f"  space.ceiling_material: '{space.ceiling_material}'")
-            print(f"  space.wall_material: '{space.wall_material}'")
-            print(f"  space.floor_material: '{space.floor_material}'")
-            
-            # Recalculate volume
-            space.calculate_volume()
-            
-            # Update the dialog's space reference to the merged object
-            self.space = space
-            
-            # Flush changes to database before commit to ensure they are persisted
-            session.flush()
-            
-            # Commit changes
-            session.commit()
-            
-            print(f"DEBUG: save_changes - Changes flushed and committed successfully")
-            print(f"DEBUG: save_changes - Space ID: {space.id}")
-            
-            # Verify the changes were actually saved by doing a fresh query
-            fresh_space = session.query(Space).filter(Space.id == space.id).first()
-            print(f"DEBUG: save_changes - Fresh query verification:")
-            print(f"  fresh_space ceiling materials: {fresh_space.get_ceiling_materials()}")
-            print(f"  fresh_space wall materials: {fresh_space.get_wall_materials()}")
-            print(f"  fresh_space floor materials: {fresh_space.get_floor_materials()}")
-            
-            session.close()
-            
-            # Don't close the dialog - just show success message
+            # Show success message
+            name = self.name_edit.text().strip()
             QMessageBox.information(self, "Success", f"Space '{name}' updated successfully!")
             
             # Update calculations preview to reflect saved changes
             self.update_calculations_preview()
             
         except Exception as e:
-            if session:
-                session.rollback()
-                session.close()
-            QMessageBox.critical(self, "Error", f"Failed to save changes:\n{str(e)}")
+            QMessageBox.critical(self, "Save Error", f"Failed to save changes:\n{str(e)}")
+    
+    def validate_space_inputs(self):
+        """Validate space input fields"""
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Validation Error", "Room name is required.")
+            self.name_edit.setFocus()
+            return False
+            
+        # Get material selections
+        ceiling_materials = self.ceiling_materials.get_materials()
+        wall_materials = self.wall_materials.get_materials()
+        floor_materials = self.floor_materials.get_materials()
+        
+        if not any([ceiling_materials, wall_materials, floor_materials]):
+            QMessageBox.warning(self, "Validation Error", "Please select at least one material for surfaces.")
+            return False
+            
+        return True
+    
+    def apply_changes_to_space(self, space, session):
+        """Apply UI changes to the session-attached space instance"""
+        # Get material selections
+        ceiling_materials = self.ceiling_materials.get_materials()
+        wall_materials = self.wall_materials.get_materials()
+        floor_materials = self.floor_materials.get_materials()
+        
+        print(f"DEBUG: apply_changes_to_space - Current materials in widgets:")
+        print(f"  ceiling_materials: {ceiling_materials}")
+        print(f"  wall_materials: {wall_materials}")
+        print(f"  floor_materials: {floor_materials}")
+        
+        # Update space properties
+        space.name = self.name_edit.text().strip()
+        space.description = self.description_edit.toPlainText().strip()
+        space.floor_area = self.area_spin.value()
+        space.ceiling_height = self.ceiling_height_spin.value()
+        space.wall_area = self.wall_area_spin.value()
+        space.target_rt60 = self.target_rt60_spin.value()
+        
+        # Store multiple materials using new system
+        space.set_surface_materials(SurfaceType.CEILING, ceiling_materials, session)
+        space.set_surface_materials(SurfaceType.WALL, wall_materials, session)
+        space.set_surface_materials(SurfaceType.FLOOR, floor_materials, session)
+        
+        # Update legacy fields for backward compatibility (use first material)
+        space.ceiling_material = ceiling_materials[0] if ceiling_materials else None
+        space.wall_material = wall_materials[0] if wall_materials else None
+        space.floor_material = floor_materials[0] if floor_materials else None
+        
+        # Recalculate volume
+        space.calculate_volume()
+        
+        print(f"DEBUG: apply_changes_to_space - Applied changes to space ID: {space.id}")
+    
+    def verify_space_save(self, session, space_id):
+        """Verify that space changes were actually persisted"""
+        fresh_space = session.query(Space).filter(Space.id == space_id).first()
+        if not fresh_space:
+            raise ValueError("Space verification failed: space not found after save")
+            
+        print(f"DEBUG: verify_space_save - Fresh query verification:")
+        print(f"  fresh_space name: {fresh_space.name}")
+        print(f"  fresh_space ceiling materials: {fresh_space.get_ceiling_materials()}")
+        print(f"  fresh_space wall materials: {fresh_space.get_wall_materials()}")
+        print(f"  fresh_space floor materials: {fresh_space.get_floor_materials()}")
+        
+        return True
             
     def save_and_close(self):
         """Save changes and close the dialog"""
