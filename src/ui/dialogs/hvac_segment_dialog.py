@@ -104,6 +104,7 @@ class HVACSegmentDialog(QDialog):
     """Dialog for configuring HVAC segments with fittings"""
     
     segment_saved = Signal(HVACSegment)  # Emits saved segment
+    segment_updated = Signal(int)  # Emits segment ID when updated
     
     def __init__(self, parent=None, hvac_path_id=None, from_component=None, 
                  to_component=None, segment=None):
@@ -157,11 +158,14 @@ class HVACSegmentDialog(QDialog):
                         'length': segment.length,
                         'duct_width': segment.duct_width,
                         'duct_height': segment.duct_height,
+                        'diameter': getattr(segment, 'diameter', 0),
                         'duct_shape': segment.duct_shape,
                         'duct_type': segment.duct_type,
                         'segment_order': segment.segment_order,
                         'flow_rate': segment.flow_rate,
                         'flow_velocity': segment.flow_velocity,
+                        'insulation': getattr(segment, 'insulation', None),
+                        'lining_thickness': getattr(segment, 'lining_thickness', 0),
                         'from_component': from_component,
                         'to_component': to_component,
                         'fittings': fittings
@@ -175,6 +179,8 @@ class HVACSegmentDialog(QDialog):
         
         self.segment = segment  # Existing segment for editing
         self.is_editing = segment is not None
+        # Guard flag: becomes True after UI has been populated with DB values
+        self._ui_ready = False
         
         # Calculators for context-aware fitting calculations
         self.path_calculator = HVACPathCalculator()
@@ -251,8 +257,12 @@ class HVACSegmentDialog(QDialog):
         layout.addLayout(button_layout)
         self.setLayout(layout)
         
-        # Initial context compute
+        # Initial context compute (guard against premature clobbering)
         try:
+            import os
+            debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+            if debug_enabled:
+                print("DEBUG_SEG_INIT: Calling initial refresh_context (pre-load)")
             self.refresh_context()
         except Exception:
             pass
@@ -571,8 +581,8 @@ class HVACSegmentDialog(QDialog):
             if not self.hvac_path_id:
                 raise ValueError('no path id')
             
-            # Update the in-memory segment object with current UI values before calculation
-            if self.segment:
+            # Update the in-memory segment object only after UI is populated
+            if self._ui_ready and self.segment:
                 self.update_segment_properties(self.segment)
             
             result = self.path_calculator.calculate_path_noise(self.hvac_path_id)
@@ -631,10 +641,35 @@ class HVACSegmentDialog(QDialog):
         return max(0.0, new_dba - context_dba)
     
     def refresh_context(self):
-        up_dba, _ = self._get_upstream_context()
-        self.upstream_noise_label.setText(f"Upstream: {up_dba:.1f} dB(A)")
-        self._recalc_upstream_auto()
-        self._recalc_downstream_context_and_auto()
+        import os
+        debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        if debug_enabled:
+            print(f"\nDEBUG_SEG_CONTEXT: Refreshing context for segment dialog")
+            print(f"DEBUG_SEG_CONTEXT: Current UI values:")
+            print(f"DEBUG_SEG_CONTEXT:   length = {self.length_spin.value()}")
+            print(f"DEBUG_SEG_CONTEXT:   width = {self.width_spin.value()}")
+            print(f"DEBUG_SEG_CONTEXT:   height = {self.height_spin.value()}")
+            print(f"DEBUG_SEG_CONTEXT:   shape = {self.shape_combo.currentText()}")
+        
+        try:
+            up_dba, _ = self._get_upstream_context()
+            self.upstream_noise_label.setText(f"Upstream: {up_dba:.1f} dB(A)")
+            
+            if debug_enabled:
+                print(f"DEBUG_SEG_CONTEXT: Upstream context calculated: {up_dba:.1f} dB(A)")
+            
+            self._recalc_upstream_auto()
+            self._recalc_downstream_context_and_auto()
+            
+            if debug_enabled:
+                print(f"DEBUG_SEG_CONTEXT: Context refresh completed\n")
+                
+        except Exception as e:
+            if debug_enabled:
+                print(f"DEBUG_SEG_CONTEXT: Error during context refresh: {e}")
+                import traceback
+                traceback.print_exc()
     
     def _recalc_upstream_auto(self):
         dba, spec = self._get_upstream_context()
@@ -665,10 +700,24 @@ class HVACSegmentDialog(QDialog):
     
     # --- Signal handlers ---
     def on_segment_changed(self, *args):
+        import os
+        debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        if debug_enabled:
+            print(f"\nDEBUG_SEG_CHANGE: Segment UI values changed, refreshing context")
+            print(f"DEBUG_SEG_CHANGE: Triggered by: {args if args else 'unknown'}")
+        
         try:
+            # Update the in-memory segment only after UI is ready
+            if self._ui_ready and self.is_editing and self.segment:
+                if debug_enabled:
+                    print(f"DEBUG_SEG_CHANGE: Updating in-memory segment before context refresh")
+                self.update_segment_properties(self.segment)
+            
             self.refresh_context()
-        except Exception:
-            pass
+        except Exception as e:
+            if debug_enabled:
+                print(f"DEBUG_SEG_CHANGE: Error during segment change handling: {e}")
     
     def on_upstream_fitting_changed(self, *args):
         self._recalc_upstream_auto()
@@ -739,37 +788,114 @@ class HVACSegmentDialog(QDialog):
             if debug_enabled:
                 print("DEBUG_SEG: Using cached segment data from constructor")
             data = self._segment_data
-            self.length_spin.setValue(data.get('length', 0))
+            # Ensure we don't set zero values for critical dimensions
+            length_val = float(data.get('length', 0) or 0)
+            width_val = float(data.get('duct_width', 12) or 12)
+            height_val = float(data.get('duct_height', 8) or 8)
+            
+            # Use reasonable defaults if values are zero or missing
+            if length_val <= 0:
+                length_val = 10.0  # Default 10 ft
+                print(f"DEBUG_SEG: length 0, setting default length value to {length_val}")
+            if width_val <= 0:
+                width_val = 12.0   # Default 12 in
+                print(f"DEBUG_SEG: width 0, setting default width value to {width_val}")
+            if height_val <= 0:
+                height_val = 8.0   # Default 8 in
+                print(f"DEBUG_SEG: height 0, setting default height value to {height_val}")
+                height_val = 8.0   # Default 8 in
+            
+            # Only set UI fields after computing sane defaults, and log before setting
+            if debug_enabled:
+                print(f"DEBUG_SEG: UI about to receive values (cached): length={length_val}, width={width_val}, height={height_val}")
+            self.length_spin.blockSignals(True)
+            self.length_spin.setValue(length_val)
+            self.length_spin.blockSignals(False)
+            self.order_spin.blockSignals(True)
             self.order_spin.setValue(data.get('segment_order', 1))
+            self.order_spin.blockSignals(False)
             
             # Duct properties
-            if data.get('duct_shape'):
-                index = self.shape_combo.findText(data['duct_shape'])
-                if index >= 0:
-                    self.shape_combo.setCurrentIndex(index)
+            shape_val = data.get('duct_shape', 'rectangular') or 'rectangular'
+            shape_index = self.shape_combo.findText(shape_val)
+            self.shape_combo.blockSignals(True)
+            if shape_index >= 0:
+                self.shape_combo.setCurrentIndex(shape_index)
+            else:
+                self.shape_combo.setCurrentIndex(0)  # Default to first option
+            self.shape_combo.blockSignals(False)
+            # Ensure control enable states match selected shape
+            try:
+                self.on_duct_shape_changed(shape_val)
+            except Exception:
+                pass
             
-            self.width_spin.setValue(data.get('duct_width', 12))
-            self.height_spin.setValue(data.get('duct_height', 8))
-            self.diameter_spin.setValue(data.get('diameter', 0))
+            self.width_spin.blockSignals(True)
+            self.width_spin.setValue(width_val)
+            self.width_spin.blockSignals(False)
+            self.height_spin.blockSignals(True)
+            self.height_spin.setValue(height_val)
+            self.height_spin.blockSignals(False)
+            self.diameter_spin.blockSignals(True)
+            self.diameter_spin.setValue(data.get('diameter', 0) or 0)
+            self.diameter_spin.blockSignals(False)
             
             if debug_enabled:
-                print(f"DEBUG_SEG: Loaded from cache: length={data.get('length')}, width={data.get('duct_width')}, height={data.get('duct_height')}")
+                print(f"DEBUG_SEG: Applied cached values: length={length_val}, width={width_val}, height={height_val}")
+            
+            # This print is now inside the value setting block above
         else:
             # Fallback to direct segment access (original logic)
             if debug_enabled:
                 print("DEBUG_SEG: Using direct segment access (fallback)")
-            self.length_spin.setValue(self.segment.length or 0)
-            self.order_spin.setValue(self.segment.segment_order or 1)
+            # Ensure we don't set zero values for critical dimensions
+            length_val = float(getattr(self.segment, 'length', 0) or 0)
+            width_val = float(getattr(self.segment, 'duct_width', 12) or 12)
+            height_val = float(getattr(self.segment, 'duct_height', 8) or 8)
+            
+            # Use reasonable defaults if values are zero or missing
+            if length_val <= 0:
+                length_val = 10.0  # Default 10 ft
+            if width_val <= 0:
+                width_val = 12.0   # Default 12 in
+            if height_val <= 0:
+                height_val = 8.0   # Default 8 in
+            
+            if debug_enabled:
+                print(f"DEBUG_SEG: UI about to receive values (direct): length={length_val}, width={width_val}, height={height_val}")
+            self.length_spin.blockSignals(True)
+            self.length_spin.setValue(length_val)
+            self.length_spin.blockSignals(False)
+            self.order_spin.blockSignals(True)
+            self.order_spin.setValue(getattr(self.segment, 'segment_order', 1) or 1)
+            self.order_spin.blockSignals(False)
             
             # Duct properties
-            if self.segment.duct_shape:
-                index = self.shape_combo.findText(self.segment.duct_shape)
-                if index >= 0:
-                    self.shape_combo.setCurrentIndex(index)
+            shape_val = getattr(self.segment, 'duct_shape', 'rectangular') or 'rectangular'
+            shape_index = self.shape_combo.findText(shape_val)
+            self.shape_combo.blockSignals(True)
+            if shape_index >= 0:
+                self.shape_combo.setCurrentIndex(shape_index)
+            else:
+                self.shape_combo.setCurrentIndex(0)  # Default to first option
+            self.shape_combo.blockSignals(False)
+            try:
+                self.on_duct_shape_changed(shape_val)
+            except Exception:
+                pass
             
-            self.width_spin.setValue(self.segment.duct_width or 12)
-            self.height_spin.setValue(self.segment.duct_height or 8)
+            self.width_spin.blockSignals(True)
+            self.width_spin.setValue(width_val)
+            self.width_spin.blockSignals(False)
+            self.height_spin.blockSignals(True)
+            self.height_spin.setValue(height_val)
+            self.height_spin.blockSignals(False)
+            self.diameter_spin.blockSignals(True)
             self.diameter_spin.setValue(getattr(self.segment, 'diameter', 0) or 0)
+            self.diameter_spin.blockSignals(False)
+            
+            if debug_enabled:
+                print(f"DEBUG_SEG: Applied direct values: length={length_val}, width={width_val}, height={height_val}")
         
         # Get duct_type and other properties from cache or segment
         duct_type = None
@@ -851,26 +977,195 @@ class HVACSegmentDialog(QDialog):
             self._apply_endpoint_fitting_constraints()
         except Exception:
             pass
-        # Refresh computed context to display labels
-        self.refresh_context()
+        # Final UI validation and debugging
+        if debug_enabled:
+            print(f"DEBUG_SEG: Final UI state after load_segment_data:")
+            print(f"DEBUG_SEG:   length_spin.value() = {self.length_spin.value()}")
+            print(f"DEBUG_SEG:   width_spin.value() = {self.width_spin.value()}")
+            print(f"DEBUG_SEG:   height_spin.value() = {self.height_spin.value()}")
+            print(f"DEBUG_SEG:   shape_combo.currentText() = '{self.shape_combo.currentText()}'")
+            print(f"DEBUG_SEG:   duct_type_combo.currentText() = '{self.duct_type_combo.currentText()}'")
+            
+            # Check if values are still zeros (problem detection)
+            if self.length_spin.value() == 0:
+                print(f"DEBUG_SEG: WARNING - Length is still 0 after loading!")
+            if self.width_spin.value() == 0:
+                print(f"DEBUG_SEG: WARNING - Width is still 0 after loading!")
+            if self.height_spin.value() == 0:
+                print(f"DEBUG_SEG: WARNING - Height is still 0 after loading!")
+        
+        # Mark UI ready and then refresh computed context to display labels
+        try:
+            self._ui_ready = True
+            self.refresh_context()
+        except Exception as e:
+            if debug_enabled:
+                print(f"DEBUG_SEG: Error during context refresh: {e}")
+        
+        if debug_enabled:
+            print(f"DEBUG_SEG: load_segment_data completed\n")
+    
+    def reload_segment_from_database(self):
+        """Reload segment data from database to reflect any external updates"""
+        import os
+        debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        if not self.is_editing or not self.segment:
+            if debug_enabled:
+                print("DEBUG_SEG_RELOAD: No segment to reload")
+            return
+        
+        try:
+            segment_id = getattr(self.segment, 'id', None)
+            if not segment_id:
+                if debug_enabled:
+                    print("DEBUG_SEG_RELOAD: No segment ID available")
+                return
+            
+            if debug_enabled:
+                print(f"\nDEBUG_SEG_RELOAD: Reloading segment {segment_id} from database")
+            
+            from models.database import get_hvac_session
+            from models.hvac import HVACSegment
+            from sqlalchemy.orm import selectinload
+            
+            with get_hvac_session() as session:
+                fresh_segment = (
+                    session.query(HVACSegment)
+                    .options(
+                        selectinload(HVACSegment.from_component),
+                        selectinload(HVACSegment.to_component),
+                        selectinload(HVACSegment.fittings)
+                    )
+                    .filter_by(id=segment_id)
+                    .first()
+                )
+                
+                if not fresh_segment:
+                    if debug_enabled:
+                        print(f"DEBUG_SEG_RELOAD: Segment {segment_id} not found in database")
+                    return
+                
+                # Cache the fresh data for loading
+                self._segment_data = {
+                    'id': fresh_segment.id,
+                    'length': fresh_segment.length,
+                    'duct_width': fresh_segment.duct_width,
+                    'duct_height': fresh_segment.duct_height,
+                    'duct_shape': fresh_segment.duct_shape,
+                    'duct_type': fresh_segment.duct_type,
+                    'segment_order': fresh_segment.segment_order,
+                    'flow_rate': fresh_segment.flow_rate,
+                    'flow_velocity': fresh_segment.flow_velocity,
+                    'diameter': getattr(fresh_segment, 'diameter', 0),
+                    'insulation': fresh_segment.insulation,
+                    'lining_thickness': getattr(fresh_segment, 'lining_thickness', 0),
+                    'from_component': fresh_segment.from_component,
+                    'to_component': fresh_segment.to_component,
+                    'fittings': list(fresh_segment.fittings)
+                }
+                
+                # Update the dialog's segment reference
+                self.segment = fresh_segment
+                
+                if debug_enabled:
+                    print(f"DEBUG_SEG_RELOAD: Reloaded segment data:")
+                    print(f"DEBUG_SEG_RELOAD:   length = {fresh_segment.length}")
+                    print(f"DEBUG_SEG_RELOAD:   duct_width = {fresh_segment.duct_width}")
+                    print(f"DEBUG_SEG_RELOAD:   duct_height = {fresh_segment.duct_height}")
+                    print(f"DEBUG_SEG_RELOAD:   duct_shape = {fresh_segment.duct_shape}")
+            
+            # Reload the UI with fresh data
+            self.load_segment_data()
+            
+            if debug_enabled:
+                print(f"DEBUG_SEG_RELOAD: UI reloaded with fresh database data\n")
+            
+        except Exception as e:
+            if debug_enabled:
+                print(f"DEBUG_SEG_RELOAD: Error reloading segment: {e}")
+                import traceback
+                traceback.print_exc()
     
     def save_segment(self):
-        """Save the HVAC segment"""
+        """Save the HVAC segment with comprehensive debugging and validation"""
+        import os
+        debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        if debug_enabled:
+            print(f"\nDEBUG_SEG_SAVE: Starting segment save process")
+            print(f"DEBUG_SEG_SAVE: is_editing = {self.is_editing}")
+            print(f"DEBUG_SEG_SAVE: hvac_path_id = {self.hvac_path_id}")
+            print(f"DEBUG_SEG_SAVE: Current UI values:")
+            print(f"DEBUG_SEG_SAVE:   length = {self.length_spin.value()}")
+            print(f"DEBUG_SEG_SAVE:   order = {self.order_spin.value()}")
+            print(f"DEBUG_SEG_SAVE:   width = {self.width_spin.value()}")
+            print(f"DEBUG_SEG_SAVE:   height = {self.height_spin.value()}")
+            print(f"DEBUG_SEG_SAVE:   shape = {self.shape_combo.currentText()}")
+            print(f"DEBUG_SEG_SAVE:   type = {self.duct_type_combo.currentText()}")
+        
         # Validate inputs
         if self.length_spin.value() <= 0:
             QMessageBox.warning(self, "Validation Error", "Please enter a valid segment length.")
             return
         
+        session = None
         try:
             session = get_session()
             
             if self.is_editing:
-                # Update existing segment
-                self.update_segment_properties(self.segment)
-                self.update_segment_fittings(self.segment, session)
+                segment_id = getattr(self.segment, 'id', None)
+                if not segment_id:
+                    raise ValueError("Cannot update segment without ID")
+                
+                if debug_enabled:
+                    print(f"DEBUG_SEG_SAVE: Updating existing segment ID {segment_id}")
+                
+                # Re-query the segment in this session to avoid detached instance issues
+                segment = session.query(HVACSegment).filter_by(id=segment_id).first()
+                if not segment:
+                    raise ValueError(f"Segment with ID {segment_id} not found in database")
+                
+                if debug_enabled:
+                    print(f"DEBUG_SEG_SAVE: Found segment in current session: {segment.id}")
+                    print(f"DEBUG_SEG_SAVE: Current DB values: length={segment.length}, width={segment.duct_width}, height={segment.duct_height}")
+                
+                # Update segment properties using the session-bound instance
+                segment.length = self.length_spin.value()
+                segment.segment_order = self.order_spin.value()
+                segment.duct_width = self.width_spin.value()
+                segment.duct_height = self.height_spin.value()
+                segment.diameter = self.diameter_spin.value()
+                segment.duct_shape = self.shape_combo.currentText()
+                segment.duct_type = self.duct_type_combo.currentText()
+                segment.insulation = self.insulation_combo.currentText()
+                segment.lining_thickness = self.lining_thickness_spin.value()
+                segment.distance_loss = self.distance_loss_spin.value()
+                segment.duct_loss = self.duct_loss_spin.value()
+                segment.fitting_additions = self.fitting_additions_spin.value()
+                
+                if debug_enabled:
+                    print(f"DEBUG_SEG_SAVE: Applied UI values to segment:")
+                    print(f"DEBUG_SEG_SAVE:   length = {segment.length}")
+                    print(f"DEBUG_SEG_SAVE:   duct_width = {segment.duct_width}")
+                    print(f"DEBUG_SEG_SAVE:   duct_height = {segment.duct_height}")
+                
+                # Update fittings
+                self.update_segment_fittings(segment, session)
                 session.commit()
-                segment = self.segment
+                
+                if debug_enabled:
+                    print(f"DEBUG_SEG_SAVE: Successfully updated segment {segment.id}")
+                    # Verify the update worked
+                    session.refresh(segment)
+                    print(f"DEBUG_SEG_SAVE: Verification - segment.duct_width = {segment.duct_width}")
+                    print(f"DEBUG_SEG_SAVE: Verification - segment.duct_height = {segment.duct_height}")
+                
+                # Update our dialog's reference to the session-bound instance
+                self.segment = segment
             else:
+                if debug_enabled:
+                    print(f"DEBUG_SEG_SAVE: Creating new segment")
                 # Create new segment
                 segment = HVACSegment(
                     hvac_path_id=self.hvac_path_id,
@@ -893,34 +1188,94 @@ class HVACSegmentDialog(QDialog):
                 session.add(segment)
                 session.flush()  # Get ID
                 
+                if debug_enabled:
+                    print(f"DEBUG_SEG_SAVE: New segment created with ID {segment.id}")
+                
                 # Add fittings
                 self.update_segment_fittings(segment, session)
                 session.commit()
+                
+                if debug_enabled:
+                    print(f"DEBUG_SEG_SAVE: Successfully created segment {segment.id}")
+            
+            # Force refresh path calculations after segment update
+            if debug_enabled:
+                print(f"DEBUG_SEG_SAVE: Triggering path recalculation for path {self.hvac_path_id}")
+            
+            try:
+                if hasattr(self, 'path_calculator') and self.hvac_path_id:
+                    self.path_calculator.calculate_path_noise(self.hvac_path_id)
+                    if debug_enabled:
+                        print(f"DEBUG_SEG_SAVE: Path recalculation completed")
+            except Exception as calc_e:
+                if debug_enabled:
+                    print(f"DEBUG_SEG_SAVE: Path recalculation failed: {calc_e}")
+            
+            # Update our cached segment data for future UI operations
+            if debug_enabled:
+                print(f"DEBUG_SEG_SAVE: Updating cached segment data")
+            
+            self._segment_data = {
+                'id': segment.id,
+                'length': segment.length,
+                'duct_width': segment.duct_width,
+                'duct_height': segment.duct_height,
+                'diameter': getattr(segment, 'diameter', 0),
+                'duct_shape': segment.duct_shape,
+                'duct_type': segment.duct_type,
+                'segment_order': segment.segment_order,
+                'flow_rate': segment.flow_rate,
+                'flow_velocity': segment.flow_velocity,
+                'insulation': segment.insulation,
+                'lining_thickness': getattr(segment, 'lining_thickness', 0)
+            }
             
             session.close()
             
+            # Emit signals for UI updates
             self.segment_saved.emit(segment)
+            if self.is_editing:
+                self.segment_updated.emit(segment.id)
+            
             self.accept()
             
         except Exception as e:
-            session.rollback()
-            session.close()
+            if debug_enabled:
+                print(f"DEBUG_SEG_SAVE: Error during save: {e}")
+                import traceback
+                traceback.print_exc()
+            if session:
+                session.rollback()
+                session.close()
             QMessageBox.critical(self, "Error", f"Failed to save segment:\n{str(e)}")
     
     def update_segment_properties(self, segment):
-        """Update segment properties"""
-        segment.length = self.length_spin.value()
-        segment.segment_order = self.order_spin.value()
-        segment.duct_width = self.width_spin.value()
-        segment.duct_height = self.height_spin.value()
-        segment.diameter = self.diameter_spin.value()
-        segment.duct_shape = self.shape_combo.currentText()
-        segment.duct_type = self.duct_type_combo.currentText()
-        segment.insulation = self.insulation_combo.currentText()
-        segment.lining_thickness = self.lining_thickness_spin.value()
-        segment.distance_loss = self.distance_loss_spin.value()
-        segment.duct_loss = self.duct_loss_spin.value()
-        segment.fitting_additions = self.fitting_additions_spin.value()
+        """Update segment properties - now deprecated in favor of direct updates in save_segment"""
+        import os
+        debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        if debug_enabled:
+            print(f"DEBUG_SEG_UPDATE: update_segment_properties called (deprecated method)")
+            print(f"DEBUG_SEG_UPDATE: Segment ID: {getattr(segment, 'id', 'unknown')}")
+        
+        # This method is now only used for in-memory updates during context calculations
+        # Actual database updates are handled directly in save_segment to avoid session issues
+        if hasattr(segment, '__dict__'):  # Only update if it's a real object
+            segment.length = self.length_spin.value()
+            segment.segment_order = self.order_spin.value()
+            segment.duct_width = self.width_spin.value()
+            segment.duct_height = self.height_spin.value()
+            segment.diameter = self.diameter_spin.value()
+            segment.duct_shape = self.shape_combo.currentText()
+            segment.duct_type = self.duct_type_combo.currentText()
+            segment.insulation = self.insulation_combo.currentText()
+            segment.lining_thickness = self.lining_thickness_spin.value()
+            segment.distance_loss = self.distance_loss_spin.value()
+            segment.duct_loss = self.duct_loss_spin.value()
+            segment.fitting_additions = self.fitting_additions_spin.value()
+            
+            if debug_enabled:
+                print(f"DEBUG_SEG_UPDATE: In-memory update complete")
     
     def update_segment_fittings(self, segment, session):
         """Update segment fittings"""

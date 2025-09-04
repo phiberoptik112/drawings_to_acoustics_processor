@@ -850,6 +850,37 @@ class HVACPathDialog(QDialog):
         except Exception:
             pass
     
+    def reload_segments_from_db(self):
+        """Force reload of segments from the database to reflect latest edits."""
+        if not hasattr(self, 'path_id') or not self.path_id:
+            return
+        try:
+            session = get_session()
+            segs = (
+                session.query(HVACSegment)
+                .options(
+                    selectinload(HVACSegment.from_component),
+                    selectinload(HVACSegment.to_component),
+                    selectinload(HVACSegment.fittings),
+                )
+                .filter(HVACSegment.hvac_path_id == self.path_id)
+                .order_by(HVACSegment.segment_order)
+                .all()
+            )
+            self.segments = list(segs)
+            session.close()
+            import os
+            if os.environ.get('HVAC_DEBUG_EXPORT'):
+                print(f"DEBUG_UI: Reloaded {len(self.segments)} segments from DB after edit")
+        except Exception as e:
+            try:
+                session.close()
+            except Exception:
+                pass
+            import os
+            if os.environ.get('HVAC_DEBUG_EXPORT'):
+                print(f"DEBUG_UI: Failed to reload segments from DB: {e}")
+
     def _refresh_segments_if_needed(self):
         """Refresh segments from database if they appear to be detached or missing data"""
         if not self.segments or not hasattr(self, 'path_id') or not self.path_id:
@@ -1027,9 +1058,13 @@ class HVACPathDialog(QDialog):
         def seg_label(seg, idx):
             length = getattr(seg, 'length', 0) or 0
             shape = getattr(seg, 'duct_shape', '') or ''
-            w = getattr(seg, 'duct_width', '') or ''
-            h = getattr(seg, 'duct_height', '') or ''
-            dim = f" {int(w)}x{int(h)}" if w and h else ""
+            if shape.lower() == 'circular':
+                d = getattr(seg, 'diameter', 0) or 0
+                dim = f" Ø{int(d)}" if d else ""
+            else:
+                w = getattr(seg, 'duct_width', '') or ''
+                h = getattr(seg, 'duct_height', '') or ''
+                dim = f" {int(w)}x{int(h)}" if w and h else ""
             return f"segment {idx}: {length:.1f} ft{dim} {shape}".strip()
 
         for i, comp in enumerate(components[1:], start=1):
@@ -1427,10 +1462,21 @@ class HVACPathDialog(QDialog):
             print(f"DEBUG_UI:   segment.duct_width = {getattr(segment, 'duct_width', 'missing')}")
             print(f"DEBUG_UI:   segment.duct_height = {getattr(segment, 'duct_height', 'missing')}")
         
+        if os.environ.get('HVAC_DEBUG_EXPORT'):
+            print("DEBUG_UI: Opening HVACSegmentDialog (pre) with segment dims:",
+                  getattr(segment, 'duct_width', None), getattr(segment, 'duct_height', None))
         dialog = HVACSegmentDialog(self, self.path_id if self.path_id else None,
                                  from_component, to_component, segment)
+        if os.environ.get('HVAC_DEBUG_EXPORT'):
+            try:
+                seg_after = getattr(dialog, 'segment', None) or segment
+                print("DEBUG_UI: Returned from HVACSegmentDialog (post) dims:",
+                      getattr(seg_after, 'duct_width', None), getattr(seg_after, 'duct_height', None))
+            except Exception:
+                pass
         if dialog.exec() == QDialog.Accepted:
             # Segment was updated, refresh list
+            self.reload_segments_from_db()
             self.update_segment_list()
     
     def remove_segment(self):
@@ -1718,8 +1764,8 @@ class HVACPathDialog(QDialog):
             return
         
         try:
-            # If we have drawing data, use the path calculator
-            if self.drawing_components and self.drawing_segments:
+            # If we have drawing data AND we are creating a new path, use the calculator
+            if (not self.is_editing) and self.drawing_components and self.drawing_segments:
                 # Add drawing ID to components
                 for comp in self.drawing_components:
                     comp['drawing_id'] = self.drawing_id
@@ -1781,6 +1827,35 @@ class HVACPathDialog(QDialog):
                         # Update target space
                         space_id = self.space_combo.currentData()
                         db_path.target_space_id = space_id
+                        
+                        # Persist current segment ordering and keep any edited geometry
+                        try:
+                            import os
+                            debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+                            # Build desired order from the in-memory list
+                            order_map = {}
+                            for idx, seg in enumerate(self.segments, start=1):
+                                sid = getattr(seg, 'id', None)
+                                if sid is not None:
+                                    order_map[sid] = idx
+                            if debug_enabled:
+                                print(f"DEBUG_UI: Updating segment_order for {len(order_map)} segments on save")
+                            # Load current DB segments and apply new order
+                            db_segs = (
+                                session.query(HVACSegment)
+                                .filter(HVACSegment.hvac_path_id == db_path.id)
+                                .all()
+                            )
+                            for s in db_segs:
+                                if s.id in order_map:
+                                    if debug_enabled and getattr(s, 'segment_order', None) != order_map[s.id]:
+                                        print(f"DEBUG_UI: Segment {s.id} order {getattr(s, 'segment_order', None)} -> {order_map[s.id]}")
+                                    s.segment_order = order_map[s.id]
+                        except Exception as seg_e:
+                            import os
+                            if os.environ.get('HVAC_DEBUG_EXPORT'):
+                                print(f"DEBUG_UI: Failed to update segment ordering on save: {seg_e}")
+                        
                         path = db_path
                         # Commit handled by context manager
                 else:

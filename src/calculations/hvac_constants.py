@@ -132,9 +132,9 @@ HEARING_DAMAGE_THRESHOLD_DB: float = 85.0 # OSHA limit
 # =============================================================================
 
 # Maximum path elements for validation
-MAX_PATH_ELEMENTS: int = 50
-MAX_SEGMENTS_PER_PATH: int = 25
-MAX_FITTINGS_PER_SEGMENT: int = 10
+MAX_PATH_ELEMENTS: int = 100
+MAX_SEGMENTS_PER_PATH: int = 50
+MAX_FITTINGS_PER_SEGMENT: int = 50
 
 # Default source noise levels by component type
 DEFAULT_COMPONENT_NOISE_LEVELS = {

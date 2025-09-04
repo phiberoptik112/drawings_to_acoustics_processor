@@ -17,7 +17,8 @@ from .hvac_constants import (
     DEFAULT_DUCT_WIDTH_IN, DEFAULT_DUCT_HEIGHT_IN, DEFAULT_FLOW_VELOCITY_FPM,
     NUM_OCTAVE_BANDS, FREQUENCY_BAND_LABELS, DEFAULT_SPECTRUM_LEVELS,
     DEFAULT_NC_RATING, MAX_PATH_ELEMENTS, INCHES_PER_FOOT,
-    DEFAULT_CFM_VALUES, DEFAULT_CFM_FALLBACK, get_default_cfm_for_component
+    DEFAULT_CFM_VALUES, DEFAULT_CFM_FALLBACK, get_default_cfm_for_component,
+    DEFAULT_COMPONENT_NOISE_LEVELS
 )
 # Debug export imports
 import os
@@ -99,7 +100,10 @@ class HVACPathCalculator:
                         component_type=component_type,
                         x_position=comp_data.get('x', 0),
                         y_position=comp_data.get('y', 0),
-                        noise_level=None,
+                        # Provide a sensible default A-weighted level so a path can be calculated
+                        # even when mechanical schedules are not linked yet.
+                        noise_level=comp_data.get('noise_level')
+                                    or DEFAULT_COMPONENT_NOISE_LEVELS.get(component_type.lower(), 50.0),
                         cfm=comp_data.get('cfm') or get_default_cfm_for_component(component_type)
                     )
                     session.add(hvac_comp)
@@ -202,8 +206,9 @@ class HVACPathCalculator:
                             to_component_id=to_comp_id,
                             length=seg_data.get('length_real', 0),
                             segment_order=i+1,
-                            duct_width=DEFAULT_DUCT_WIDTH_IN,  # Default rectangular duct
-                            duct_height=DEFAULT_DUCT_HEIGHT_IN,
+                            # Persist duct dimensions from drawing if present; otherwise defaults
+                            duct_width=seg_data.get('duct_width') or DEFAULT_DUCT_WIDTH_IN,
+                            duct_height=seg_data.get('duct_height') or DEFAULT_DUCT_HEIGHT_IN,
                             duct_shape='rectangular',
                             duct_type='sheet_metal',
                             flow_rate=segment_cfm
@@ -239,8 +244,8 @@ class HVACPathCalculator:
                                 to_component_id=to_comp_id,
                                 length=seg_data.get('length_real', 0),
                                 segment_order=i+1,
-                                duct_width=DEFAULT_DUCT_WIDTH_IN,
-                                duct_height=DEFAULT_DUCT_HEIGHT_IN,
+                                duct_width=seg_data.get('duct_width') or DEFAULT_DUCT_WIDTH_IN,
+                                duct_height=seg_data.get('duct_height') or DEFAULT_DUCT_HEIGHT_IN,
                                 duct_shape='rectangular',
                                 duct_type='sheet_metal',
                                 flow_rate=segment_cfm
@@ -719,19 +724,23 @@ class HVACPathCalculator:
                 if self.debug_export_enabled:
                     print(f"DEBUG: Range validation failed: {e}")
             
-            # Require valid source octave-band spectrum; abort if missing
+            # Do NOT require octave-band spectrum; engine can estimate from dBA.
+            # Ensure at least a fallback A-weighted level is present.
             try:
                 src = path_data.get('source_component') or {}
-                bands = src.get('octave_band_levels') if isinstance(src, dict) else None
-                valid_bands = isinstance(bands, list) and len(bands) == NUM_OCTAVE_BANDS and any(isinstance(b, (int, float)) for b in bands)
-                if not valid_bands:
-                    if self.debug_export_enabled:
-                        print("DEBUG: Aborting path data build - missing source octave-band spectrum; source_component=", src)
-                    return None
+                if not isinstance(src, dict):
+                    src = {}
+                if src.get('noise_level') is None:
+                    # Try to derive a rough default from component type; final fallback 50 dB(A)
+                    ctype = (src.get('component_type') or '').lower()
+                    src['noise_level'] = DEFAULT_COMPONENT_NOISE_LEVELS.get(ctype, 50.0)
+                    path_data['source_component'] = src
             except Exception:
-                if self.debug_export_enabled:
-                    print("DEBUG: Aborting path data build - exception while validating source bands")
-                return None
+                # If anything goes wrong, still allow calculation with a reasonable default
+                path_data['source_component'] = {
+                    'component_type': 'unit',
+                    'noise_level': 50.0
+                }
 
             # Enhanced debug export
             if self.debug_export_enabled:
@@ -759,7 +768,19 @@ class HVACPathCalculator:
             return None
 
     def _build_segment_data(self, segment) -> Dict:
-        """Build segment data dictionary from segment object"""
+        """Build segment data dictionary from segment object with comprehensive debugging"""
+        if self.debug_export_enabled:
+            print(f"\nDEBUG_BUILD_SEG: Building segment data for segment ID {getattr(segment, 'id', 'unknown')}")
+            print(f"DEBUG_BUILD_SEG: Raw segment attributes:")
+            print(f"DEBUG_BUILD_SEG:   length = {getattr(segment, 'length', 'missing')}")
+            print(f"DEBUG_BUILD_SEG:   duct_width = {getattr(segment, 'duct_width', 'missing')}")
+            print(f"DEBUG_BUILD_SEG:   duct_height = {getattr(segment, 'duct_height', 'missing')}")
+            print(f"DEBUG_BUILD_SEG:   diameter = {getattr(segment, 'diameter', 'missing')}")
+            print(f"DEBUG_BUILD_SEG:   duct_shape = {getattr(segment, 'duct_shape', 'missing')}")
+            print(f"DEBUG_BUILD_SEG:   duct_type = {getattr(segment, 'duct_type', 'missing')}")
+            print(f"DEBUG_BUILD_SEG:   flow_rate = {getattr(segment, 'flow_rate', 'missing')}")
+            print(f"DEBUG_BUILD_SEG:   segment_order = {getattr(segment, 'segment_order', 'missing')}")
+        
         segment_data = {
             'length': segment.length or 0,
             'duct_width': segment.duct_width or 12,
@@ -771,6 +792,14 @@ class HVACPathCalculator:
             'lining_thickness': getattr(segment, 'lining_thickness', 0) or 0,
             'fittings': []
         }
+        
+        if self.debug_export_enabled:
+            print(f"DEBUG_BUILD_SEG: Built segment data:")
+            print(f"DEBUG_BUILD_SEG:   length = {segment_data['length']}")
+            print(f"DEBUG_BUILD_SEG:   duct_width = {segment_data['duct_width']}")
+            print(f"DEBUG_BUILD_SEG:   duct_height = {segment_data['duct_height']}")
+            print(f"DEBUG_BUILD_SEG:   diameter = {segment_data.get('diameter', 0)}")
+            print(f"DEBUG_BUILD_SEG:   duct_shape = {segment_data['duct_shape']}")
         
         # Calculate flow data with CFM priority
         try:
@@ -799,7 +828,15 @@ class HVACPathCalculator:
             else:
                 segment_data['flow_velocity'] = DEFAULT_FLOW_VELOCITY_FPM
                 
-        except Exception:
+            if self.debug_export_enabled:
+                print(f"DEBUG_BUILD_SEG: Flow calculations:")
+                print(f"DEBUG_BUILD_SEG:   area_ft2 = {area_ft2}")
+                print(f"DEBUG_BUILD_SEG:   segment_cfm = {segment_cfm}")
+                print(f"DEBUG_BUILD_SEG:   flow_velocity = {segment_data['flow_velocity']}")
+                
+        except Exception as e:
+            if self.debug_export_enabled:
+                print(f"DEBUG_BUILD_SEG: Error in flow calculations: {e}")
             segment_data['flow_rate'] = DEFAULT_CFM_FALLBACK
             segment_data['flow_velocity'] = DEFAULT_FLOW_VELOCITY_FPM
         

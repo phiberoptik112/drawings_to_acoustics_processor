@@ -1223,8 +1223,19 @@ class DrawingInterface(QMainWindow):
             if hvac_path_result.success:
                 hvac_path = hvac_path_result.data
                 # Register path elements in drawing overlay for show/hide functionality
+                # Get the actual overlay elements instead of using the dialog data
                 if self.drawing_overlay:
-                    self.drawing_overlay.register_path_elements(hvac_path.id, components, path_segments)
+                    overlay_data = self.drawing_overlay.get_elements_data()
+                    overlay_components = overlay_data.get('components', [])
+                    overlay_segments = overlay_data.get('segments', [])
+                    
+                    print(f"DEBUG: Before registration - overlay has {len(overlay_components)} components and {len(overlay_segments)} segments")
+                    
+                    # Register the actual overlay elements - the enhanced register_path_elements
+                    # method will find matching elements by position and type
+                    self.drawing_overlay.register_path_elements(hvac_path.id, overlay_components, overlay_segments)
+                    
+                    print(f"DEBUG: Registered path {hvac_path.id} - elements should now be protected from clearing")
                 
                 # Ask user if they want to clear used elements from drawing
                 path_info = f"Successfully created HVAC path: {hvac_path.name}\n\n"
@@ -1269,32 +1280,33 @@ class DrawingInterface(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")
     
     def clear_used_elements_from_overlay(self, used_components, used_segments):
-        """Remove components and segments that were used in path creation from the overlay"""
+        """Remove components and segments that were used in path creation from the overlay.
+        
+        This now uses clear_unsaved_elements() which respects registered path elements,
+        ensuring that elements belonging to saved paths are not removed.
+        """
         try:
             if not self.drawing_overlay:
                 return
             
             print(f"DEBUG: Clearing {len(used_components)} components and {len(used_segments)} segments from overlay")
             
-            # Remove components
-            components_removed = 0
-            for comp in used_components:
-                if comp in self.drawing_overlay.components:
-                    self.drawing_overlay.components.remove(comp)
-                    components_removed += 1
+            # Count elements before clearing
+            components_before = len(self.drawing_overlay.components)
+            segments_before = len(self.drawing_overlay.segments)
             
-            # Remove segments  
-            segments_removed = 0
-            for seg in used_segments:
-                if seg in self.drawing_overlay.segments:
-                    self.drawing_overlay.segments.remove(seg)
-                    segments_removed += 1
+            # Use the enhanced clear_unsaved_elements method that respects registered paths
+            # This will only remove elements that are NOT registered to any saved path
+            self.drawing_overlay.clear_unsaved_elements()
+            
+            # Count elements after clearing
+            components_after = len(self.drawing_overlay.components)
+            segments_after = len(self.drawing_overlay.segments)
+            
+            components_removed = components_before - components_after
+            segments_removed = segments_before - segments_after
             
             print(f"DEBUG: Actually removed {components_removed} components and {segments_removed} segments")
-            
-            # Mark base cache as dirty and update overlay
-            self.drawing_overlay._base_dirty = True
-            self.drawing_overlay.update()
             
             # Refresh the elements list display
             overlay_data = self.drawing_overlay.get_elements_data()
@@ -1302,7 +1314,10 @@ class DrawingInterface(QMainWindow):
             self.update_elements_display()
             
             # Update status
-            self.status_bar.showMessage(f"Removed {components_removed} components and {segments_removed} segments from drawing", 3000)
+            if components_removed > 0 or segments_removed > 0:
+                self.status_bar.showMessage(f"Removed {components_removed} components and {segments_removed} segments from drawing", 3000)
+            else:
+                self.status_bar.showMessage("All elements preserved as part of saved path", 3000)
             
         except Exception as e:
             print(f"Warning: Failed to clear used elements: {e}")
@@ -1576,6 +1591,65 @@ class DrawingInterface(QMainWindow):
             # Open HVAC path dialog with drawing data
             from ui.dialogs.hvac_path_dialog import HVACPathDialog
             dialog = HVACPathDialog(self, self.project_id)
+            
+            # Connect to path_saved signal to handle registration
+            def on_path_saved(saved_path):
+                """Handle newly saved path by registering elements with drawing overlay"""
+                try:
+                    # Re-register the ORIGINAL drawing elements with the saved path ID
+                    # This ensures the visual segments remain visible and clickable
+                    if self.drawing_overlay and saved_path:
+                        # Temporarily disable clearing to prevent race conditions
+                        self.drawing_overlay.disable_clearing_temporarily()
+                        
+                        print(f"DEBUG: Registering saved path {saved_path.id} with drawing overlay")
+                        
+                        # Find the actual overlay segments that match our drawing segments
+                        # to ensure we register the correct object instances
+                        overlay_components = []
+                        overlay_segments = []
+                        
+                        # Match components by position and type
+                        for comp_data in components:
+                            for overlay_comp in self.drawing_overlay.components:
+                                if (overlay_comp.get('x') == comp_data.get('x') and 
+                                    overlay_comp.get('y') == comp_data.get('y') and
+                                    overlay_comp.get('component_type') == comp_data.get('component_type')):
+                                    overlay_components.append(overlay_comp)
+                                    break
+                        
+                        # Match segments by start/end positions
+                        for seg_data in segments:
+                            for overlay_seg in self.drawing_overlay.segments:
+                                if (abs(overlay_seg.get('start_x', 0) - seg_data.get('start_x', 0)) < 5 and
+                                    abs(overlay_seg.get('start_y', 0) - seg_data.get('start_y', 0)) < 5 and
+                                    abs(overlay_seg.get('end_x', 0) - seg_data.get('end_x', 0)) < 5 and
+                                    abs(overlay_seg.get('end_y', 0) - seg_data.get('end_y', 0)) < 5):
+                                    overlay_segments.append(overlay_seg)
+                                    break
+                        
+                        # Register the actual overlay elements, not copies
+                        self.drawing_overlay.register_path_elements(saved_path.id, overlay_components, overlay_segments)
+                        
+                        # Ensure the path is visible
+                        self.drawing_overlay.set_visible_paths([saved_path.id])
+                        
+                        print(f"DEBUG: Successfully registered path {saved_path.id} with {len(overlay_components)} components and {len(overlay_segments)} segments")
+                        
+                        # Update overlay to reflect the registered path
+                        self.drawing_overlay.update()
+                        
+                        # Re-enable clearing now that registration is complete
+                        self.drawing_overlay.enable_clearing()
+                        
+                except Exception as e:
+                    print(f"ERROR: Failed to register saved path with overlay: {e}")
+                    # Make sure to re-enable clearing even if there was an error
+                    if hasattr(self, 'drawing_overlay') and self.drawing_overlay:
+                        self.drawing_overlay.enable_clearing()
+            
+            # Connect the signal before opening dialog
+            dialog.path_saved.connect(on_path_saved)
             
             # Pass drawing data to the dialog
             dialog.set_drawing_data(components, segments, self.drawing.id)
@@ -2403,6 +2477,26 @@ class DrawingInterface(QMainWindow):
                 return
             # Open in edit mode
             dlg = HVACPathDialog(self, project_id=self.project_id, path=hvac_path)
+            
+            # Connect to path_saved signal to handle registration after edit
+            def on_path_edited_from_item(edited_path):
+                """Handle edited path by re-registering elements with drawing overlay"""
+                try:
+                    # Re-register the path elements after editing
+                    if self.drawing_overlay and edited_path:
+                        print(f"DEBUG: Re-registering edited path {edited_path.id} from list item with drawing overlay")
+                        self.register_path_elements_for_path(edited_path)
+                        print(f"DEBUG: Successfully re-registered edited path {edited_path.id} from list item")
+                        
+                        # Update overlay to reflect changes
+                        self.drawing_overlay.update()
+                        
+                except Exception as e:
+                    print(f"ERROR: Failed to re-register edited path from list item with overlay: {e}")
+            
+            # Connect the signal before opening dialog
+            dlg.path_saved.connect(on_path_edited_from_item)
+            
             if dlg.exec() == QDialog.Accepted:
                 # Refresh list and notify listeners
                 self.load_saved_paths()
@@ -2609,6 +2703,26 @@ class DrawingInterface(QMainWindow):
             if not hvac_path:
                 return
             dlg = HVACPathDialog(self, project_id=self.project_id, path=hvac_path)
+            
+            # Connect to path_saved signal to handle registration after edit
+            def on_path_edited(edited_path):
+                """Handle edited path by re-registering elements with drawing overlay"""
+                try:
+                    # Re-register the path elements after editing
+                    if self.drawing_overlay and edited_path:
+                        print(f"DEBUG: Re-registering edited path {edited_path.id} with drawing overlay")
+                        self.register_path_elements_for_path(edited_path)
+                        print(f"DEBUG: Successfully re-registered edited path {edited_path.id}")
+                        
+                        # Update overlay to reflect changes
+                        self.drawing_overlay.update()
+                        
+                except Exception as e:
+                    print(f"ERROR: Failed to re-register edited path with overlay: {e}")
+            
+            # Connect the signal before opening dialog
+            dlg.path_saved.connect(on_path_edited)
+            
             if dlg.exec() == QDialog.Accepted:
                 self.load_saved_paths()
                 try:
@@ -2746,6 +2860,10 @@ class DrawingInterface(QMainWindow):
             
         except Exception as e:
             print(f"Error registering path elements for path {hvac_path.id}: {e}")
+    
+    def register_path_elements_for_path(self, hvac_path):
+        """Register path elements for a given HVAC path (alias for register_existing_path_elements)"""
+        self.register_existing_path_elements(hvac_path)
 
     def _on_segment_saved(self, segment) -> None:
         """After editing a segment in the dialog, update any registered overlay
