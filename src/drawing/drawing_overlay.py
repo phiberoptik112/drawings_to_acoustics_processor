@@ -44,6 +44,9 @@ class DrawingOverlay(QWidget):
         self.visible_paths: dict[int, bool] = {}
         self.path_element_mapping: dict[int, dict] = {}
         
+        # Protection flag to prevent clearing during save operations
+        self._clearing_disabled = False
+        
         # UI state
         self.show_measurements = True
         self.show_grid = False
@@ -670,17 +673,42 @@ class DrawingOverlay(QWidget):
     
     def clear_unsaved_elements(self):
         try:
+            # Skip clearing if temporarily disabled (e.g., during save operations)
+            if self._clearing_disabled:
+                print("DEBUG: Clearing disabled, skipping clear_unsaved_elements")
+                return
+            
             # Preserve elements registered to any saved path; clear only transient ones
             keep_components = set()
             keep_segments = set()
-            for mapping in self.path_element_mapping.values():
-                for c in mapping.get('components', []) or []:
+            
+            print(f"DEBUG: clear_unsaved_elements - Current paths in mapping: {list(self.path_element_mapping.keys())}")
+            
+            for path_id, mapping in self.path_element_mapping.items():
+                path_components = mapping.get('components', []) or []
+                path_segments = mapping.get('segments', []) or []
+                
+                print(f"DEBUG: Path {path_id} has {len(path_components)} components and {len(path_segments)} segments")
+                
+                for c in path_components:
                     keep_components.add(id(c))
-                for s in mapping.get('segments', []) or []:
+                    print(f"DEBUG: Keeping component {id(c)} for path {path_id}")
+                for s in path_segments:
                     keep_segments.add(id(s))
+                    print(f"DEBUG: Keeping segment {id(s)} for path {path_id}")
 
+            print(f"DEBUG: Before clearing - {len(self.components)} components, {len(self.segments)} segments")
+            print(f"DEBUG: Keeping {len(keep_components)} components, {len(keep_segments)} segments")
+            
+            # Filter out unsaved elements
+            original_components_count = len(self.components)
+            original_segments_count = len(self.segments)
+            
             self.components = [c for c in self.components if id(c) in keep_components]
             self.segments = [s for s in self.segments if id(s) in keep_segments]
+            
+            print(f"DEBUG: After clearing - {len(self.components)} components ({original_components_count - len(self.components)} removed)")
+            print(f"DEBUG: After clearing - {len(self.segments)} segments ({original_segments_count - len(self.segments)} removed)")
 
             # Do not touch rectangles/polygons; measurements have their own clearer
             self._base_components.clear()
@@ -688,7 +716,8 @@ class DrawingOverlay(QWidget):
             self._base_dirty = True
             self.update_segment_tool_components()
             self.update()
-        except Exception:
+        except Exception as e:
+            print(f"ERROR in clear_unsaved_elements: {e}")
             # Fallback: keep state as-is to avoid losing data on error
             self.update()
 
@@ -1106,11 +1135,62 @@ class DrawingOverlay(QWidget):
             painter.drawLine(0, y, self.width(), y)
 
     def register_path_elements(self, path_id, components, segments):
+        """Register components and segments as belonging to a saved path.
+        
+        This prevents them from being cleared by clear_unsaved_elements().
+        """
         if path_id not in self.path_element_mapping:
             self.path_element_mapping[path_id] = {'components': [], 'segments': []}
-        self.path_element_mapping[path_id]['components'] = components or []
-        self.path_element_mapping[path_id]['segments'] = segments or []
+        
+        # Store references to the actual overlay element objects
+        registered_components = []
+        registered_segments = []
+        
+        # Register components by finding matching objects in our overlay
+        for comp in (components or []):
+            if comp in self.components:
+                registered_components.append(comp)
+            else:
+                # Try to find matching component in overlay
+                for overlay_comp in self.components:
+                    if (overlay_comp.get('x') == comp.get('x') and 
+                        overlay_comp.get('y') == comp.get('y') and
+                        overlay_comp.get('component_type') == comp.get('component_type')):
+                        registered_components.append(overlay_comp)
+                        break
+        
+        # Register segments by finding matching objects in our overlay
+        for seg in (segments or []):
+            if seg in self.segments:
+                registered_segments.append(seg)
+            else:
+                # Try to find matching segment in overlay
+                for overlay_seg in self.segments:
+                    if (abs(overlay_seg.get('start_x', 0) - seg.get('start_x', 0)) < 5 and
+                        abs(overlay_seg.get('start_y', 0) - seg.get('start_y', 0)) < 5 and
+                        abs(overlay_seg.get('end_x', 0) - seg.get('end_x', 0)) < 5 and
+                        abs(overlay_seg.get('end_y', 0) - seg.get('end_y', 0)) < 5):
+                        registered_segments.append(overlay_seg)
+                        break
+        
+        self.path_element_mapping[path_id]['components'] = registered_components
+        self.path_element_mapping[path_id]['segments'] = registered_segments
+        
+        print(f"DEBUG: Registered path {path_id} with {len(registered_components)} components and {len(registered_segments)} segments")
+        print(f"DEBUG: Component IDs: {[id(c) for c in registered_components]}")
+        print(f"DEBUG: Segment IDs: {[id(s) for s in registered_segments]}")
+        
         self.update()
+    
+    def disable_clearing_temporarily(self):
+        """Disable clearing of unsaved elements temporarily (e.g., during save operations)"""
+        self._clearing_disabled = True
+        print("DEBUG: Clearing disabled")
+    
+    def enable_clearing(self):
+        """Re-enable clearing of unsaved elements"""
+        self._clearing_disabled = False
+        print("DEBUG: Clearing re-enabled")
 
     def set_visible_paths(self, visible_path_ids):
         self.visible_paths = {pid: True for pid in visible_path_ids}

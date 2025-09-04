@@ -238,6 +238,8 @@ class HVACNoiseEngine:
             # Process each element in the path
             total_attenuation_dba = 0.0
             
+            last_flow_rate: float = 0.0
+            last_element_with_geometry: Optional[PathElement] = None
             for i, element in enumerate(path_elements):
                 if element.element_type == 'source':
                     continue  # Already processed
@@ -258,7 +260,102 @@ class HVACNoiseEngine:
                     element.element_type, 
                     element.element_id,
                     input_spectrum=spectrum_before)
-                element_result = self._calculate_element_effect(element, current_spectrum, current_dba)
+
+                # Context-aware junction handling: derive main vs branch flows from neighbors
+                if element.element_type == 'junction':
+                    try:
+                        # Determine upstream and downstream flows
+                        upstream_flow = last_flow_rate or (element.flow_rate or 0.0)
+                        # Find next geometric element (skip terminal)
+                        next_elem: Optional[PathElement] = None
+                        for j in range(i + 1, len(path_elements)):
+                            if path_elements[j].element_type not in ['source']:
+                                next_elem = path_elements[j]
+                                break
+                        downstream_flow = (
+                            (next_elem.flow_rate if next_elem and hasattr(next_elem, 'flow_rate') else None)
+                        ) or (element.flow_rate or 0.0)
+
+                        # Compute branch/main flows
+                        flows = [f for f in [upstream_flow, downstream_flow] if (isinstance(f, (int, float)) and f > 0)]
+                        if len(flows) >= 1:
+                            main_flow = max(flows)
+                            branch_flow = min(flows)
+                        else:
+                            main_flow = element.flow_rate or 0.0
+                            branch_flow = element.flow_rate or 0.0
+
+                        # Compute cross-sectional areas using available geometry
+                        def _area_for(elem: Optional[PathElement]) -> float:
+                            try:
+                                if elem is None:
+                                    return 0.0
+                                return self._calculate_duct_area(elem)
+                            except Exception:
+                                return 0.0
+
+                        branch_area = _area_for(next_elem) or _area_for(element)
+                        main_area = _area_for(last_element_with_geometry) or _area_for(element)
+                        if main_area <= 0.0:
+                            main_area = branch_area or _area_for(element)
+                        if branch_area <= 0.0:
+                            branch_area = main_area or _area_for(element)
+
+                        # Map fitting hint to junction type
+                        fit = (element.fitting_type or '').lower() if hasattr(element, 'fitting_type') else ''
+                        jtype = JunctionType.T_JUNCTION
+                        if 'x' in fit or 'cross' in fit:
+                            jtype = JunctionType.X_JUNCTION
+                        elif 'branch' in fit:
+                            jtype = JunctionType.BRANCH_TAKEOFF_90
+                        elif 'tee' in fit or 't_' in fit:
+                            jtype = JunctionType.T_JUNCTION
+
+                        if debug_export_enabled:
+                            print(f"DEBUG_ENGINE:     Junction context: upstream_flow={upstream_flow:.1f}, downstream_flow={downstream_flow:.1f}")
+                            print(f"DEBUG_ENGINE:     Areas: main_area={main_area:.3f} ft^2, branch_area={branch_area:.3f} ft^2")
+                            print(f"DEBUG_ENGINE:     Fitting hint='{fit}', selected_junction_type={jtype.name}")
+
+                        # Calculate spectra using contextual flows/areas
+                        spectrum_data = self.junction_calc.calculate_junction_noise_spectrum(
+                            branch_flow_rate=branch_flow,
+                            branch_cross_sectional_area=max(branch_area, 1e-6),
+                            main_flow_rate=main_flow,
+                            main_cross_sectional_area=max(main_area, 1e-6),
+                            junction_type=jtype
+                        )
+
+                        # Decide if path follows branch (downstream smaller than upstream)
+                        follows_branch = (downstream_flow > 0 and upstream_flow > 0 and downstream_flow < upstream_flow)
+                        chosen = spectrum_data.get('branch_duct' if follows_branch else 'main_duct') or {}
+
+                        if debug_export_enabled:
+                            which = 'branch_duct' if follows_branch else 'main_duct'
+                            params = spectrum_data.get('parameters', {})
+                            print(f"DEBUG_ENGINE:     Junction spectra computed. Using '{which}' spectrum")
+                            print(f"DEBUG_ENGINE:     Calc params: vel_ratio={params.get('velocity_ratio', 0):.3f}, main_vel={params.get('main_velocity_ft_s', 0):.3f} ft/s, branch_vel={params.get('branch_velocity_ft_s', 0):.3f} ft/s")
+
+                        element_result = {
+                            'attenuation_spectrum': None,
+                            'generated_spectrum': [0.0] * NUM_OCTAVE_BANDS,
+                            'attenuation_dba': None,
+                            'generated_dba': 0.0
+                        }
+                        for k, freq in enumerate(self.FREQUENCY_BANDS):
+                            key = f"{freq}Hz"
+                            if key in chosen:
+                                element_result['generated_spectrum'][k] = float(chosen[key])
+                        element_result['generated_dba'] = self._calculate_dba_from_spectrum(element_result['generated_spectrum'])
+
+                        if debug_export_enabled:
+                            print(f"DEBUG_ENGINE:     Junction generated_dba={element_result['generated_dba']:.2f}")
+                    except Exception as _e:
+                        # Fallback to legacy per-element calculation on any failure
+                        if debug_export_enabled:
+                            print(f"DEBUG_ENGINE:     Junction context calc failed; falling back. Error: {_e}")
+                        element_result = self._calculate_element_effect(element, current_spectrum, current_dba)
+                else:
+                    element_result = self._calculate_element_effect(element, current_spectrum, current_dba)
                 
                 if debug_export_enabled:
                     att_dba = element_result.get('attenuation_dba') or 0.0
@@ -326,6 +423,14 @@ class HVACNoiseEngine:
                     pass
                 
                 element_results.append(element_result)
+
+                # Track last element flow and geometry for next iteration context
+                try:
+                    if element.element_type not in ['source', 'terminal']:
+                        last_flow_rate = float(getattr(element, 'flow_rate', 0.0) or 0.0)
+                        last_element_with_geometry = element
+                except Exception:
+                    pass
 
                 if debug:
                     debug_steps.append({
