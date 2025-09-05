@@ -516,6 +516,11 @@ class HVACComponentDialog(QDialog):
         if not self.validate_component_inputs():
             return
         
+        print(f"DEBUG_COMPONENT_SAVE_START: Starting save process")
+        print(f"DEBUG_COMPONENT_SAVE_START:   is_editing: {self.is_editing}")
+        print(f"DEBUG_COMPONENT_SAVE_START:   component_id: {getattr(self.component, 'id', 'None') if self.component else 'None'}")
+        print(f"DEBUG_COMPONENT_SAVE_START:   UI CFM value: {self.cfm_spin.value()}")
+        
         try:
             with get_hvac_session() as session:
                 if self.is_editing:
@@ -524,20 +529,28 @@ class HVACComponentDialog(QDialog):
                     if not component:
                         raise ValueError("Component not found in database")
                     
+                    print(f"DEBUG_COMPONENT_SAVE_START: Found component in DB:")
+                    print(f"DEBUG_COMPONENT_SAVE_START:   DB CFM before save: {getattr(component, 'cfm', 'None')}")
+                    
                     print("DEBUG[HVACComponentDialog]: Updating existing component", {
                         "id": component.id, "prev_name": component.name, 
-                        "prev_type": component.component_type, "prev_noise": component.noise_level
+                        "prev_type": component.component_type, "prev_noise": component.noise_level,
+                        "prev_cfm": getattr(component, 'cfm', None)
                     })
                     
                     # Apply changes to session-attached instance
                     self.apply_changes_to_component(component, session)
+                    
+                    print(f"DEBUG_COMPONENT_SAVE_START: After apply_changes_to_component:")
+                    print(f"DEBUG_COMPONENT_SAVE_START:   DB CFM after apply: {getattr(component, 'cfm', 'None')}")
                     
                     # Update our dialog reference to the session-attached instance
                     self.component = component
                     
                     print("DEBUG[HVACComponentDialog]: Saved component", {
                         "id": component.id, "name": component.name, 
-                        "type": component.component_type, "noise": component.noise_level
+                        "type": component.component_type, "noise": component.noise_level,
+                        "cfm": getattr(component, 'cfm', None)
                     })
                 else:
                     # Create new component
@@ -547,15 +560,31 @@ class HVACComponentDialog(QDialog):
                     self.component = component
                     
                     print("DEBUG[HVACComponentDialog]: Created new component", {
-                        "id": component.id, "name": component.name, "type": component.component_type
+                        "id": component.id, "name": component.name, "type": component.component_type,
+                        "cfm": getattr(component, 'cfm', None)
                     })
                 
                 # Commit handled by context manager
+                print(f"DEBUG_COMPONENT_SAVE_START: About to commit changes")
+            
+            # Verify the save worked by re-querying
+            with get_hvac_session() as verify_session:
+                if self.is_editing:
+                    verify_component = verify_session.query(HVACComponent).filter(HVACComponent.id == self.component.id).first()
+                    if verify_component:
+                        print(f"DEBUG_COMPONENT_SAVE_VERIFY: Post-save verification:")
+                        print(f"DEBUG_COMPONENT_SAVE_VERIFY:   DB CFM after commit: {getattr(verify_component, 'cfm', 'None')}")
+                        print(f"DEBUG_COMPONENT_SAVE_VERIFY:   Expected CFM: {self.cfm_spin.value()}")
+                        if getattr(verify_component, 'cfm', None) == self.cfm_spin.value():
+                            print(f"DEBUG_COMPONENT_SAVE_VERIFY:   SUCCESS: CFM saved correctly")
+                        else:
+                            print(f"DEBUG_COMPONENT_SAVE_VERIFY:   ERROR: CFM not saved correctly")
             
             self.component_saved.emit(self.component)
             self.accept()
             
         except Exception as e:
+            print(f"DEBUG_COMPONENT_SAVE_ERROR: Save failed with error: {e}")
             QMessageBox.critical(self, "Save Error", f"Failed to save component:\n{str(e)}")
     
     def validate_component_inputs(self):

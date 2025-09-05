@@ -34,7 +34,7 @@ class NoiseCalculator:
         """Initialize the noise calculator"""
         self.hvac_engine = HVACNoiseEngine()
     
-    def calculate_hvac_path_noise(self, path_data: Dict, debug: bool = False) -> Dict:
+    def calculate_hvac_path_noise(self, path_data: Dict, debug: bool = False, origin: str = "user", path_id: Optional[str] = None) -> Dict:
         """
         Calculate noise transmission through an HVAC path from source to terminal
         
@@ -52,7 +52,8 @@ class NoiseCalculator:
         
         try:
             if debug_export_enabled:
-                print(f"\n=== NOISE CALCULATOR DEBUG START ===")
+                pid = path_id or str(path_data.get('path_id', 'unknown'))
+                print(f"\n===== [NOISE CALCULATOR] START | origin={origin} | path_id={pid} =====")
                 print(f"DEBUG_NC: Input path_data keys: {list(path_data.keys())}")
                 
             # Convert path_data to PathElement objects
@@ -67,12 +68,13 @@ class NoiseCalculator:
                         print(f"DEBUG_NC:     Source octave_bands: {elem.octave_band_levels}")
             
             # Use the HVAC engine to calculate
-            result = self.hvac_engine.calculate_path_noise(path_elements, debug=debug)
+            result = self.hvac_engine.calculate_path_noise(path_elements, path_id=(path_id or "path_1"), debug=debug, origin=origin)
             
             if debug_export_enabled:
                 print(f"DEBUG_NC: Engine returned - valid: {result.calculation_valid}, error: {result.error_message}")
                 print(f"DEBUG_NC: Source dBA: {result.source_noise_dba}, Terminal dBA: {result.terminal_noise_dba}")
-                print(f"=== NOISE CALCULATOR DEBUG END ===\n")
+                pid = path_id or str(path_data.get('path_id', 'unknown'))
+                print(f"===== [NOISE CALCULATOR] END   | origin={origin} | path_id={pid} | valid={result.calculation_valid} =====\n")
             
             # Convert back to the expected format
             return self._convert_result_to_dict(result)
@@ -82,6 +84,11 @@ class NoiseCalculator:
                 print(f"DEBUG_NC: Exception in calculate_hvac_path_noise: {e}")
                 import traceback
                 print(f"DEBUG_NC: Traceback: {traceback.format_exc()}")
+                pid = path_id or str(path_data.get('path_id', 'unknown'))
+                try:
+                    print(f"===== [NOISE CALCULATOR] END   | origin={origin} | path_id={pid} | valid=False | error=1 =====\n")
+                except Exception:
+                    pass
             return {
                 'source_noise': 0.0,
                 'terminal_noise': 0.0,
@@ -99,16 +106,25 @@ class NoiseCalculator:
         # Add source element
         source_component = path_data.get('source_component', {})
         if source_component:
+            # Enhanced debugging for source component data
+            debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+            if debug_export_enabled:
+                print(f"DEBUG_NC: Source component data received:")
+                print(f"DEBUG_NC:   Source component keys: {list(source_component.keys())}")
+                print(f"DEBUG_NC:   Source component full data: {source_component}")
+                print(f"DEBUG_NC:   Source component flow_rate: {source_component.get('flow_rate', 'None')}")
+                print(f"DEBUG_NC:   Source component flow_rate type: {type(source_component.get('flow_rate', None))}")
+            
             # Get source flow rate from the first segment or source component
             source_flow_rate = source_component.get('flow_rate', 0.0)
+            segments = path_data.get('segments', [])  # Define segments variable for debug output
+            
             if not source_flow_rate:
                 # Try to get flow rate from first segment
-                segments = path_data.get('segments', [])
                 if segments:
                     source_flow_rate = segments[0].get('flow_rate', 0.0)
             
             # Debug CFM assignment for source
-            debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
             if debug_export_enabled:
                 print(f"DEBUG_NC: Source CFM assignment:")
                 print(f"DEBUG_NC:   Source component flow_rate: {source_component.get('flow_rate', 'None')}")

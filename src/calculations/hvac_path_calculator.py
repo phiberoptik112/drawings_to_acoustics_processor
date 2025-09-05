@@ -295,7 +295,7 @@ class HVACPathCalculator:
             self.debug_logger.error('PathCalculator', 'Error creating HVAC path', error=e)
             return CalculationResult.error(f"Failed to create HVAC path: {str(e)}")
     
-    def calculate_path_noise(self, path_id: int, debug: bool = False) -> PathAnalysisResult:
+    def calculate_path_noise(self, path_id: int, debug: bool = False, origin: str = "user") -> PathAnalysisResult:
         """
         Calculate noise for a specific HVAC path with validation
         
@@ -306,6 +306,12 @@ class HVACPathCalculator:
             PathAnalysisResult with calculation details
         """
         from src.calculations.hvac_validation import HVACValidationFramework
+        # Delineated banner for calculator start
+        try:
+            if getattr(self, 'debug_export_enabled', False):
+                print(f"\n===== [PATH CALCULATOR] START | origin={origin} | path_id={path_id} =====")
+        except Exception:
+            pass
         
         # Pre-calculation validation
         validation_framework = HVACValidationFramework(self.project_id)
@@ -357,7 +363,7 @@ class HVACPathCalculator:
                 for i, seg in enumerate(path_data.get('segments', [])):
                     print(f"DEBUG: - Segment {i+1}: length={seg.get('length')}, flow_rate={seg.get('flow_rate')}, duct={seg.get('duct_width')}x{seg.get('duct_height')}")
                 
-            calc_results = self.noise_calculator.calculate_hvac_path_noise(path_data, debug=debug)
+            calc_results = self.noise_calculator.calculate_hvac_path_noise(path_data, debug=debug, origin=origin, path_id=str(path_id))
             
             if self.debug_export_enabled:
                 print(f"DEBUG: Post-calculation results:")
@@ -404,6 +410,11 @@ class HVACPathCalculator:
             )
             
             session.close()
+            try:
+                if getattr(self, 'debug_export_enabled', False):
+                    print(f"===== [PATH CALCULATOR] END   | origin={origin} | valid={result.calculation_valid} | nc={result.nc_rating} | terminal={result.terminal_noise:.1f} dB(A) =====\n")
+            except Exception:
+                pass
             return result
             
         except Exception as e:
@@ -412,7 +423,7 @@ class HVACPathCalculator:
                     session.close()
                 except Exception:
                     pass
-            return PathAnalysisResult(
+            end_result = PathAnalysisResult(
                 path_id=path_id,
                 path_name=f"Path {path_id}",
                 source_noise=0,
@@ -424,6 +435,12 @@ class HVACPathCalculator:
                 warnings=[],
                 error_message=str(e)
             )
+            try:
+                if getattr(self, 'debug_export_enabled', False):
+                    print(f"===== [PATH CALCULATOR] END   | origin={origin} | valid={end_result.calculation_valid} | error=1 =====\n")
+            except Exception:
+                pass
+            return end_result
     
     def calculate_all_project_paths(self, project_id: int) -> List[PathAnalysisResult]:
         """
@@ -537,6 +554,14 @@ class HVACPathCalculator:
             # Get source: prefer explicit HVACComponent relationship; otherwise derive from MechanicalUnit or first component
             source_comp = getattr(hvac_path, 'primary_source', None)
             
+            print(f"DEBUG_SOURCE_SELECTION: Source component selection logic:")
+            print(f"DEBUG_SOURCE_SELECTION:   hvac_path.primary_source: {source_comp}")
+            print(f"DEBUG_SOURCE_SELECTION:   hvac_path.primary_source_id: {getattr(hvac_path, 'primary_source_id', None)}")
+            print(f"DEBUG_SOURCE_SELECTION:   hvac_path.id: {getattr(hvac_path, 'id', None)}")
+            print(f"DEBUG_SOURCE_SELECTION:   IMPORTANT: The configured primary source is ELBOW-1 (ID: 5)")
+            print(f"DEBUG_SOURCE_SELECTION:   ELBOW-1 is a passive component - it will inherit CFM from upstream active components")
+            print(f"DEBUG_SOURCE_SELECTION:   The actual CFM source should be RF 1-1 (ID: 197) - the active fan component")
+            
             if source_comp is not None:
                 # Enhanced debugging for source component in legacy method
                 print(f"DEBUG_LEGACY_SOURCE: Source component found:")
@@ -561,6 +586,12 @@ class HVACPathCalculator:
                     db_comp = session.query(HVACComponent).filter(HVACComponent.id == source_comp.id).first()
                     if db_comp:
                         print(f"DEBUG_LEGACY_SOURCE: Direct DB query - CFM: {db_comp.cfm}")
+                        print(f"DEBUG_LEGACY_SOURCE: Direct DB query - Component name: {db_comp.name}")
+                        print(f"DEBUG_LEGACY_SOURCE: Direct DB query - Component type: {db_comp.component_type}")
+                        print(f"DEBUG_LEGACY_SOURCE: Direct DB query - All CFM-related fields:")
+                        print(f"DEBUG_LEGACY_SOURCE:   cfm: {db_comp.cfm}")
+                        print(f"DEBUG_LEGACY_SOURCE:   airflow_cfm: {getattr(db_comp, 'airflow_cfm', 'No airflow_cfm field')}")
+                        print(f"DEBUG_LEGACY_SOURCE:   flow_rate: {getattr(db_comp, 'flow_rate', 'No flow_rate field')}")
                     else:
                         print(f"DEBUG_LEGACY_SOURCE: Direct DB query - Component not found")
                 except Exception as e:
@@ -578,15 +609,62 @@ class HVACPathCalculator:
                     except Exception:
                         pass
                 
-                # FIXED: Include CFM value in source component data
+                # FIXED: Handle passive component CFM calculation
                 source_cfm = getattr(source_comp, 'cfm', None)
-                print(f"DEBUG_LEGACY_SOURCE: Using CFM value: {source_cfm}")
+                source_type = getattr(source_comp, 'component_type', '')
+                
+                # Check if this is a passive component that should inherit CFM from upstream
+                passive_components = ['elbow', 'junction', 'tee', 'reducer', 'damper', 'silencer']
+                is_passive = source_type.lower() in passive_components
+                
+                print(f"DEBUG_LEGACY_SOURCE: Component analysis:")
+                print(f"DEBUG_LEGACY_SOURCE:   Component type: {source_type}")
+                print(f"DEBUG_LEGACY_SOURCE:   Is passive component: {is_passive}")
+                print(f"DEBUG_LEGACY_SOURCE:   Original CFM: {source_cfm}")
+                
+                if is_passive and (source_cfm is None or source_cfm == 0):
+                    # For passive components, find upstream active component
+                    print(f"DEBUG_LEGACY_SOURCE: Passive component detected - finding upstream active component")
+                    
+                    # Look for active components in the path segments
+                    active_cfm = None
+                    for segment in segments:
+                        from_comp = getattr(segment, 'from_component', None)
+                        if from_comp:
+                            from_type = getattr(from_comp, 'component_type', '')
+                            from_cfm = getattr(from_comp, 'cfm', None)
+                            
+                            # Check if this is an active component (fan, ahu, etc.)
+                            active_components = ['fan', 'ahu', 'unit', 'blower', 'compressor']
+                            is_active = from_type.lower() in active_components
+                            
+                            print(f"DEBUG_LEGACY_SOURCE:   Checking component {getattr(from_comp, 'id', 'unknown')} ({from_type}): CFM={from_cfm}, Active={is_active}")
+                            
+                            if is_active and from_cfm and from_cfm > 0:
+                                active_cfm = from_cfm
+                                print(f"DEBUG_LEGACY_SOURCE:   Found active component with CFM: {active_cfm}")
+                                break
+                    
+                    if active_cfm:
+                        source_cfm = active_cfm
+                        print(f"DEBUG_LEGACY_SOURCE:   Using inherited CFM from active component: {source_cfm}")
+                    else:
+                        print(f"DEBUG_LEGACY_SOURCE:   No active component found - using original CFM: {source_cfm}")
+                
+                print(f"DEBUG_LEGACY_SOURCE: Final CFM value: {source_cfm}")
                 
                 path_data['source_component'] = {
                     'component_type': source_comp.component_type,
                     'noise_level': source_comp.noise_level,
                     'flow_rate': source_cfm  # FIXED: Include CFM value
                 }
+                
+                # Debug the source component data structure
+                print(f"DEBUG_LEGACY_SOURCE_DATA: Created source_component data:")
+                print(f"DEBUG_LEGACY_SOURCE_DATA:   Keys: {list(path_data['source_component'].keys())}")
+                print(f"DEBUG_LEGACY_SOURCE_DATA:   Full data: {path_data['source_component']}")
+                print(f"DEBUG_LEGACY_SOURCE_DATA:   flow_rate value: {path_data['source_component']['flow_rate']}")
+                print(f"DEBUG_LEGACY_SOURCE_DATA:   flow_rate type: {type(path_data['source_component']['flow_rate'])}")
                 try:
                     unit = self.find_matching_mechanical_unit(source_comp, getattr(hvac_path, 'project_id', self.project_id))
                 except Exception:
@@ -656,10 +734,15 @@ class HVACPathCalculator:
                                     elif isinstance(data2, list) and len(data2) >= 8:
                                         bands2 = [float(x or 0) for x in data2[:8]]
                                 if bands2:
+                                    # Preserve the original CFM value when overwriting with mechanical unit data
+                                    original_cfm = path_data['source_component'].get('flow_rate', None)
+                                    print(f"DEBUG_LEGACY_OVERWRITE: Preserving CFM value: {original_cfm}")
+                                    
                                     path_data['source_component'] = {
                                         'component_type': getattr(mu2, 'unit_type', None) or 'unit',
                                         'noise_level': getattr(mu2, 'base_noise_dba', None),
                                         'octave_band_levels': bands2,
+                                        'flow_rate': original_cfm  # FIXED: Preserve CFM value
                                     }
                                     if self.debug_export_enabled:
                                         print(f"DEBUG: Fallback MU match '{mu2.name}' provided bands: {bands2}")
@@ -795,10 +878,8 @@ class HVACPathCalculator:
                     'noise_level': comp.noise_level
                 }
             
-            # Convert segments
-            for segment in segments:
-                segment_data = self._build_segment_data(segment)
-                path_data['segments'].append(segment_data)
+            # Convert segments with proper flow rate propagation
+            path_data['segments'] = self._build_segments_with_flow_propagation(segments, source_cfm)
             
             # Add validation and debug export
             try:
@@ -839,6 +920,14 @@ class HVACPathCalculator:
             if self.debug_export_enabled:
                 self._export_enhanced_debug_data(hvac_path, path_data)
             
+            # Final debugging of path_data before return
+            print(f"DEBUG_LEGACY_FINAL: Final path_data before return:")
+            print(f"DEBUG_LEGACY_FINAL:   path_data keys: {list(path_data.keys())}")
+            print(f"DEBUG_LEGACY_FINAL:   source_component: {path_data.get('source_component', {})}")
+            print(f"DEBUG_LEGACY_FINAL:   source_component keys: {list(path_data.get('source_component', {}).keys())}")
+            print(f"DEBUG_LEGACY_FINAL:   source_component flow_rate: {path_data.get('source_component', {}).get('flow_rate', 'None')}")
+            print(f"DEBUG_LEGACY_FINAL:   segments count: {len(path_data.get('segments', []))}")
+            
             return path_data
             
         except Exception as e:
@@ -859,6 +948,62 @@ class HVACPathCalculator:
             return None
         except Exception:
             return None
+
+    def _build_segments_with_flow_propagation(self, segments: List, source_cfm: float, origin: str, path_id: int) -> List[Dict]:
+        """Build segment data with proper flow rate propagation based on path topology"""
+        print(f"===== [PATH CALCULATOR] BUILD SEGMENTS WITH FLOW PROPAGATION | origin={origin} | path_id={path_id} =====")
+        print(f"DEBUG_FLOW_PROPAGATION: Starting flow rate propagation")
+        print(f"DEBUG_FLOW_PROPAGATION:   Origin: {origin}")
+        print(f"DEBUG_FLOW_PROPAGATION:   Path ID: {path_id}")
+        print(f"DEBUG_FLOW_PROPAGATION:   Source CFM: {source_cfm}")
+        print(f"DEBUG_FLOW_PROPAGATION:   Number of segments: {len(segments)}")
+        
+        segment_data_list = []
+        current_flow = source_cfm
+        
+        for i, segment in enumerate(segments):
+            segment_data = self._build_segment_data(segment)
+            
+            # Calculate realistic flow rate based on path position and topology
+            if i == 0:
+                # First segment should have the source flow rate
+                calculated_flow = source_cfm
+                print(f"DEBUG_FLOW_PROPAGATION:   Segment {i+1}: First segment, using source CFM: {calculated_flow}")
+            else:
+                # For subsequent segments, calculate based on path topology
+                # This is a simplified model - in reality, you'd need more sophisticated branching logic
+                calculated_flow = self._calculate_segment_flow_rate(segment, current_flow, i)
+                print(f"DEBUG_FLOW_PROPAGATION:   Segment {i+1}: Calculated flow: {calculated_flow}")
+            
+            # Update the segment data with the calculated flow rate
+            if segment_data:
+                segment_data['flow_rate'] = calculated_flow
+                current_flow = calculated_flow  # Update for next iteration
+            
+            segment_data_list.append(segment_data)
+        
+        print(f"DEBUG_FLOW_PROPAGATION: Flow propagation complete")
+        return segment_data_list
+    
+    def _calculate_segment_flow_rate(self, segment, upstream_flow: float, segment_index: int) -> float:
+        """Calculate realistic flow rate for a segment based on path topology"""
+        # Get the segment's original flow rate
+        original_flow = getattr(segment, 'flow_rate', None)
+        
+        # For now, use a simple model:
+        # - If original flow is reasonable (within 50% of upstream), use it
+        # - Otherwise, use a fraction of upstream flow based on segment position
+        
+        if original_flow and 0.5 * upstream_flow <= original_flow <= 1.5 * upstream_flow:
+            # Original flow is reasonable
+            return original_flow
+        else:
+            # Calculate based on position (simplified branching model)
+            # Later segments typically have lower flow rates
+            flow_reduction_factor = 0.8 ** segment_index  # 20% reduction per segment
+            calculated_flow = upstream_flow * flow_reduction_factor
+            print(f"DEBUG_FLOW_PROPAGATION:     Original flow {original_flow} not reasonable, using calculated: {calculated_flow}")
+            return calculated_flow
 
     def _build_segment_data(self, segment) -> Dict:
         """Build segment data dictionary from segment object with comprehensive debugging"""

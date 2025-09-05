@@ -121,7 +121,8 @@ class HVACNoiseEngine:
         
     def calculate_path_noise(self, path_elements: List[PathElement], 
                            path_id: str = "path_1",
-                           debug: bool = False) -> PathResult:
+                           debug: bool = False,
+                           origin: str = "user") -> PathResult:
         """
         Calculate complete noise transmission through HVAC path
         
@@ -135,7 +136,7 @@ class HVACNoiseEngine:
         # Enhanced debugging for calculation pipeline
         debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
         if debug_export_enabled:
-            print(f"\n=== HVAC ENGINE DEBUG START for path_id={path_id} ===")
+            print(f"\n===== [NOISE ENGINE] START | origin={origin} | path_id={path_id} =====")
             print(f"DEBUG_ENGINE: Received {len(path_elements)} path elements")
             for i, elem in enumerate(path_elements):
                 print(f"DEBUG_ENGINE: Element {i}: type={elem.element_type}, id={elem.element_id}")
@@ -567,7 +568,7 @@ class HVACNoiseEngine:
                     print(f"DEBUG_ENGINE:     Max spectrum increase: {max_increase:+.1f} dB")
                     print(f"DEBUG_ENGINE:     Max spectrum decrease: {max_decrease:+.1f} dB")
                 
-                print(f"=== HVAC ENGINE DEBUG END ===\n")
+                print(f"===== [NOISE ENGINE] END   | origin={origin} | path_id={path_id} | nc={nc_rating} | terminal={current_dba:.1f} dB(A) =====\n")
             
             # Calculate final source dBA for result
             final_source_dba = 50.0  # Default
