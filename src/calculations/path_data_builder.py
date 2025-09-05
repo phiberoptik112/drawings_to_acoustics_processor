@@ -21,10 +21,79 @@ class SourceComponentBuilder:
     
     def build_source_from_component(self, source_comp, hvac_path, session) -> Dict:
         """Build source component data from HVACComponent"""
+        
+        # Enhanced debugging for source component
+        print(f"DEBUG_SOURCE: Source component object:")
+        print(f"DEBUG_SOURCE:   Type: {type(source_comp)}")
+        print(f"DEBUG_SOURCE:   ID: {getattr(source_comp, 'id', 'None')}")
+        print(f"DEBUG_SOURCE:   Name: {getattr(source_comp, 'name', 'None')}")
+        print(f"DEBUG_SOURCE:   Component type: {getattr(source_comp, 'component_type', 'None')}")
+        print(f"DEBUG_SOURCE:   Noise level: {getattr(source_comp, 'noise_level', 'None')}")
+        print(f"DEBUG_SOURCE:   CFM attribute: {getattr(source_comp, 'cfm', 'None')}")
+        print(f"DEBUG_SOURCE:   Has CFM attr: {hasattr(source_comp, 'cfm')}")
+        print(f"DEBUG_SOURCE:   All attributes: {[attr for attr in dir(source_comp) if not attr.startswith('_')]}")
+        
+        # Try to refresh the object from database
+        try:
+            session.refresh(source_comp)
+            print(f"DEBUG_SOURCE: After refresh - CFM: {getattr(source_comp, 'cfm', 'None')}")
+        except Exception as e:
+            print(f"DEBUG_SOURCE: Could not refresh object: {e}")
+        
+        # Try direct database query
+        try:
+            from models.hvac import HVACComponent
+            db_comp = session.query(HVACComponent).filter(HVACComponent.id == source_comp.id).first()
+            if db_comp:
+                print(f"DEBUG_SOURCE: Direct DB query - CFM: {db_comp.cfm}")
+            else:
+                print(f"DEBUG_SOURCE: Direct DB query - Component not found")
+        except Exception as e:
+            print(f"DEBUG_SOURCE: Direct DB query failed: {e}")
+        
+        # Try multiple approaches to get CFM value
+        cfm_value = None
+        
+        # Approach 1: Direct attribute access
+        cfm_value = getattr(source_comp, 'cfm', None)
+        print(f"DEBUG_SOURCE: Approach 1 (direct attr) - CFM: {cfm_value}")
+        
+        # Approach 2: Try direct database query if not found
+        if cfm_value is None:
+            try:
+                from models.hvac import HVACComponent
+                db_comp = session.query(HVACComponent).filter(HVACComponent.id == source_comp.id).first()
+                if db_comp:
+                    cfm_value = db_comp.cfm
+                    print(f"DEBUG_SOURCE: Approach 2 (direct DB query) - CFM: {cfm_value}")
+            except Exception as e:
+                print(f"DEBUG_SOURCE: Approach 2 failed: {e}")
+        
+        # Approach 3: Try accessing via __dict__ if still not found
+        if cfm_value is None:
+            try:
+                cfm_value = source_comp.__dict__.get('cfm')
+                print(f"DEBUG_SOURCE: Approach 3 (__dict__) - CFM: {cfm_value}")
+            except Exception as e:
+                print(f"DEBUG_SOURCE: Approach 3 failed: {e}")
+        
         source_data = {
             'component_type': source_comp.component_type,
-            'noise_level': source_comp.noise_level
+            'noise_level': source_comp.noise_level,
+            'flow_rate': cfm_value  # Include CFM from source component
         }
+        
+        # Debug CFM assignment
+        cfm_value = source_data.get('flow_rate')
+        print(f"DEBUG_SOURCE: Final source_data: {source_data}")
+        if cfm_value:
+            self.debug_logger.info('PathBuilder', 
+                f"Source component CFM assigned: {cfm_value} CFM", 
+                {'component_type': source_comp.component_type, 'cfm': cfm_value})
+        else:
+            self.debug_logger.warning('PathBuilder', 
+                f"Source component has no CFM value, will use defaults", 
+                {'component_type': source_comp.component_type})
         
         # Try to enrich with mechanical unit spectrum
         try:
@@ -65,6 +134,38 @@ class SourceComponentBuilder:
         
         comp = first_segment.from_component
         
+        # Enhanced debugging for fallback source component
+        print(f"DEBUG_FALLBACK: Fallback source component object:")
+        print(f"DEBUG_FALLBACK:   Type: {type(comp)}")
+        print(f"DEBUG_FALLBACK:   ID: {getattr(comp, 'id', 'None')}")
+        print(f"DEBUG_FALLBACK:   Name: {getattr(comp, 'name', 'None')}")
+        print(f"DEBUG_FALLBACK:   Component type: {getattr(comp, 'component_type', 'None')}")
+        print(f"DEBUG_FALLBACK:   Noise level: {getattr(comp, 'noise_level', 'None')}")
+        print(f"DEBUG_FALLBACK:   CFM attribute: {getattr(comp, 'cfm', 'None')}")
+        print(f"DEBUG_FALLBACK:   Has CFM attr: {hasattr(comp, 'cfm')}")
+        print(f"DEBUG_FALLBACK:   All attributes: {[attr for attr in dir(comp) if not attr.startswith('_')]}")
+        
+        # Try to refresh the object from database
+        try:
+            # Get session from the segment's relationship
+            session = comp._sa_instance_state.session
+            session.refresh(comp)
+            print(f"DEBUG_FALLBACK: After refresh - CFM: {getattr(comp, 'cfm', 'None')}")
+        except Exception as e:
+            print(f"DEBUG_FALLBACK: Could not refresh object: {e}")
+        
+        # Try direct database query
+        try:
+            from models.hvac import HVACComponent
+            session = comp._sa_instance_state.session
+            db_comp = session.query(HVACComponent).filter(HVACComponent.id == comp.id).first()
+            if db_comp:
+                print(f"DEBUG_FALLBACK: Direct DB query - CFM: {db_comp.cfm}")
+            else:
+                print(f"DEBUG_FALLBACK: Direct DB query - Component not found")
+        except Exception as e:
+            print(f"DEBUG_FALLBACK: Direct DB query failed: {e}")
+        
         self.debug_logger.debug('PathBuilder', 
             "Using from_component as fallback source", {
                 'comp_id': getattr(comp, 'id', None),
@@ -73,10 +174,52 @@ class SourceComponentBuilder:
                 'noise_level': getattr(comp, 'noise_level', None),
             })
         
-        return {
+        # Try multiple approaches to get CFM value
+        cfm_value = None
+        
+        # Approach 1: Direct attribute access
+        cfm_value = getattr(comp, 'cfm', None)
+        print(f"DEBUG_FALLBACK: Approach 1 (direct attr) - CFM: {cfm_value}")
+        
+        # Approach 2: Try direct database query if not found
+        if cfm_value is None:
+            try:
+                from models.hvac import HVACComponent
+                session = comp._sa_instance_state.session
+                db_comp = session.query(HVACComponent).filter(HVACComponent.id == comp.id).first()
+                if db_comp:
+                    cfm_value = db_comp.cfm
+                    print(f"DEBUG_FALLBACK: Approach 2 (direct DB query) - CFM: {cfm_value}")
+            except Exception as e:
+                print(f"DEBUG_FALLBACK: Approach 2 failed: {e}")
+        
+        # Approach 3: Try accessing via __dict__ if still not found
+        if cfm_value is None:
+            try:
+                cfm_value = comp.__dict__.get('cfm')
+                print(f"DEBUG_FALLBACK: Approach 3 (__dict__) - CFM: {cfm_value}")
+            except Exception as e:
+                print(f"DEBUG_FALLBACK: Approach 3 failed: {e}")
+        
+        source_data = {
             'component_type': comp.component_type,
-            'noise_level': comp.noise_level
+            'noise_level': comp.noise_level,
+            'flow_rate': cfm_value  # Include CFM from fallback component
         }
+        
+        # Debug CFM assignment for fallback
+        cfm_value = source_data.get('flow_rate')
+        print(f"DEBUG_FALLBACK: Final fallback source_data: {source_data}")
+        if cfm_value:
+            self.debug_logger.info('PathBuilder', 
+                f"Fallback source component CFM assigned: {cfm_value} CFM", 
+                {'component_type': comp.component_type, 'cfm': cfm_value})
+        else:
+            self.debug_logger.warning('PathBuilder', 
+                f"Fallback source component has no CFM value, will use defaults", 
+                {'component_type': comp.component_type})
+        
+        return source_data
     
     def _extract_unit_spectrum(self, unit: MechanicalUnit) -> Optional[List[float]]:
         """Extract octave band spectrum from mechanical unit JSON data"""
@@ -263,26 +406,38 @@ class PathDataBuilder:
     def _build_source_component(self, hvac_path: HVACPath, segments: List[HVACSegment], 
                                session: Session) -> Optional[Dict]:
         """Build source component data with fallback strategies"""
+        print(f"DEBUG_SOURCE_BUILD: Building source component for path {getattr(hvac_path, 'id', 'unknown')}")
+        
         # Strategy 1: Use explicit primary_source
         source_comp = getattr(hvac_path, 'primary_source', None)
+        print(f"DEBUG_SOURCE_BUILD: Strategy 1 - primary_source: {source_comp}")
         if source_comp:
+            print(f"DEBUG_SOURCE_BUILD: Using Strategy 1 - primary_source")
             return self.source_builder.build_source_from_component(source_comp, hvac_path, session)
         
         # Strategy 2: Use linked mechanical unit
-        if getattr(hvac_path, 'primary_source_id', None):
+        primary_source_id = getattr(hvac_path, 'primary_source_id', None)
+        print(f"DEBUG_SOURCE_BUILD: Strategy 2 - primary_source_id: {primary_source_id}")
+        if primary_source_id:
             unit = session.query(MechanicalUnit).filter(
-                MechanicalUnit.id == hvac_path.primary_source_id
+                MechanicalUnit.id == primary_source_id
             ).first()
-            
+            print(f"DEBUG_SOURCE_BUILD: Found mechanical unit: {unit}")
             if unit:
+                print(f"DEBUG_SOURCE_BUILD: Using Strategy 2 - mechanical unit")
                 return self.source_builder.build_source_from_mechanical_unit(unit)
         
         # Strategy 3: Use first segment's from_component
+        print(f"DEBUG_SOURCE_BUILD: Strategy 3 - first segment from_component")
+        print(f"DEBUG_SOURCE_BUILD: Number of segments: {len(segments) if segments else 0}")
         if segments:
+            print(f"DEBUG_SOURCE_BUILD: First segment from_component: {getattr(segments[0], 'from_component', None)}")
             fallback_source = self.source_builder.build_fallback_source(segments[0])
             if fallback_source:
+                print(f"DEBUG_SOURCE_BUILD: Using Strategy 3 - fallback source")
                 return fallback_source
         
+        print(f"DEBUG_SOURCE_BUILD: No valid source component found")
         self.debug_logger.error('PathBuilder', 
             "No valid source component found")
         return None

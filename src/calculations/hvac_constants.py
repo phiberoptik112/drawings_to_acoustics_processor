@@ -65,20 +65,20 @@ DEFAULT_PRESSURE_DROP_INWG: float = 0.0
 
 # Default CFM values by component type
 DEFAULT_CFM_VALUES = {
-    'ahu': 5000.0,        # Air Handling Unit - typical building AHU
-    'fan': 2000.0,        # Exhaust/Supply Fan
-    'vav': 500.0,         # Variable Air Volume box
-    'diffuser': 150.0,    # Supply air diffuser
-    'grille': 200.0,      # Return air grille
+    'ahu': 100.0,        # Air Handling Unit - typical building AHU
+    'fan': 100.0,        # Exhaust/Supply Fan
+    'vav': 100.0,         # Variable Air Volume box
+    'diffuser': 100.0,    # Supply air diffuser
+    'grille': 100.0,      # Return air grille
     'damper': 100.0,      # Volume damper (minimal flow)
-    'silencer': 1000.0,   # Duct silencer (pass-through)
-    'coil': 800.0,        # Heating/cooling coil
+    'silencer': 100.0,   # Duct silencer (pass-through)
+    'coil': 100.0,        # Heating/cooling coil
     'elbow': 100.0,       # Duct elbow (minimal restriction)
-    'branch': 300.0,      # Duct branch/tee
-    'doas': 3000.0,       # Dedicated Outdoor Air System
-    'rtu': 4000.0,        # Rooftop Unit
-    'rf': 2500.0,         # Return Fan
-    'sf': 2500.0,         # Supply Fan
+    'branch': 100.0,      # Duct branch/tee
+    'doas': 100.0,       # Dedicated Outdoor Air System
+    'rtu': 100.0,        # Rooftop Unit
+    'rf': 100.0,         # Return Fan
+    'sf': 100.0,         # Supply Fan
 }
 
 # CFM validation ranges (min, max) by component type
@@ -100,7 +100,7 @@ CFM_VALIDATION_RANGES = {
 }
 
 # General fallback CFM for unknown components
-DEFAULT_CFM_FALLBACK: float = 1000.0
+DEFAULT_CFM_FALLBACK: float = 100.0
 
 # CFM calculation limits
 MAX_CFM_VALUE: float = 100000.0

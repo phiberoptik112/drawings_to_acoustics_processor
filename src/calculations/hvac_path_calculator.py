@@ -195,10 +195,21 @@ class HVACPathCalculator:
                         # Get CFM from source component, fallback to defaults
                         from_comp = next((c for c in db_components.values() if c.id == from_comp_id), None)
                         segment_cfm = DEFAULT_CFM_FALLBACK
+                        cfm_source = "fallback"
+                        
                         if from_comp and hasattr(from_comp, 'cfm') and from_comp.cfm:
                             segment_cfm = from_comp.cfm
+                            cfm_source = "component_cfm"
                         elif from_comp and hasattr(from_comp, 'component_type'):
                             segment_cfm = get_default_cfm_for_component(from_comp.component_type)
+                            cfm_source = f"default_for_{from_comp.component_type}"
+                        
+                        # Debug CFM assignment
+                        print(f"DEBUG_CFM: Segment {i+1} CFM assignment:")
+                        print(f"DEBUG_CFM:   From component: {from_comp.component_type if from_comp else 'None'}")
+                        print(f"DEBUG_CFM:   Component CFM: {getattr(from_comp, 'cfm', 'None') if from_comp else 'None'}")
+                        print(f"DEBUG_CFM:   CFM source: {cfm_source}")
+                        print(f"DEBUG_CFM:   Final segment CFM: {segment_cfm}")
                             
                         hvac_segment = HVACSegment(
                             hvac_path_id=hvac_path.id,
@@ -454,12 +465,18 @@ class HVACPathCalculator:
         Returns:
             Path data dictionary for noise calculation
         """
+        print(f"DEBUG_ENTRY: build_path_data_from_db called")
+        print(f"DEBUG_ENTRY: hvac_path type: {type(hvac_path)}")
+        print(f"DEBUG_ENTRY: hvac_path id: {getattr(hvac_path, 'id', 'None')}")
+        
         # Always refetch the path with eager-loaded relationships to avoid
         # lazy-loading on detached instances coming from the UI layer.
         try:
             path_id = getattr(hvac_path, 'id', None) if not isinstance(hvac_path, int) else int(hvac_path)
             if path_id is None:
                 raise ValueError("HVACPath id is required to build path data")
+            
+            print(f"DEBUG_ENTRY: Using path_id: {path_id}")
             
             from models.database import get_hvac_session
             with get_hvac_session() as session:
@@ -491,6 +508,9 @@ class HVACPathCalculator:
 
     def _build_path_data_within_session(self, hvac_path: HVACPath, session) -> Optional[Dict]:
         """Build path data within an active database session to avoid detached instances"""
+        print(f"DEBUG_LEGACY: _build_path_data_within_session called for path {getattr(hvac_path, 'id', 'unknown')}")
+        print(f"DEBUG_LEGACY: This is the OLD method - PathDataBuilder is NOT being used!")
+        
         try:
             from models.mechanical import MechanicalUnit
             
@@ -501,7 +521,9 @@ class HVACPathCalculator:
             }
             
             segments = hvac_path.segments
+            print(f"DEBUG_LEGACY: Number of segments: {len(segments) if segments else 0}")
             if not segments:
+                print(f"DEBUG_LEGACY: No segments found, returning None")
                 return None
             
             # Ensure segments are ordered by actual connectivity
@@ -516,6 +538,34 @@ class HVACPathCalculator:
             source_comp = getattr(hvac_path, 'primary_source', None)
             
             if source_comp is not None:
+                # Enhanced debugging for source component in legacy method
+                print(f"DEBUG_LEGACY_SOURCE: Source component found:")
+                print(f"DEBUG_LEGACY_SOURCE:   Type: {type(source_comp)}")
+                print(f"DEBUG_LEGACY_SOURCE:   ID: {getattr(source_comp, 'id', 'None')}")
+                print(f"DEBUG_LEGACY_SOURCE:   Name: {getattr(source_comp, 'name', 'None')}")
+                print(f"DEBUG_LEGACY_SOURCE:   Component type: {getattr(source_comp, 'component_type', 'None')}")
+                print(f"DEBUG_LEGACY_SOURCE:   Noise level: {getattr(source_comp, 'noise_level', 'None')}")
+                print(f"DEBUG_LEGACY_SOURCE:   CFM attribute: {getattr(source_comp, 'cfm', 'None')}")
+                print(f"DEBUG_LEGACY_SOURCE:   Has CFM attr: {hasattr(source_comp, 'cfm')}")
+                
+                # Try to refresh the object from database
+                try:
+                    session.refresh(source_comp)
+                    print(f"DEBUG_LEGACY_SOURCE: After refresh - CFM: {getattr(source_comp, 'cfm', 'None')}")
+                except Exception as e:
+                    print(f"DEBUG_LEGACY_SOURCE: Could not refresh object: {e}")
+                
+                # Try direct database query
+                try:
+                    from models.hvac import HVACComponent
+                    db_comp = session.query(HVACComponent).filter(HVACComponent.id == source_comp.id).first()
+                    if db_comp:
+                        print(f"DEBUG_LEGACY_SOURCE: Direct DB query - CFM: {db_comp.cfm}")
+                    else:
+                        print(f"DEBUG_LEGACY_SOURCE: Direct DB query - Component not found")
+                except Exception as e:
+                    print(f"DEBUG_LEGACY_SOURCE: Direct DB query failed: {e}")
+                
                 # Seed from component; attempt to enrich with Mechanical Unit spectrum by matching
                 if self.debug_export_enabled:
                     try:
@@ -523,12 +573,19 @@ class HVACPathCalculator:
                             'id': getattr(source_comp, 'id', None),
                             'type': getattr(source_comp, 'component_type', None),
                             'noise_level': getattr(source_comp, 'noise_level', None),
+                            'cfm': getattr(source_comp, 'cfm', None),  # Add CFM to debug output
                         })
                     except Exception:
                         pass
+                
+                # FIXED: Include CFM value in source component data
+                source_cfm = getattr(source_comp, 'cfm', None)
+                print(f"DEBUG_LEGACY_SOURCE: Using CFM value: {source_cfm}")
+                
                 path_data['source_component'] = {
                     'component_type': source_comp.component_type,
-                    'noise_level': source_comp.noise_level
+                    'noise_level': source_comp.noise_level,
+                    'flow_rate': source_cfm  # FIXED: Include CFM value
                 }
                 try:
                     unit = self.find_matching_mechanical_unit(source_comp, getattr(hvac_path, 'project_id', self.project_id))
@@ -681,16 +738,52 @@ class HVACPathCalculator:
                     first_segment = segments[0]
                     if first_segment.from_component:
                         comp = first_segment.from_component
+                        
+                        # Enhanced debugging for fallback source component in legacy method
+                        print(f"DEBUG_LEGACY_FALLBACK: Fallback source component found:")
+                        print(f"DEBUG_LEGACY_FALLBACK:   Type: {type(comp)}")
+                        print(f"DEBUG_LEGACY_FALLBACK:   ID: {getattr(comp, 'id', 'None')}")
+                        print(f"DEBUG_LEGACY_FALLBACK:   Name: {getattr(comp, 'name', 'None')}")
+                        print(f"DEBUG_LEGACY_FALLBACK:   Component type: {getattr(comp, 'component_type', 'None')}")
+                        print(f"DEBUG_LEGACY_FALLBACK:   Noise level: {getattr(comp, 'noise_level', 'None')}")
+                        print(f"DEBUG_LEGACY_FALLBACK:   CFM attribute: {getattr(comp, 'cfm', 'None')}")
+                        print(f"DEBUG_LEGACY_FALLBACK:   Has CFM attr: {hasattr(comp, 'cfm')}")
+                        
+                        # Try to refresh the object from database
+                        try:
+                            session.refresh(comp)
+                            print(f"DEBUG_LEGACY_FALLBACK: After refresh - CFM: {getattr(comp, 'cfm', 'None')}")
+                        except Exception as e:
+                            print(f"DEBUG_LEGACY_FALLBACK: Could not refresh object: {e}")
+                        
+                        # Try direct database query
+                        try:
+                            from models.hvac import HVACComponent
+                            db_comp = session.query(HVACComponent).filter(HVACComponent.id == comp.id).first()
+                            if db_comp:
+                                print(f"DEBUG_LEGACY_FALLBACK: Direct DB query - CFM: {db_comp.cfm}")
+                            else:
+                                print(f"DEBUG_LEGACY_FALLBACK: Direct DB query - Component not found")
+                        except Exception as e:
+                            print(f"DEBUG_LEGACY_FALLBACK: Direct DB query failed: {e}")
+                        
                         if self.debug_export_enabled:
                             print("DEBUG: No linked/matched MU. Using from_component as source:", {
                                 'comp_id': getattr(comp, 'id', None),
                                 'name': getattr(comp, 'name', None),
                                 'type': getattr(comp, 'component_type', None),
                                 'noise_level': getattr(comp, 'noise_level', None),
+                                'cfm': getattr(comp, 'cfm', None),  # Add CFM to debug output
                             })
+                        
+                        # FIXED: Include CFM value in fallback source component data
+                        fallback_cfm = getattr(comp, 'cfm', None)
+                        print(f"DEBUG_LEGACY_FALLBACK: Using CFM value: {fallback_cfm}")
+                        
                         path_data['source_component'] = {
                             'component_type': comp.component_type,
-                            'noise_level': comp.noise_level
+                            'noise_level': comp.noise_level,
+                            'flow_rate': fallback_cfm  # FIXED: Include CFM value
                         }
 
             # Get terminal component
@@ -815,18 +908,36 @@ class HVACPathCalculator:
             
             # Priority order: segment.flow_rate → calculated from area×velocity → default CFM
             segment_cfm = getattr(segment, 'flow_rate', None)
+            cfm_source = "segment_flow_rate"
+            
             if not segment_cfm:
                 segment_cfm = area_ft2 * DEFAULT_FLOW_VELOCITY_FPM
+                cfm_source = "calculated_from_area_velocity"
             if not segment_cfm or segment_cfm <= 0:
                 segment_cfm = DEFAULT_CFM_FALLBACK
+                cfm_source = "default_fallback"
                 
             segment_data['flow_rate'] = segment_cfm
             
+            # Debug CFM assignment in segment data builder
+            if self.debug_export_enabled:
+                print(f"DEBUG_BUILD_SEG: Segment {getattr(segment, 'id', 'unknown')} CFM assignment:")
+                print(f"DEBUG_BUILD_SEG:   Raw segment.flow_rate: {getattr(segment, 'flow_rate', 'None')}")
+                print(f"DEBUG_BUILD_SEG:   Calculated from area×velocity: {area_ft2 * DEFAULT_FLOW_VELOCITY_FPM}")
+                print(f"DEBUG_BUILD_SEG:   CFM source: {cfm_source}")
+                print(f"DEBUG_BUILD_SEG:   Final segment CFM: {segment_cfm}")
+            
             # Calculate velocity from CFM and area
             if area_ft2 > 0:
-                segment_data['flow_velocity'] = segment_cfm / area_ft2
+                segment_data['flow_velocity'] = segment_cfm / area_ft2  # fpm
+                segment_data['flow_velocity_ft_s'] = segment_data['flow_velocity'] / 60  # ft/s for calculations
             else:
                 segment_data['flow_velocity'] = DEFAULT_FLOW_VELOCITY_FPM
+                segment_data['flow_velocity_ft_s'] = DEFAULT_FLOW_VELOCITY_FPM / 60
+
+            if self.debug_export_enabled:
+                print(f"DEBUG_BUILD_SEG:   flow_velocity = {segment_data['flow_velocity']:.1f} fpm")
+                print(f"DEBUG_BUILD_SEG:   flow_velocity_ft_s = {segment_data['flow_velocity_ft_s']:.3f} ft/s")
                 
             if self.debug_export_enabled:
                 print(f"DEBUG_BUILD_SEG: Flow calculations:")

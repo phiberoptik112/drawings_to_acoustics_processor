@@ -4,6 +4,7 @@ Revised to work with the unified HVAC noise engine
 """
 
 import math
+import os
 from typing import Dict, List, Tuple, Optional
 from .hvac_noise_engine import HVACNoiseEngine, PathElement, PathResult
 
@@ -98,11 +99,28 @@ class NoiseCalculator:
         # Add source element
         source_component = path_data.get('source_component', {})
         if source_component:
+            # Get source flow rate from the first segment or source component
+            source_flow_rate = source_component.get('flow_rate', 0.0)
+            if not source_flow_rate:
+                # Try to get flow rate from first segment
+                segments = path_data.get('segments', [])
+                if segments:
+                    source_flow_rate = segments[0].get('flow_rate', 0.0)
+            
+            # Debug CFM assignment for source
+            debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+            if debug_export_enabled:
+                print(f"DEBUG_NC: Source CFM assignment:")
+                print(f"DEBUG_NC:   Source component flow_rate: {source_component.get('flow_rate', 'None')}")
+                print(f"DEBUG_NC:   First segment flow_rate: {segments[0].get('flow_rate', 'None') if segments else 'No segments'}")
+                print(f"DEBUG_NC:   Final source flow_rate: {source_flow_rate}")
+            
             source_element = PathElement(
                 element_type='source',
                 element_id='source_1',
                 source_noise_level=source_component.get('noise_level', 50.0),
-                octave_band_levels=source_component.get('octave_band_levels')
+                octave_band_levels=source_component.get('octave_band_levels'),
+                flow_rate=source_flow_rate
             )
             elements.append(source_element)
         
@@ -116,6 +134,17 @@ class NoiseCalculator:
             if isinstance(shape, str) and shape.lower() == 'round':
                 shape = 'circular'
 
+            # Debug segment CFM assignment
+            segment_flow_rate = segment.get('flow_rate', 0.0)
+            if debug_export_enabled:
+                print(f"DEBUG_NC: Segment {i+1} CFM assignment:")
+                print(f"DEBUG_NC:   Raw segment flow_rate: {segment_flow_rate}")
+                print(f"DEBUG_NC:   Segment keys: {list(segment.keys())}")
+                if 'flow_rate' not in segment:
+                    print(f"DEBUG_NC:   WARNING: No 'flow_rate' key in segment data")
+                elif not segment_flow_rate or segment_flow_rate <= 0:
+                    print(f"DEBUG_NC:   WARNING: Segment flow_rate is {segment_flow_rate}, may use defaults")
+            
             element = PathElement(
                 element_type=element_type,
                 element_id=f'segment_{i+1}',
@@ -126,7 +155,7 @@ class NoiseCalculator:
                 duct_shape=shape,
                 duct_type=segment.get('duct_type', 'sheet_metal'),
                 lining_thickness=segment.get('lining_thickness', 0.0),
-                flow_rate=segment.get('flow_rate', 0.0),
+                flow_rate=segment_flow_rate,
                 flow_velocity=segment.get('flow_velocity', 0.0),
                 pressure_drop=segment.get('pressure_drop', 0.0),
                 vane_chord_length=segment.get('vane_chord_length', 0.0),

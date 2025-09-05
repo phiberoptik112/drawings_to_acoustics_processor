@@ -238,7 +238,15 @@ class HVACNoiseEngine:
             # Process each element in the path
             total_attenuation_dba = 0.0
             
+            # Initialize flow rate tracking from source element
             last_flow_rate: float = 0.0
+            if source_element and hasattr(source_element, 'flow_rate') and source_element.flow_rate:
+                last_flow_rate = source_element.flow_rate
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE: Initialized last_flow_rate from source: {last_flow_rate:.1f} CFM")
+            else:
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE: Source element has no flow_rate, last_flow_rate remains 0.0")
             last_element_with_geometry: Optional[PathElement] = None
             for i, element in enumerate(path_elements):
                 if element.element_type == 'source':
@@ -278,12 +286,31 @@ class HVACNoiseEngine:
 
                         # Compute branch/main flows
                         flows = [f for f in [upstream_flow, downstream_flow] if (isinstance(f, (int, float)) and f > 0)]
-                        if len(flows) >= 1:
-                            main_flow = max(flows)
-                            branch_flow = min(flows)
+                        if len(flows) >= 2:
+                            # For branch takeoff: main continues with reduced flow, branch takes smaller flow
+                            if upstream_flow > downstream_flow:
+                                main_flow = upstream_flow - downstream_flow  # Continuing main duct flow
+                                branch_flow = downstream_flow  # Branch takeoff flow
+                            else:
+                                main_flow = upstream_flow
+                                branch_flow = downstream_flow
+                        elif len(flows) == 1:
+                            main_flow = flows[0]
+                            branch_flow = flows[0]
                         else:
                             main_flow = element.flow_rate or 0.0
                             branch_flow = element.flow_rate or 0.0
+
+                        # Enhanced debug output for flow logic
+                        if debug_export_enabled:
+                            print(f"DEBUG_ENGINE:     Flow logic analysis:")
+                            print(f"DEBUG_ENGINE:       last_flow_rate: {last_flow_rate:.1f} CFM")
+                            print(f"DEBUG_ENGINE:       element.flow_rate: {element.flow_rate:.1f} CFM")
+                            print(f"DEBUG_ENGINE:       Upstream flow: {upstream_flow:.1f} CFM")
+                            print(f"DEBUG_ENGINE:       Downstream flow: {downstream_flow:.1f} CFM")
+                            print(f"DEBUG_ENGINE:       Calculated main flow: {main_flow:.1f} CFM")
+                            print(f"DEBUG_ENGINE:       Calculated branch flow: {branch_flow:.1f} CFM")
+                            print(f"DEBUG_ENGINE:       Flow ratio (main/branch): {main_flow/branch_flow:.2f}" if branch_flow > 0 else "DEBUG_ENGINE:       Flow ratio: N/A")
 
                         # Compute cross-sectional areas using available geometry
                         def _area_for(elem: Optional[PathElement]) -> float:
@@ -315,6 +342,15 @@ class HVACNoiseEngine:
                             print(f"DEBUG_ENGINE:     Junction context: upstream_flow={upstream_flow:.1f}, downstream_flow={downstream_flow:.1f}")
                             print(f"DEBUG_ENGINE:     Areas: main_area={main_area:.3f} ft^2, branch_area={branch_area:.3f} ft^2")
                             print(f"DEBUG_ENGINE:     Fitting hint='{fit}', selected_junction_type={jtype.name}")
+
+                        # Calculate velocities in ft/s for junction calculator
+                        branch_velocity_ft_s = branch_flow / (branch_area * 60) if branch_area > 0 else 0
+                        main_velocity_ft_s = main_flow / (main_area * 60) if main_area > 0 else 0
+
+                        if debug_export_enabled:
+                            print(f"DEBUG_ENGINE:     Velocity calculations:")
+                            print(f"DEBUG_ENGINE:       Branch velocity: {branch_velocity_ft_s:.3f} ft/s")
+                            print(f"DEBUG_ENGINE:       Main velocity: {main_velocity_ft_s:.3f} ft/s")
 
                         # Calculate spectra using contextual flows/areas
                         spectrum_data = self.junction_calc.calculate_junction_noise_spectrum(
@@ -378,10 +414,31 @@ class HVACNoiseEngine:
                         debug_logger.debug('HVACEngine', 
                             f"Element {i} attenuation_spectrum", 
                             {'attenuation_spectrum': attenuation_spectrum})
+                        
+                        # Enhanced debug output for attenuation
+                        if debug_export_enabled:
+                            print(f"DEBUG_ENGINE:     Before attenuation application:")
+                            print(f"DEBUG_ENGINE:       Current spectrum: {[f'{x:.1f}' for x in current_spectrum]}")
+                            print(f"DEBUG_ENGINE:       Attenuation spectrum: {[f'{x:.1f}' for x in attenuation_spectrum]}")
+                        
+                        spectrum_before_attenuation = current_spectrum.copy()
                         # Apply attenuation (subtract)
                         for j in range(min(NUM_OCTAVE_BANDS, len(attenuation_spectrum))):
+                            old_level = current_spectrum[j]
                             current_spectrum[j] -= attenuation_spectrum[j]
                             current_spectrum[j] = max(0.0, current_spectrum[j])  # Prevent negative
+                            
+                            # Debug output for significant attenuation
+                            if debug_export_enabled and abs(current_spectrum[j] - old_level) > 0.1:
+                                print(f"DEBUG_ENGINE:       Band {j+1} ({self.FREQUENCY_BANDS[j]}Hz): {old_level:.1f} - {attenuation_spectrum[j]:.1f} = {current_spectrum[j]:.1f}")
+                        
+                        if debug_export_enabled:
+                            print(f"DEBUG_ENGINE:     After attenuation application:")
+                            print(f"DEBUG_ENGINE:       Final spectrum: {[f'{x:.1f}' for x in current_spectrum]}")
+                            
+                            # Calculate total attenuation
+                            total_attenuation = sum(spectrum_before_attenuation[j] - current_spectrum[j] for j in range(len(current_spectrum)))
+                            print(f"DEBUG_ENGINE:       Total attenuation applied: {total_attenuation:.2f} dB")
                 
                 if element_result.get('generated_spectrum'):
                     generated_spectrum = element_result['generated_spectrum']
@@ -389,12 +446,40 @@ class HVACNoiseEngine:
                         debug_logger.debug('HVACEngine', 
                             f"Element {i} generated_spectrum", 
                             {'generated_spectrum': generated_spectrum})
-                        # Add generated noise
+                        
+                        # Enhanced debug output for spectrum combination
+                        if debug_export_enabled:
+                            print(f"DEBUG_ENGINE:     Before spectrum combination:")
+                            print(f"DEBUG_ENGINE:       Current spectrum: {[f'{x:.1f}' for x in current_spectrum]}")
+                            print(f"DEBUG_ENGINE:       Generated spectrum: {[f'{x:.1f}' for x in generated_spectrum]}")
+                        
+                        # Add generated noise (handle both positive and negative values)
+                        spectrum_before_combination = current_spectrum.copy()
                         for j in range(min(NUM_OCTAVE_BANDS, len(generated_spectrum))):
-                            if generated_spectrum[j] > 0:
-                                current_spectrum[j] = self._combine_noise_levels(
-                                    current_spectrum[j], generated_spectrum[j]
-                                )
+                            if generated_spectrum[j] is not None and generated_spectrum[j] != 0:
+                                old_level = current_spectrum[j]
+                                if generated_spectrum[j] > 0:
+                                    # Positive generated noise - add to existing spectrum
+                                    current_spectrum[j] = self._combine_noise_levels(
+                                        current_spectrum[j], generated_spectrum[j]
+                                    )
+                                    operation = "+"
+                                else:
+                                    # Negative generated noise - subtract from existing spectrum (attenuation)
+                                    current_spectrum[j] = max(0.0, current_spectrum[j] + generated_spectrum[j])
+                                    operation = "+"
+                                
+                                # Debug output for each band combination
+                                if debug_export_enabled and abs(current_spectrum[j] - old_level) > 0.1:
+                                    print(f"DEBUG_ENGINE:       Band {j+1} ({self.FREQUENCY_BANDS[j]}Hz): {old_level:.1f} {operation} {generated_spectrum[j]:.1f} = {current_spectrum[j]:.1f}")
+                        
+                        if debug_export_enabled:
+                            print(f"DEBUG_ENGINE:     After spectrum combination:")
+                            print(f"DEBUG_ENGINE:       Final spectrum: {[f'{x:.1f}' for x in current_spectrum]}")
+                            
+                            # Calculate total change
+                            total_change = sum(current_spectrum[j] - spectrum_before_combination[j] for j in range(len(current_spectrum)))
+                            print(f"DEBUG_ENGINE:       Total spectrum change: {total_change:.2f} dB")
                 
                 # Update A-weighted level
                 current_dba = self._calculate_dba_from_spectrum(current_spectrum)
@@ -464,6 +549,24 @@ class HVACNoiseEngine:
                 print(f"DEBUG_ENGINE:   Final spectrum: {[f'{x:.1f}' for x in current_spectrum]}")
                 print(f"DEBUG_ENGINE:   Element results count: {len(element_results)}")
                 print(f"DEBUG_ENGINE:   Warnings: {warnings_list}")
+                
+                # Enhanced summary with spectrum analysis
+                print(f"DEBUG_ENGINE:   Spectrum analysis:")
+                print(f"DEBUG_ENGINE:     Source spectrum: {[f'{x:.1f}' for x in (source_element.octave_band_levels if source_element and source_element.octave_band_levels else [50.0]*8)]}")
+                print(f"DEBUG_ENGINE:     Terminal spectrum: {[f'{x:.1f}' for x in current_spectrum]}")
+                
+                # Calculate spectrum changes
+                if source_element and source_element.octave_band_levels:
+                    source_spectrum = source_element.octave_band_levels
+                    spectrum_changes = [current_spectrum[i] - source_spectrum[i] for i in range(min(len(current_spectrum), len(source_spectrum)))]
+                    print(f"DEBUG_ENGINE:     Spectrum changes: {[f'{x:+.1f}' for x in spectrum_changes]}")
+                    
+                    # Identify dominant effects
+                    max_increase = max(spectrum_changes) if spectrum_changes else 0
+                    max_decrease = min(spectrum_changes) if spectrum_changes else 0
+                    print(f"DEBUG_ENGINE:     Max spectrum increase: {max_increase:+.1f} dB")
+                    print(f"DEBUG_ENGINE:     Max spectrum decrease: {max_decrease:+.1f} dB")
+                
                 print(f"=== HVAC ENGINE DEBUG END ===\n")
             
             # Calculate final source dBA for result
@@ -653,6 +756,8 @@ class HVACNoiseEngine:
             'generated_dba': 0.0
         }
         
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
         try:
             # Optional insertion loss due to elbow (rectangular elbows per ASHRAE tables)
             # Apply only for rectangular ducts; circular elbow insertion loss model not integrated here
@@ -685,13 +790,49 @@ class HVACNoiseEngine:
                     if str(freq) in spectrum:
                         result['generated_spectrum'][i] = spectrum[str(freq)]
             else:
-                # Simple elbow - use junction calculator with elbow type
+                # Use dedicated rectangular elbows calculator for insertion loss
+                if element.duct_shape == 'rectangular':
+                    if debug_export_enabled:
+                        print(f"DEBUG_ENGINE:     Using rectangular elbows calculator for insertion loss")
+                        print(f"DEBUG_ENGINE:     Elbow properties: width={element.width:.1f}\", lined={element.lining_thickness > 0}")
+                    
+                    # Determine elbow type from fitting hint
+                    fit = (element.fitting_type or '').lower() if hasattr(element, 'fitting_type') else ''
+                    elbow_type = 'square_with_vanes' if (element.num_vanes or 0) > 0 else 'square_no_vanes'
+                    lined = (element.lining_thickness or 0.0) > 0.0
+                    
+                    # Calculate insertion loss spectrum
+                    attenuation_spectrum = []
+                    for i, freq in enumerate(self.FREQUENCY_BANDS):
+                        try:
+                            loss = self.rect_elbows_calc.calculate_elbow_insertion_loss(
+                                frequency=freq,
+                                width=element.width or 0.0,
+                                elbow_type=elbow_type,
+                                lined=lined
+                            )
+                            attenuation_spectrum.append(float(loss or 0.0))
+                        except Exception as e:
+                            if debug_export_enabled:
+                                print(f"DEBUG_ENGINE:     Error calculating elbow loss at {freq}Hz: {e}")
+                            attenuation_spectrum.append(0.0)
+                    
+                    result['attenuation_spectrum'] = attenuation_spectrum
+                    result['attenuation_dba'] = self._calculate_dba_from_spectrum(attenuation_spectrum)
+                    
+                    if debug_export_enabled:
+                        print(f"DEBUG_ENGINE:     Elbow insertion loss spectrum: {[f'{x:.1f}' for x in attenuation_spectrum]}")
+                        print(f"DEBUG_ENGINE:     Elbow insertion loss dBA: {result['attenuation_dba']:.2f}")
+
+                # For generated noise, use junction calculator with elbow type
                 duct_area = self._calculate_duct_area(element)
-                # Choose junction/elbow type based on fitting hint
                 fit = (element.fitting_type or '').lower() if hasattr(element, 'fitting_type') else ''
                 jtype = JunctionType.ELBOW_90_NO_VANES
-                # Future: map radiused elbows if available
-                # Use the junction calculator's spectrum method with explicit type
+
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE:     Using junction calculator for generated noise")
+                    print(f"DEBUG_ENGINE:     Duct area: {duct_area:.3f} ft², Flow rate: {element.flow_rate:.1f} CFM")
+
                 spectrum_data = self.junction_calc.calculate_junction_noise_spectrum(
                     branch_flow_rate=element.flow_rate,
                     branch_cross_sectional_area=duct_area,
@@ -699,12 +840,16 @@ class HVACNoiseEngine:
                     main_cross_sectional_area=duct_area,
                     junction_type=jtype
                 )
+
                 # For elbows, use the main duct spectrum per Eq (4.25)
                 elbow_spectrum = spectrum_data.get('main_duct') or {}
                 for i, freq in enumerate(self.FREQUENCY_BANDS):
                     band_key = f"{freq}Hz"
                     if band_key in elbow_spectrum:
                         result['generated_spectrum'][i] = elbow_spectrum[band_key]
+
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE:     Elbow generated spectrum: {[f'{x:.1f}' for x in result['generated_spectrum']]}")
             
             # Calculate A-weighted generated noise
             result['generated_dba'] = self._calculate_dba_from_spectrum(result['generated_spectrum'])

@@ -408,6 +408,18 @@ class HVACComponentDialog(QDialog):
         """Load existing component data for editing"""
         if not self.component:
             return
+        
+        # Refresh component from database to ensure we have latest data
+        try:
+            session = get_session()
+            fresh_component = session.query(HVACComponent).filter(HVACComponent.id == self.component.id).first()
+            if fresh_component:
+                print(f"DEBUG_COMPONENT_REFRESH: Refreshed component from database")
+                print(f"DEBUG_COMPONENT_REFRESH:   Fresh CFM value: {fresh_component.cfm}")
+                self.component = fresh_component
+            session.close()
+        except Exception as e:
+            print(f"DEBUG_COMPONENT_REFRESH: Failed to refresh component: {e}")
             
         self.name_edit.setText(self.component.name)
         
@@ -427,13 +439,20 @@ class HVACComponentDialog(QDialog):
             self.noise_spin.setEnabled(True)
             
         # Set CFM value
+        print(f"DEBUG_COMPONENT_LOAD: Loading component {self.component.id} ({self.component.name})")
+        print(f"DEBUG_COMPONENT_LOAD:   Has CFM attr: {hasattr(self.component, 'cfm')}")
+        print(f"DEBUG_COMPONENT_LOAD:   CFM value: {getattr(self.component, 'cfm', 'None')}")
+        print(f"DEBUG_COMPONENT_LOAD:   CFM type: {type(getattr(self.component, 'cfm', None))}")
+        
         if hasattr(self.component, 'cfm') and self.component.cfm is not None:
+            print(f"DEBUG_COMPONENT_LOAD:   Setting CFM spin to: {self.component.cfm}")
             self.cfm_spin.setValue(self.component.cfm)
             self.use_standard_cb.setChecked(False)
             self.cfm_spin.setEnabled(True)
         else:
             # Use default CFM for component type
             default_cfm = get_default_cfm_for_component(self.component.component_type)
+            print(f"DEBUG_COMPONENT_LOAD:   Using default CFM: {default_cfm}")
             self.cfm_spin.setValue(default_cfm)
         # Try to restore frequency preview from a Mechanical Unit association on any path
         try:
@@ -555,7 +574,13 @@ class HVACComponentDialog(QDialog):
         component.x_position = self.x_spin.value()
         component.y_position = self.y_spin.value()
         component.noise_level = self.noise_spin.value()
-        component.cfm = self.cfm_spin.value()
+        
+        # Debug CFM save process
+        cfm_value = self.cfm_spin.value()
+        print(f"DEBUG_COMPONENT_SAVE: Saving component {component.id} ({component.name})")
+        print(f"DEBUG_COMPONENT_SAVE:   UI CFM value: {cfm_value}")
+        print(f"DEBUG_COMPONENT_SAVE:   Setting component.cfm to: {cfm_value}")
+        component.cfm = cfm_value
         
         # Handle mechanical unit association propagation
         self.update_mechanical_unit_associations(component, session)
@@ -563,6 +588,10 @@ class HVACComponentDialog(QDialog):
     def create_new_component(self):
         """Create a new component instance from UI values"""
         name = self.name_edit.text().strip()
+        cfm_value = self.cfm_spin.value()
+        print(f"DEBUG_COMPONENT_CREATE: Creating new component")
+        print(f"DEBUG_COMPONENT_CREATE:   UI CFM value: {cfm_value}")
+        
         return HVACComponent(
             project_id=self.project_id,
             drawing_id=self.drawing_id,
@@ -571,7 +600,7 @@ class HVACComponentDialog(QDialog):
             x_position=self.x_spin.value(),
             y_position=self.y_spin.value(),
             noise_level=self.noise_spin.value(),
-            cfm=self.cfm_spin.value()
+            cfm=cfm_value
         )
     
     def update_mechanical_unit_associations(self, component, session):
