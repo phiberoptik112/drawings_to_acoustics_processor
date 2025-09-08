@@ -349,7 +349,18 @@ class HVACPathCalculator:
                 raise ValueError(f"HVAC path with ID {path_id} not found")
             
             # Build path data for calculation
-            path_data = self.build_path_data_from_db(hvac_path)
+            # Thread origin via environment for downstream builders
+            try:
+                os.environ['HVAC_CALC_ORIGIN'] = origin or 'user'
+            except Exception:
+                pass
+            try:
+                path_data = self.build_path_data_from_db(hvac_path)
+            finally:
+                try:
+                    del os.environ['HVAC_CALC_ORIGIN']
+                except Exception:
+                    pass
             
             if not path_data:
                 raise ValueError("Could not build path data from database")
@@ -462,7 +473,15 @@ class HVACPathCalculator:
             ).all()
             
             for hvac_path in hvac_paths:
-                result = self.calculate_path_noise(hvac_path.id)
+                # Mark as background-origin for batch calculations
+                os.environ['HVAC_CALC_ORIGIN'] = 'background'
+                try:
+                    result = self.calculate_path_noise(hvac_path.id, origin='background')
+                finally:
+                    try:
+                        del os.environ['HVAC_CALC_ORIGIN']
+                    except Exception:
+                        pass
                 results.append(result)
             
             session.close()
@@ -649,7 +668,13 @@ class HVACPathCalculator:
                         source_cfm = active_cfm
                         print(f"DEBUG_LEGACY_SOURCE:   Using inherited CFM from active component: {source_cfm}")
                     else:
-                        print(f"DEBUG_LEGACY_SOURCE:   No active component found - using original CFM: {source_cfm}")
+                        # Emit explicit warning and fall back to conservative default
+                        try:
+                            from .hvac_constants import DEFAULT_CFM_FALLBACK as _DEFAULT_CFM
+                        except Exception:
+                            _DEFAULT_CFM = 500.0
+                        print(f"===== [PATH CALCULATOR] WARNING | Passive source has no upstream active CFM; falling back to default {float(_DEFAULT_CFM):.1f} CFM =====")
+                        source_cfm = source_cfm or _DEFAULT_CFM
                 
                 print(f"DEBUG_LEGACY_SOURCE: Final CFM value: {source_cfm}")
                 
@@ -879,7 +904,18 @@ class HVACPathCalculator:
                 }
             
             # Convert segments with proper flow rate propagation
-            path_data['segments'] = self._build_segments_with_flow_propagation(segments, source_cfm)
+            # Default origin to 'user' when not threaded from entrypoint
+            effective_origin = 'user'
+            try:
+                # Attempt to capture origin from environment-driven background flows
+                effective_origin = os.environ.get('HVAC_CALC_ORIGIN') or 'user'
+            except Exception:
+                effective_origin = 'user'
+            try:
+                effective_path_id = int(getattr(hvac_path, 'id', 0) or 0)
+            except Exception:
+                effective_path_id = 0
+            path_data['segments'] = self._build_segments_with_flow_propagation(segments, source_cfm, effective_origin, effective_path_id)
             
             # Add validation and debug export
             try:
@@ -981,6 +1017,15 @@ class HVACPathCalculator:
                 current_flow = calculated_flow  # Update for next iteration
             
             segment_data_list.append(segment_data)
+        
+        # Conservation/monotonicity warning (linear path heuristic)
+        try:
+            flows = [sd.get('flow_rate', 0.0) for sd in segment_data_list]
+            non_increasing = all((flows[j] <= flows[j-1]) for j in range(1, len(flows))) if len(flows) > 1 else True
+            if not non_increasing:
+                print(f"DEBUG_FLOW_PROPAGATION: WARNING - Non-monotonic flow detected along path_id={path_id} (origin={origin}). Flows: {flows}")
+        except Exception:
+            pass
         
         print(f"DEBUG_FLOW_PROPAGATION: Flow propagation complete")
         return segment_data_list
@@ -1136,7 +1181,16 @@ class HVACPathCalculator:
                 if 'elbow' in fct or 'elbow' in tct:
                     segment_data['fitting_type'] = 'elbow'
                 elif 'branch' in fct or 'branch' in tct or 'tee' in fct or 'tee' in tct:
-                    segment_data['fitting_type'] = 'junction'
+                    # More specific mappings for JunctionType support via fitting_type
+                    # Recognize explicit component types added to STANDARD_COMPONENTS
+                    if 'junction_x' in fct or 'junction_x' in tct or 'x-junction' in fct or 'x-junction' in tct:
+                        segment_data['fitting_type'] = 'x_junction'
+                    elif 'branch_takeoff_90' in fct or 'branch_takeoff_90' in tct:
+                        segment_data['fitting_type'] = 'branch_takeoff_90'
+                    elif 'junction_t' in fct or 'junction_t' in tct or 't-junction' in fct or 't-junction' in tct:
+                        segment_data['fitting_type'] = 'tee_junction'
+                    else:
+                        segment_data['fitting_type'] = 'junction'
                 # Grille/diffuser do not change fitting_type; they are terminals
             except Exception:
                 pass
@@ -1706,8 +1760,15 @@ class HVACPathCalculator:
             
             session.commit()
             
-            # Recalculate path noise
-            self.calculate_path_noise(segment.hvac_path_id)
+            # Recalculate path noise (background origin)
+            os.environ['HVAC_CALC_ORIGIN'] = 'background'
+            try:
+                self.calculate_path_noise(segment.hvac_path_id, origin='background')
+            finally:
+                try:
+                    del os.environ['HVAC_CALC_ORIGIN']
+                except Exception:
+                    pass
             
             session.close()
             return True
@@ -1751,10 +1812,17 @@ class HVACPathCalculator:
             session.add(fitting)
             session.commit()
             
-            # Recalculate path noise
+            # Recalculate path noise (background origin)
             segment = session.query(HVACSegment).filter(HVACSegment.id == segment_id).first()
             if segment:
-                self.calculate_path_noise(segment.hvac_path_id)
+                os.environ['HVAC_CALC_ORIGIN'] = 'background'
+                try:
+                    self.calculate_path_noise(segment.hvac_path_id, origin='background')
+                finally:
+                    try:
+                        del os.environ['HVAC_CALC_ORIGIN']
+                    except Exception:
+                        pass
             
             session.close()
             return True

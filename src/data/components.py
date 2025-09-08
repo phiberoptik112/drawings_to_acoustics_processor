@@ -73,6 +73,35 @@ STANDARD_COMPONENTS = {
         'cfm': 300.0,
         'cfm_range': (50, 5000),
         'description': 'Ductwork branch for flow distribution'
+    },
+    # Junction/Elbow component types to expose in UI and calculations
+    'junction_t': {
+        'name': 'T-Junction',
+        'noise_level': 0.0,
+        'cfm': 300.0,
+        'cfm_range': (50, 20000),
+        'description': 'Duct tee junction (T)'
+    },
+    'junction_x': {
+        'name': 'X-Junction',
+        'noise_level': 0.0,
+        'cfm': 300.0,
+        'cfm_range': (50, 20000),
+        'description': 'Duct cross junction (X)'
+    },
+    'branch_takeoff_90': {
+        'name': '90° Branch Takeoff',
+        'noise_level': 0.0,
+        'cfm': 200.0,
+        'cfm_range': (25, 10000),
+        'description': '90 degree branch takeoff'
+    },
+    'elbow_90_no_vanes': {
+        'name': '90° Elbow (No Vanes)',
+        'noise_level': 0.0,
+        'cfm': 200.0,
+        'cfm_range': (25, 10000),
+        'description': '90 degree elbow without turning vanes'
     }
 }
 
