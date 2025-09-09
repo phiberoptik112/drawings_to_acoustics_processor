@@ -4,7 +4,7 @@ Acoustic calculation engines for RT60 and noise analysis
 
 from .rt60_calculator import RT60Calculator, calculate_simple_rt60, get_material_absorption_coeff
 from .enhanced_rt60_calculator import EnhancedRT60Calculator
-from .noise_calculator import NoiseCalculator
+from .hvac_noise_engine import NoiseCalculator
 from .hvac_path_calculator import HVACPathCalculator, PathAnalysisResult
 from .hvac_noise_engine import HVACNoiseEngine, PathElement, PathResult
 from .nc_rating_analyzer import NCRatingAnalyzer, NCAnalysisResult, OctaveBandData

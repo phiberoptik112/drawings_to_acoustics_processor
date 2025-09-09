@@ -10,7 +10,7 @@ from models.hvac import HVACPath, HVACSegment, HVACComponent, SegmentFitting
 from sqlalchemy.orm import selectinload
 from models.mechanical import MechanicalUnit
 from data.components import STANDARD_COMPONENTS, STANDARD_FITTINGS
-from .noise_calculator import NoiseCalculator
+from .hvac_noise_engine import HVACNoiseEngine
 from .debug_logger import debug_logger
 from .result_types import CalculationResult, PathCreationResult, OperationResult
 from .hvac_constants import (
@@ -57,7 +57,7 @@ class HVACPathCalculator:
     def __init__(self, project_id: int = None):
         """Initialize the HVAC path calculator"""
         self.project_id = project_id
-        self.noise_calculator = NoiseCalculator()
+        self.noise_calculator = HVACNoiseEngine()
         # Debug logging is now handled by centralized logger
         self.debug_logger = debug_logger
         # Unified flag used throughout this class; avoids AttributeError in debug guards

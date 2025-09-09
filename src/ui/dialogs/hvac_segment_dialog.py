@@ -17,7 +17,7 @@ from models.database import get_hvac_session
 from models.hvac import HVACSegment, SegmentFitting
 from data.components import STANDARD_FITTINGS
 from calculations.hvac_path_calculator import HVACPathCalculator
-from calculations.noise_calculator import NoiseCalculator
+from calculations.hvac_noise_engine import HVACNoiseEngine
 
 
 class FittingTableWidget(QTableWidget):
@@ -185,8 +185,8 @@ class HVACSegmentDialog(QDialog):
         
         # Calculators for context-aware fitting calculations
         self.path_calculator = HVACPathCalculator()
-        self.noise_calc = NoiseCalculator()
-        self.noise_engine = self.noise_calc.hvac_engine
+        self.noise_calc = HVACNoiseEngine()
+        self.noise_engine = self.noise_calc
         
         self.init_ui()
         if self.is_editing:
