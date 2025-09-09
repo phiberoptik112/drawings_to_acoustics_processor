@@ -154,6 +154,14 @@ class RectangularDuctCalculator:
         Returns:
             Dictionary with P/A ratio and attenuation values
         """
+        import os
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        if debug_export_enabled:
+            print(f"DEBUG_RECT_DUCT: get_unlined_attenuation called with:")
+            print(f"DEBUG_RECT_DUCT:   width: {width} inches")
+            print(f"DEBUG_RECT_DUCT:   height: {height} inches")
+            print(f"DEBUG_RECT_DUCT:   length: {length} feet")
         # Normalize dimensions (smaller dimension first)
         dim1, dim2 = min(width, height), max(width, height)
         duct_size = (dim1, dim2)
@@ -176,7 +184,17 @@ class RectangularDuctCalculator:
             return result
         
         # Interpolate if size not in data
-        return self._interpolate_unlined_attenuation(width, height, length)
+        result = self._interpolate_unlined_attenuation(width, height, length)
+        
+        if debug_export_enabled:
+            print(f"DEBUG_RECT_DUCT: get_unlined_attenuation returning:")
+            print(f"DEBUG_RECT_DUCT:   result keys: {list(result.keys()) if result else 'None'}")
+            if result:
+                for key, value in result.items():
+                    if isinstance(value, (int, float)):
+                        print(f"DEBUG_RECT_DUCT:   {key}: {value}")
+        
+        return result
     
     def _interpolate_unlined_attenuation(self, width: float, height: float, 
                                        length: float) -> Dict[str, float]:

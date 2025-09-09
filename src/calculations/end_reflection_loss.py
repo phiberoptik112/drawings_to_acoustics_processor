@@ -362,6 +362,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             method_desc = f"Equation ({args.termination})"
 
         # Output
+        print("================================================")
+        print("End Reflection Loss (ERL) Calculation Report")
+        print("WE SHOULD BE AT A TERMINATION ELEMENT")
+        print("================================================")
         print(f"Method: {method_desc}")
         print(f"Effective diameter: {diameter_value:.4g} {diameter_units}")
         print("Frequency (Hz), ERL (dB)")

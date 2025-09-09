@@ -501,7 +501,9 @@ class HVACPathCalculator:
         Returns:
             Path data dictionary for noise calculation
         """
+        print("-=-=--=-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-")
         print(f"DEBUG_ENTRY: build_path_data_from_db called")
+        print("-=-=--=-=-=-=-=--=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-")
         print(f"DEBUG_ENTRY: hvac_path type: {type(hvac_path)}")
         print(f"DEBUG_ENTRY: hvac_path id: {getattr(hvac_path, 'id', 'None')}")
         

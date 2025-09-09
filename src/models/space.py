@@ -49,7 +49,8 @@ class Space(Base):
     ceiling_height = Column(Float)  # feet
     volume = Column(Float)          # cubic feet
     wall_area = Column(Float)       # square feet (calculated)
-    
+    total_surface_area = Column(Float)       # square feet (calculated)
+
     # Acoustic properties
     target_rt60 = Column(Float, default=0.8)     # Target RT60 in seconds
     calculated_rt60 = Column(Float)              # Calculated RT60
@@ -83,6 +84,23 @@ class Space(Base):
     def __repr__(self):
         return f"<Space(id={self.id}, name='{self.name}', project_id={self.project_id})>"
     
+    def calculate_total_surface_area(self):
+        """Calculate total surface area as floor + ceiling + walls (square feet).
+
+        - Ceiling area is assumed equal to floor area.
+        - Wall area uses `self.wall_area` if available; otherwise, it is
+          estimated as `perimeter × ceiling_height`.
+        """
+        floor_area = self.floor_area or 0.0
+        ceiling_area = floor_area
+        wall_area = self.wall_area
+        if wall_area is None:
+            perimeter = self.calculate_perimeter()
+            height = self.ceiling_height or 0.0
+            wall_area = (perimeter * height) if (perimeter and height) else 0.0
+        self.total_surface_area = floor_area + ceiling_area + wall_area
+        return self.total_surface_area
+    
     def calculate_volume(self):
         """Calculate volume from floor area and ceiling height"""
         if self.floor_area and self.ceiling_height:
@@ -106,8 +124,8 @@ class Space(Base):
         return None
     
     def get_total_surface_area(self):
-        """Calculate total surface area from all surface instances"""
-        return sum(instance.effective_area for instance in self.surface_instances)
+        """Get total surface area as floor + ceiling + walls (square feet)."""
+        return self.calculate_total_surface_area()
     
     def get_surfaces_by_category(self, category_name):
         """Get surface instances filtered by category"""
@@ -333,15 +351,13 @@ class Space(Base):
                     freq_8000=final_sound_levels.get(8000, 0.0),
                 )
                 nc_results = path_calculator.nc_analyzer.analyze_nc_rating(octave_data) if hasattr(path_calculator, 'nc_analyzer') else None
-                # Fallback: compute using engine util if nc_analyzer not present
+                # Fallback: compute using NoiseCalculator with final octave-band spectrum
                 if nc_results and isinstance(nc_results, dict):
                     nc_rating = nc_results.get('nc_rating')
                 else:
-                    # Use engine's NC if available
                     try:
-                        engine = path_calculator.noise_calculator.hvac_engine
                         spectrum_list = [final_sound_levels.get(f, 0.0) for f in [63,125,250,500,1000,2000,4000,8000]]
-                        nc_rating = engine._calculate_nc_rating(spectrum_list)
+                        nc_rating = path_calculator.noise_calculator.calculate_nc_rating(spectrum_list)
                     except Exception:
                         nc_rating = None
             except Exception as e:
@@ -440,7 +456,7 @@ class Space(Base):
             'mechanical_nc_rating': noise_status.get('nc_rating'),
             'hvac_paths_count': len(self.get_hvac_paths()),
             # Other properties
-            'total_surface_area': self.get_total_surface_area(),
+            'total_surface_area': self.calculate_total_surface_area(),
             'perimeter': self.calculate_perimeter(),
             'latest_rt60_result': self.get_latest_rt60_result().to_dict() if self.get_latest_rt60_result() else None
         }

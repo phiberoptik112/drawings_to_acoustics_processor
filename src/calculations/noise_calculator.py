@@ -5,7 +5,8 @@ Revised to work with the unified HVAC noise engine
 
 import math
 import os
-from typing import Dict, List, Tuple, Optional
+import re
+from typing import Dict, List, Tuple, Optional, Any
 from .hvac_noise_engine import HVACNoiseEngine, PathElement, PathResult
 
 
@@ -102,12 +103,13 @@ class NoiseCalculator:
     def _convert_path_data_to_elements(self, path_data: Dict) -> List[PathElement]:
         """Convert legacy path data format to PathElement objects"""
         elements = []
+        # Ensure debug flag is always defined within this function scope
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
         
         # Add source element
         source_component = path_data.get('source_component', {})
         if source_component:
             # Enhanced debugging for source component data
-            debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
             if debug_export_enabled:
                 print(f"DEBUG_NC: Source component data received:")
                 print(f"DEBUG_NC:   Source component keys: {list(source_component.keys())}")
@@ -147,8 +149,9 @@ class NoiseCalculator:
             
             # Normalize duct shape nomenclature ('round' -> 'circular')
             shape = segment.get('duct_shape', 'rectangular')
-            if isinstance(shape, str) and shape.lower() == 'round':
-                shape = 'circular'
+            if isinstance(shape, str):
+                sl = shape.lower()
+                shape = 'circular' if sl in ('round', 'circular') else 'rectangular'
 
             # Debug segment CFM assignment
             segment_flow_rate = segment.get('flow_rate', 0.0)
@@ -180,6 +183,20 @@ class NoiseCalculator:
                 room_absorption=segment.get('room_absorption', 0.0),
                 fitting_type=segment.get('fitting_type')
             )
+            
+            if debug_export_enabled:
+                print(f"DEBUG_NC:   Created PathElement {i+1}:")
+                print(f"DEBUG_NC:     element_type: {element.element_type}")
+                print(f"DEBUG_NC:     element_id: {element.element_id}")
+                print(f"DEBUG_NC:     length: {element.length}")
+                print(f"DEBUG_NC:     width: {element.width}")
+                print(f"DEBUG_NC:     height: {element.height}")
+                print(f"DEBUG_NC:     duct_shape: {element.duct_shape}")
+                print(f"DEBUG_NC:     duct_type: {element.duct_type}")
+                print(f"DEBUG_NC:     lining_thickness: {element.lining_thickness}")
+                print(f"DEBUG_NC:     flow_rate: {element.flow_rate}")
+                print(f"DEBUG_NC:     fitting_type: {element.fitting_type}")
+            
             elements.append(element)
         
         # Add terminal element
@@ -198,17 +215,82 @@ class NoiseCalculator:
     
     def _determine_element_type(self, segment: Dict) -> str:
         """Determine the element type based on segment properties"""
-        if segment.get('duct_type') == 'flexible':
-            return 'flex_duct'
-        # Map specific fitting names to general types
-        ft = (segment.get('fitting_type') or '').lower()
-        if ft:
-            if ft.startswith('elbow'):
-                return 'elbow'
-            if ('tee' in ft) or ('junction' in ft) or ('branch' in ft):
-                return 'junction'
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        if debug_export_enabled:
+            print(f"DEBUG_ELEMENT_TYPE: Determining element type for segment:")
+            print(f"DEBUG_ELEMENT_TYPE:   duct_type: {segment.get('duct_type')}")
+            print(f"DEBUG_ELEMENT_TYPE:   fitting_type: {segment.get('fitting_type')}")
+            print(f"DEBUG_ELEMENT_TYPE:   length: {segment.get('length')}")
+            print(f"DEBUG_ELEMENT_TYPE:   duct_width: {segment.get('duct_width')}")
+            print(f"DEBUG_ELEMENT_TYPE:   duct_height: {segment.get('duct_height')}")
+        
+        # Tokenize fitting_type to avoid substring misclassifications (e.g., 'steel' -> 'tee')
+        ft_raw = (segment.get('fitting_type') or '')
+        ft = ft_raw.lower()
+        tokens = re.findall(r"[a-z0-9]+", ft)
+        token_set = set(tokens)
+
+        has_elbow = 'elbow' in token_set
+        has_tee_like = ('tee' in token_set) or ('t' in token_set and 'junction' in token_set)
+        has_branch = 'branch' in token_set or any(tok.startswith('branch') for tok in tokens)
+        has_wye = 'wye' in token_set
+        has_cross = 'cross' in token_set or ('x' in token_set and 'junction' in token_set)
+        has_junction = ('junction' in token_set) or has_tee_like or has_branch or has_wye or has_cross
+
+        is_pure_fitting = has_elbow or has_junction
+
+        if debug_export_enabled:
+            print(f"DEBUG_ELEMENT_TYPE:   parsed tokens: {tokens}")
+            print(f"DEBUG_ELEMENT_TYPE:   has_elbow={has_elbow}, has_junction={has_junction}")
+
+        # If it's a pure fitting type, prefer fitting classification even with dimensions present
+        if is_pure_fitting:
+            if debug_export_enabled:
+                print(f"DEBUG_ELEMENT_TYPE:   Pure fitting detected - determining type from tokens")
+            if segment.get('duct_type') == 'flexible':
+                element_type = 'flex_duct'
+            else:
+                element_type = 'elbow' if has_elbow else 'junction'
         else:
-            return 'duct'
+            # Standard logic: check duct dimensions
+            segment_length = segment.get('length', 0.0) or 0.0
+            segment_width = segment.get('duct_width', 0.0) or 0.0
+            segment_height = segment.get('duct_height', 0.0) or 0.0
+            
+            # If segment has no duct dimensions, it might be a pure fitting
+            if segment_length <= 0 and segment_width <= 0 and segment_height <= 0:
+                if debug_export_enabled:
+                    print(f"DEBUG_ELEMENT_TYPE:   No duct dimensions - treating as pure fitting")
+                
+                if segment.get('duct_type') == 'flexible':
+                    element_type = 'flex_duct'
+                else:
+                    # Map based on parsed tokens
+                    if ft:
+                        if has_elbow:
+                            element_type = 'elbow'
+                        elif has_junction:
+                            element_type = 'junction'
+                        else:
+                            element_type = 'duct'  # Default to duct for unknown fitting types
+                    else:
+                        element_type = 'duct'  # No fitting type specified, treat as duct
+            else:
+                # Segment has duct dimensions - treat as duct regardless of fitting_type
+                if segment.get('duct_type') == 'flexible':
+                    element_type = 'flex_duct'
+                else:
+                    element_type = 'duct'  # Always a duct if it has dimensions
+                
+                if debug_export_enabled:
+                    print(f"DEBUG_ELEMENT_TYPE:   Has duct dimensions - treating as {element_type}")
+                    print(f"DEBUG_ELEMENT_TYPE:   fitting_type '{segment.get('fitting_type')}' will be handled as additional property")
+        
+        if debug_export_enabled:
+            print(f"DEBUG_ELEMENT_TYPE:   Determined element_type: {element_type}")
+        
+        return element_type
     
     def _convert_result_to_dict(self, result: PathResult) -> Dict:
         """Convert PathResult to legacy dictionary format"""
@@ -240,6 +322,12 @@ class NoiseCalculator:
             Dictionary with attenuation calculations
         """
         # Convert to PathElement and use the engine
+        # Normalize duct shape for segment attenuation as well
+        shape = segment_data.get('duct_shape', 'rectangular')
+        if isinstance(shape, str):
+            sl = shape.lower()
+            shape = 'circular' if sl in ('round', 'circular') else 'rectangular'
+
         element = PathElement(
             element_type=self._determine_element_type(segment_data),
             element_id='temp_segment',
@@ -247,14 +335,15 @@ class NoiseCalculator:
             width=segment_data.get('duct_width', 12.0),
             height=segment_data.get('duct_height', 8.0),
             diameter=segment_data.get('diameter', 0.0),
-            duct_shape=segment_data.get('duct_shape', 'rectangular'),
+            duct_shape=shape,
             duct_type=segment_data.get('duct_type', 'sheet_metal'),
             lining_thickness=segment_data.get('lining_thickness', 0.0),
             flow_rate=segment_data.get('flow_rate', 0.0),
             flow_velocity=segment_data.get('flow_velocity', 0.0),
             pressure_drop=segment_data.get('pressure_drop', 0.0),
             vane_chord_length=segment_data.get('vane_chord_length', 0.0),
-            num_vanes=segment_data.get('num_vanes', 0)
+            num_vanes=segment_data.get('num_vanes', 0),
+            fitting_type=segment_data.get('fitting_type')
         )
         
         # Create a dummy input spectrum
@@ -287,20 +376,39 @@ class NoiseCalculator:
         result = self.calculate_segment_attenuation(segment_data)
         return result.get('duct_loss', 0.0)
     
-    def calculate_nc_rating(self, noise_level: float) -> int:
+    def calculate_nc_rating(self, data: Optional[Any] = None) -> int:
         """
-        Convert A-weighted noise level to approximate NC rating
+        Determine NC rating using final octave-band data when available.
         
-        Args:
-            noise_level: A-weighted sound level in dB(A)
-            
+        Preferred input:
+        - data: one of
+          - List[float] length 8: final octave band spectrum [63..8000 Hz]
+          - Dict with key 'octave_band_spectrum' (or 'octave_band_levels')
+          - float/int: fallback A-weighted overall level in dB(A)
+        
         Returns:
             NC rating (15-65)
         """
         try:
-            # Simple approximation: A-weighted level roughly corresponds to NC rating
-            # This is a simplified conversion - full NC analysis requires octave band data
+            spectrum: Optional[List[float]] = None
             
+            # Accept dicts from final calculation results
+            if isinstance(data, dict):
+                bands = data.get('octave_band_spectrum') or data.get('octave_band_levels')
+                if isinstance(bands, (list, tuple)):
+                    spectrum = [float(x or 0.0) for x in bands[:8]]
+            # Accept direct list/tuple of bands
+            elif isinstance(data, (list, tuple)):
+                spectrum = [float(x or 0.0) for x in list(data)[:8]]
+            
+            # If we have a spectrum, ensure 8 bands and compute NC from curves
+            if spectrum is not None:
+                if len(spectrum) < 8:
+                    spectrum = spectrum + [0.0] * (8 - len(spectrum))
+                return self.hvac_engine._calculate_nc_rating(spectrum)
+            
+            # Fallback: treat as A-weighted overall level mapping
+            noise_level = float(data) if isinstance(data, (int, float)) else 0.0
             if noise_level <= 20:
                 return 15
             elif noise_level <= 25:
@@ -323,7 +431,6 @@ class NoiseCalculator:
                 return 60
             else:
                 return 65
-                
         except Exception:
             return 30  # Default NC rating
     

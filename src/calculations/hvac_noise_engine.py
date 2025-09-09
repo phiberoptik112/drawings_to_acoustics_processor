@@ -334,10 +334,13 @@ class HVACNoiseEngine:
                         jtype = JunctionType.T_JUNCTION
                         if 'x' in fit or 'cross' in fit:
                             jtype = JunctionType.X_JUNCTION
+                            print(" USING X JUNCTION")
                         elif 'branch' in fit:
                             jtype = JunctionType.BRANCH_TAKEOFF_90
+                            print(" USING BRANCH TAKEOFF 90")
                         elif 'tee' in fit or 't_' in fit:
                             jtype = JunctionType.T_JUNCTION
+                            print(" USING T JUNCTION")
 
                         if debug_export_enabled:
                             print(f"DEBUG_ENGINE:     Junction context: upstream_flow={upstream_flow:.1f}, downstream_flow={downstream_flow:.1f}")
@@ -651,16 +654,29 @@ class HVACNoiseEngine:
         try:
             if debug_export_enabled:
                 print(f"DEBUG_ENGINE:     Calculating {element.element_type} effect...")
+                print(f"DEBUG_ENGINE:     Element details: id={element.element_id}, length={element.length}, width={element.width}, height={element.height}")
+                print(f"DEBUG_ENGINE:     Duct properties: shape={element.duct_shape}, type={element.duct_type}, lining={element.lining_thickness}")
                 
             if element.element_type == 'duct':
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE:     -> Calling _calculate_duct_effect for {element.element_id}")
                 result = self._calculate_duct_effect(element)
             elif element.element_type == 'elbow':
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE:     -> Calling _calculate_elbow_effect for {element.element_id}")
                 result = self._calculate_elbow_effect(element)
             elif element.element_type == 'junction':
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE:     -> Calling _calculate_junction_effect for {element.element_id}")
+                    print(f"DEBUG_ENGINE:     -> Junction element detected - will use JunctionElbowNoiseCalculator")
                 result = self._calculate_junction_effect(element)
             elif element.element_type == 'flex_duct':
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE:     -> Calling _calculate_flex_duct_effect for {element.element_id}")
                 result = self._calculate_flex_duct_effect(element)
             elif element.element_type == 'terminal':
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE:     -> Calling _calculate_terminal_effect for {element.element_id}")
                 result = self._calculate_terminal_effect(element)
             else:
                 # Unknown element type - pass through
@@ -687,33 +703,68 @@ class HVACNoiseEngine:
         return result
     
     def _calculate_duct_effect(self, element: PathElement) -> Dict[str, Any]:
-        """Calculate duct attenuation effect"""
+        """Calculate duct attenuation effect, including any fittings within the duct segment"""
         result: Dict[str, Any] = {
             'attenuation_spectrum': [0.0] * NUM_OCTAVE_BANDS,
-            'generated_spectrum': None,
+            'generated_spectrum': [0.0] * NUM_OCTAVE_BANDS,
             'attenuation_dba': 0.0,
-            'generated_dba': None
+            'generated_dba': 0.0
         }
         
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        if debug_export_enabled:
+            print("================================================")
+            if element.duct_shape == 'circular':
+                print("INSIDE THE CIRCULAR DUCT CALCULATION")
+            else:
+                print("INSIDE THE RECTANGULAR DUCT CALCULATION")
+            print("================================================")
+            print(f"DEBUG_DUCT: Processing duct element: {element.element_id}")
+            print(f"DEBUG_DUCT:   Length: {element.length} ft")
+            if element.duct_shape == 'circular':
+                print(f"DEBUG_DUCT:   Diameter: {element.diameter} in")
+            else:
+                print(f"DEBUG_DUCT:   Dimensions: {element.width}x{element.height} in")
+            print(f"DEBUG_DUCT:   Shape: {element.duct_shape}")
+            print(f"DEBUG_DUCT:   Lining: {element.lining_thickness} in")
+            print(f"DEBUG_DUCT:   Fitting type: {element.fitting_type}")
+        
         try:
+            # 1. Calculate duct attenuation (the main purpose of this method)
             if element.duct_shape == 'circular':
                 # Use circular duct calculator
+                if debug_export_enabled:
+                    print(f"DEBUG_DUCT:   Using circular duct calculator")
+                    print(f"DEBUG_DUCT:   Diameter: {element.diameter} in, Length: {element.length} ft")
+                
                 if element.lining_thickness > 0:
                     # Lined circular duct
+                    if debug_export_enabled:
+                        print(f"DEBUG_DUCT:   Calculating lined circular duct insertion loss")
+                        print(f"DEBUG_DUCT:   Lining thickness: {element.lining_thickness} in")
+                    
                     for i, freq in enumerate(self.FREQUENCY_BANDS):
                         if freq <= 4000:  # Circular calc supports up to 4000 Hz
                             attenuation = self.circular_calc.calculate_lined_insertion_loss(
                                 element.diameter, element.lining_thickness, freq, element.length
                             )
                             result['attenuation_spectrum'][i] = attenuation
+                            if debug_export_enabled and i < 3:  # Show first few frequencies
+                                print(f"DEBUG_DUCT:     {freq}Hz: {attenuation:.3f} dB")
                 else:
                     # Unlined circular duct
+                    if debug_export_enabled:
+                        print(f"DEBUG_DUCT:   Calculating unlined circular duct attenuation")
+                    
                     spectrum = self.circular_calc.get_unlined_attenuation_spectrum(
                         element.diameter, element.length
                     )
                     for i, freq in enumerate(self.FREQUENCY_BANDS):
                         if str(freq) in spectrum:
                             result['attenuation_spectrum'][i] = spectrum[str(freq)]
+                            if debug_export_enabled and i < 3:  # Show first few frequencies
+                                print(f"DEBUG_DUCT:     {freq}Hz: {spectrum[str(freq)]:.3f} dB")
                             
             else:
                 # Rectangular duct
@@ -743,10 +794,153 @@ class HVACNoiseEngine:
             # Calculate A-weighted attenuation
             result['attenuation_dba'] = self._calculate_dba_from_spectrum(result['attenuation_spectrum'])
             
+            if debug_export_enabled:
+                print(f"DEBUG_DUCT:   Duct attenuation calculated: {result['attenuation_dba']:.2f} dB(A)")
+                print(f"DEBUG_DUCT:   Duct attenuation spectrum: {[f'{x:.1f}' for x in result['attenuation_spectrum']]}")
+            
+            # 2. If this duct segment also has a fitting, calculate fitting effects
+            if element.fitting_type and element.fitting_type.lower() in ['elbow', 'junction', 'tee', 'branch']:
+                if debug_export_enabled:
+                    print(f"DEBUG_DUCT:   Duct also contains fitting: {element.fitting_type}")
+                
+                # Calculate fitting effects (both attenuation and generated noise)
+                fitting_result = self._calculate_fitting_effect_for_duct(element)
+                
+                if fitting_result:
+                    # Combine duct attenuation with fitting attenuation
+                    if fitting_result.get('attenuation_spectrum'):
+                        fitting_attenuation = fitting_result['attenuation_spectrum']
+                        for i in range(NUM_OCTAVE_BANDS):
+                            result['attenuation_spectrum'][i] += fitting_attenuation[i]
+                    
+                    # Add fitting generated noise
+                    if fitting_result.get('generated_spectrum'):
+                        fitting_generated = fitting_result['generated_spectrum']
+                        for i in range(NUM_OCTAVE_BANDS):
+                            result['generated_spectrum'][i] = fitting_generated[i]
+                    
+                    # Recalculate A-weighted values
+                    result['attenuation_dba'] = self._calculate_dba_from_spectrum(result['attenuation_spectrum'])
+                    result['generated_dba'] = self._calculate_dba_from_spectrum(result['generated_spectrum'])
+                    
+                    if debug_export_enabled:
+                        print(f"DEBUG_DUCT:   Combined attenuation: {result['attenuation_dba']:.2f} dB(A)")
+                        print(f"DEBUG_DUCT:   Fitting generated noise: {result['generated_dba']:.2f} dB(A)")
+            
         except Exception as e:
             result['error'] = f"Duct calculation error: {str(e)}"
-            
+            if debug_export_enabled:
+                print(f"DEBUG_DUCT:   ERROR: {e}")
+        
+        if debug_export_enabled:
+            if element.duct_shape == 'circular':
+                print("RETURNING FROM THE CIRCULAR DUCT CALCULATION")
+            else:
+                print("RETURNING FROM THE RECTANGULAR DUCT CALCULATION")
+            print(f"ATTENUATION SPECTRUM: {result['attenuation_spectrum']}")
+            print(f"GENERATED SPECTRUM: {result['generated_spectrum']}")
+        
         return result
+    
+    def _calculate_fitting_effect_for_duct(self, element: PathElement) -> Optional[Dict[str, Any]]:
+        """Calculate fitting effects for a duct segment that contains a fitting"""
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        try:
+            fitting_type = element.fitting_type.lower()
+            
+            if fitting_type in ['elbow']:
+                # Use elbow calculation logic
+                if debug_export_enabled:
+                    print(f"DEBUG_DUCT:     Calculating elbow fitting effect")
+                
+                # Calculate elbow insertion loss using rectangular elbows calculator
+                attenuation_spectrum = [0.0] * NUM_OCTAVE_BANDS
+                lined = (element.lining_thickness or 0.0) > 0.0
+                elbow_type = 'square_with_vanes' if (element.num_vanes or 0) > 0 else 'square_no_vanes'
+                
+                for i, freq in enumerate(self.FREQUENCY_BANDS):
+                    try:
+                        loss = self.rect_elbows_calc.calculate_elbow_insertion_loss(
+                            frequency=freq,
+                            width=element.width or 0.0,
+                            elbow_type=elbow_type,
+                            lined=lined
+                        )
+                        attenuation_spectrum[i] = float(loss or 0.0)
+                    except Exception as e:
+                        if debug_export_enabled:
+                            print(f"DEBUG_DUCT:     Error calculating elbow loss at {freq}Hz: {e}")
+                        attenuation_spectrum[i] = 0.0
+                
+                # Calculate generated noise using junction calculator
+                duct_area = self._calculate_duct_area(element)
+                jtype = JunctionType.ELBOW_90_NO_VANES
+                
+                spectrum_data = self.junction_calc.calculate_junction_noise_spectrum(
+                    branch_flow_rate=element.flow_rate,
+                    branch_cross_sectional_area=duct_area,
+                    main_flow_rate=element.flow_rate,
+                    main_cross_sectional_area=duct_area,
+                    junction_type=jtype
+                )
+                
+                # For elbows, use the main duct spectrum
+                elbow_spectrum = spectrum_data.get('main_duct') or {}
+                generated_spectrum = [0.0] * NUM_OCTAVE_BANDS
+                for i, freq in enumerate(self.FREQUENCY_BANDS):
+                    band_key = f"{freq}Hz"
+                    if band_key in elbow_spectrum:
+                        generated_spectrum[i] = elbow_spectrum[band_key]
+                
+                return {
+                    'attenuation_spectrum': attenuation_spectrum,
+                    'generated_spectrum': generated_spectrum,
+                    'attenuation_dba': self._calculate_dba_from_spectrum(attenuation_spectrum),
+                    'generated_dba': self._calculate_dba_from_spectrum(generated_spectrum)
+                }
+                
+            elif fitting_type in ['junction', 'tee', 'branch', 'branch_takeoff_90', 'branch_takeoff', 'branch_90']:
+                # Use junction calculation logic
+                if debug_export_enabled:
+                    print(f"DEBUG_DUCT:     Calculating junction fitting effect")
+                
+                duct_area = self._calculate_duct_area(element)
+                jtype = JunctionType.T_JUNCTION
+                if 'x' in fitting_type or 'cross' in fitting_type:
+                    jtype = JunctionType.X_JUNCTION
+                elif 'branch' in fitting_type:
+                    jtype = JunctionType.BRANCH_TAKEOFF_90
+                
+                spectrum_data = self.junction_calc.calculate_junction_noise_spectrum(
+                    branch_flow_rate=element.flow_rate,
+                    branch_cross_sectional_area=duct_area,
+                    main_flow_rate=element.flow_rate,
+                    main_cross_sectional_area=duct_area,
+                    junction_type=jtype
+                )
+                
+                # For junctions, use main duct spectrum
+                junction_spectrum = spectrum_data.get('main_duct') or {}
+                generated_spectrum = [0.0] * NUM_OCTAVE_BANDS
+                for i, freq in enumerate(self.FREQUENCY_BANDS):
+                    band_key = f"{freq}Hz"
+                    if band_key in junction_spectrum:
+                        generated_spectrum[i] = junction_spectrum[band_key]
+                
+                return {
+                    'attenuation_spectrum': [0.0] * NUM_OCTAVE_BANDS,  # Junctions typically don't have insertion loss
+                    'generated_spectrum': generated_spectrum,
+                    'attenuation_dba': 0.0,
+                    'generated_dba': self._calculate_dba_from_spectrum(generated_spectrum)
+                }
+            
+            return None
+            
+        except Exception as e:
+            if debug_export_enabled:
+                print(f"DEBUG_DUCT:     Error calculating fitting effect: {e}")
+            return None
     
     def _calculate_elbow_effect(self, element: PathElement) -> Dict[str, Any]:
         """Calculate elbow generated noise effect"""
@@ -869,7 +1063,15 @@ class HVACNoiseEngine:
             'generated_dba': 0.0
         }
         
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
         try:
+            if debug_export_enabled:
+                print(f"DEBUG_JUNCTION: Calculating junction effect for element {element.element_id}")
+                print(f"DEBUG_JUNCTION:   fitting_type: {element.fitting_type}")
+                print(f"DEBUG_JUNCTION:   flow_rate: {element.flow_rate}")
+                print(f"DEBUG_JUNCTION:   width: {element.width}, height: {element.height}")
+            
             duct_area = self._calculate_duct_area(element)
             # Use the junction calculator's spectrum method with explicit type
             fit = (element.fitting_type or '').lower() if hasattr(element, 'fitting_type') else ''
@@ -880,6 +1082,12 @@ class HVACNoiseEngine:
                 jtype = JunctionType.BRANCH_TAKEOFF_90
             elif 'tee' in fit or 't_' in fit:
                 jtype = JunctionType.T_JUNCTION
+            
+            if debug_export_enabled:
+                print(f"DEBUG_JUNCTION:   Mapped fitting_type '{fit}' to junction_type: {jtype}")
+                print(f"DEBUG_JUNCTION:   duct_area: {duct_area:.3f} ft²")
+                print(f"DEBUG_JUNCTION:   Calling junction_calc.calculate_junction_noise_spectrum...")
+            
             spectrum_data = self.junction_calc.calculate_junction_noise_spectrum(
                 branch_flow_rate=element.flow_rate,
                 branch_cross_sectional_area=duct_area,
@@ -887,6 +1095,11 @@ class HVACNoiseEngine:
                 main_cross_sectional_area=duct_area,
                 junction_type=jtype
             )
+            
+            if debug_export_enabled:
+                print(f"DEBUG_JUNCTION:   Junction calculator returned spectrum data")
+                print(f"DEBUG_JUNCTION:   Available keys: {list(spectrum_data.keys())}")
+            
             # For junctions, use main duct spectrum per Eq (4.24)
             junction_spectrum = spectrum_data.get('main_duct') or {}
             for i, freq in enumerate(self.FREQUENCY_BANDS):
@@ -897,8 +1110,14 @@ class HVACNoiseEngine:
             # Calculate A-weighted generated noise
             result['generated_dba'] = self._calculate_dba_from_spectrum(result['generated_spectrum'])
             
+            if debug_export_enabled:
+                print(f"DEBUG_JUNCTION:   Generated spectrum: {[f'{x:.1f}' for x in result['generated_spectrum']]}")
+                print(f"DEBUG_JUNCTION:   Generated dBA: {result['generated_dba']:.2f}")
+            
         except Exception as e:
             result['error'] = f"Junction calculation error: {str(e)}"
+            if debug_export_enabled:
+                print(f"DEBUG_JUNCTION:   ERROR: {e}")
             
         return result
     
@@ -1069,9 +1288,9 @@ class HVACNoiseEngine:
             25: "Moderately quiet - Open offices, classrooms",
             30: "Moderate - General offices, retail spaces",
             35: "Moderately noisy - Restaurants, lobbies",
-            40: "Noisy - Cafeterias, gymnasiums",
+            40: "Noisy - Cafeterias, ",
             45: "Very noisy - Workshops, mechanical rooms",
-            50: "Extremely noisy - Industrial spaces",
+            50: "Extremely noisy - gymnasiums, Industrial spaces",
             55: "Unacceptable for most occupied spaces",
             60: "Unacceptable for occupied spaces",
             65: "Hearing protection recommended"

@@ -318,6 +318,9 @@ class JunctionElbowNoiseCalculator:
         Returns:
             Dictionary containing noise spectra for branch and main ducts
         """
+        print("================================================")
+        print("INSIDE THE JUNCTION ELBOW GENERATED NOISE CALCULATIONS")
+        print("================================================")
         # Calculate equivalent diameters
         branch_equiv_diameter = self.calculate_equivalent_diameter(
             branch_cross_sectional_area, branch_duct_shape, branch_diameter)
@@ -370,7 +373,9 @@ class JunctionElbowNoiseCalculator:
             # Store results
             branch_spectrum[f"{frequency}Hz"] = total_branch_sound_power
             main_spectrum[f"{frequency}Hz"] = main_sound_power
-        
+        print("RETURNING FROM THE JUNCTION ELBOW GENERATED NOISE CALCULATIONS")
+        print(f"BRANCH SPECTRUM: {branch_spectrum}")
+        print(f"MAIN SPECTRUM: {main_spectrum}")
         return {
             "branch_duct": branch_spectrum,
             "main_duct": main_spectrum,
