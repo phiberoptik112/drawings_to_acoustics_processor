@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Tuple, Dict, List, Optional
 import warnings
+from .acoustic_utilities import AcousticConstants
 
 # Set up plotting style
 plt.style.use('seaborn-v0_8')
@@ -115,7 +116,8 @@ class RectangularDuctCalculator:
         }
         
         # Frequency bands for 2-inch lining data
-        self.frequency_bands = [125, 250, 500, 1000, 2000, 4000, 8000]
+        # Use centralized frequency bands (includes 63 Hz that was missing)
+        self.frequency_bands = AcousticConstants.FREQUENCY_BANDS.copy()
     
     def calculate_p_a_ratio(self, width: float, height: float) -> float:
         """

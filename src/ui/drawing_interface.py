@@ -1888,10 +1888,12 @@ class DrawingInterface(QMainWindow):
                 segment_data = {
                     'length': segment.length or 0,
                     'duct_width': segment.duct_width or 12,
-                    'duct_height': segment.duct_height or 8,  
+                    'duct_height': segment.duct_height or 8,
+                    'diameter': getattr(segment, 'diameter', 0) or 0,
                     'duct_shape': segment.duct_shape or 'rectangular',
                     'duct_type': segment.duct_type or 'sheet_metal',
                     'insulation': segment.insulation,
+                    'lining_thickness': getattr(segment, 'lining_thickness', 0) or 0,
                     'fittings': []
                 }
                 

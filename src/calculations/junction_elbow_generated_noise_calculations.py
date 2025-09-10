@@ -30,6 +30,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Tuple, Dict, List, Optional, Union
 import warnings
+import os
 from enum import Enum
 
 # Set up plotting style
@@ -318,9 +319,22 @@ class JunctionElbowNoiseCalculator:
         Returns:
             Dictionary containing noise spectra for branch and main ducts
         """
-        print("================================================")
-        print("INSIDE THE JUNCTION ELBOW GENERATED NOISE CALCULATIONS")
-        print("================================================")
+        # Debug output controlled by environment variable
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        if debug_export_enabled:
+            print("================================================")
+            print("INSIDE THE JUNCTION ELBOW GENERATED NOISE CALCULATIONS")
+            print("================================================")
+            print(f"DEBUG_JUNCTION: Called with parameters:")
+            print(f"DEBUG_JUNCTION:   branch_flow_rate: {branch_flow_rate}")
+            print(f"DEBUG_JUNCTION:   branch_cross_sectional_area: {branch_cross_sectional_area}")
+            print(f"DEBUG_JUNCTION:   main_flow_rate: {main_flow_rate}")
+            print(f"DEBUG_JUNCTION:   main_cross_sectional_area: {main_cross_sectional_area}")
+            print(f"DEBUG_JUNCTION:   junction_type: {junction_type}")
+            print(f"DEBUG_JUNCTION:   branch_duct_shape: {branch_duct_shape}")
+            print(f"DEBUG_JUNCTION:   main_duct_shape: {main_duct_shape}")
+            print(f"DEBUG_JUNCTION:   radius: {radius}")
+            print(f"DEBUG_JUNCTION:   turbulence_present: {turbulence_present}")
         # Calculate equivalent diameters
         branch_equiv_diameter = self.calculate_equivalent_diameter(
             branch_cross_sectional_area, branch_duct_shape, branch_diameter)
@@ -370,12 +384,13 @@ class JunctionElbowNoiseCalculator:
             main_sound_power = self.calculate_main_duct_sound_power_level(
                 total_branch_sound_power, junction_type, main_equiv_diameter, branch_equiv_diameter)
             
-            # Store results
-            branch_spectrum[f"{frequency}Hz"] = total_branch_sound_power
-            main_spectrum[f"{frequency}Hz"] = main_sound_power
-        print("RETURNING FROM THE JUNCTION ELBOW GENERATED NOISE CALCULATIONS")
-        print(f"BRANCH SPECTRUM: {branch_spectrum}")
-        print(f"MAIN SPECTRUM: {main_spectrum}")
+            # Store results (convert numpy types to regular Python floats)
+            branch_spectrum[f"{frequency}Hz"] = float(total_branch_sound_power)
+            main_spectrum[f"{frequency}Hz"] = float(main_sound_power)
+        if debug_export_enabled:
+            print("RETURNING FROM THE JUNCTION ELBOW GENERATED NOISE CALCULATIONS")
+            print(f"BRANCH SPECTRUM: {branch_spectrum}")
+            print(f"MAIN SPECTRUM: {main_spectrum}")
         return {
             "branch_duct": branch_spectrum,
             "main_duct": main_spectrum,

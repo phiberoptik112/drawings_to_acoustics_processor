@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Tuple, Dict, List, Optional, Union, Any
 import warnings
+from .acoustic_utilities import AcousticConstants
 
 # Set up plotting style
 plt.style.use('seaborn-v0_8')
@@ -75,7 +76,7 @@ class CircularDuctCalculator:
         
     def _initialize_frequency_bands(self):
         """Initialize standard frequency bands."""
-        self.frequency_bands = [63, 125, 250, 500, 1000, 2000, 4000, 8000]
+        self.frequency_bands = AcousticConstants.FREQUENCY_BANDS.copy()
         
     def get_diameter_range(self, diameter: float) -> str:
         """
