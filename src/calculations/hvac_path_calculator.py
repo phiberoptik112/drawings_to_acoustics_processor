@@ -510,6 +510,7 @@ class HVACPathCalculator:
         # Always refetch the path with eager-loaded relationships to avoid
         # lazy-loading on detached instances coming from the UI layer.
         try:
+            original_obj = hvac_path
             path_id = getattr(hvac_path, 'id', None) if not isinstance(hvac_path, int) else int(hvac_path)
             if path_id is None:
                 raise ValueError("HVACPath id is required to build path data")
@@ -531,8 +532,15 @@ class HVACPathCalculator:
                 )
                 
                 if not hvac_path:
-                    return None
-                
+                    # Not visible in a new session (likely uncommitted). Build from provided objects.
+                    return self._build_path_data_fallback(original_obj)
+                # If new-session read shows no segments (likely not committed yet),
+                # fall back to building from the provided in-session objects.
+                try:
+                    if not hvac_path.segments or len(hvac_path.segments) == 0:
+                        return self._build_path_data_fallback(original_obj)
+                except Exception:
+                    pass
                 # Build all path data within the session context to avoid detached instances
                 return self._build_path_data_within_session(hvac_path, session)
                 
@@ -974,16 +982,96 @@ class HVACPathCalculator:
             return None
 
     def _build_path_data_fallback(self, hvac_path: HVACPath) -> Optional[Dict]:
-        """Fallback debug helper: log context and return None to force failure upstream."""
+        """Fallback builder that uses the provided ORM objects without a new session.
+
+        This path is used when the caller hasn't committed yet (e.g., inside an
+        open transaction), so a separate session can't see the new rows. We
+        carefully avoid DB queries here and rely only on the objects provided.
+        """
         try:
-            if self.debug_export_enabled:
-                print("DEBUG: Fallback invoked for path data build (objects may be detached). Collecting minimal debug info...")
+            if hvac_path is None:
+                return None
+            segments = list(getattr(hvac_path, 'segments', []) or [])
+            if not segments:
+                return None
+
+            # Best-effort ordering if segment_order is present
+            try:
+                segments = sorted(segments, key=lambda s: getattr(s, 'segment_order', 0) or 0)
+            except Exception:
+                pass
+
+            path_data = {
+                'source_component': {},
+                'terminal_component': {},
+                'segments': []
+            }
+
+            # Determine source component (prefer explicit, else first segment's from_component)
+            source_comp = getattr(hvac_path, 'primary_source', None)
+            if source_comp is None and segments:
                 try:
-                    seg_count = len(getattr(hvac_path, 'segments', []) or [])
-                    print(f"DEBUG: Fallback: segment count={seg_count}")
+                    source_comp = getattr(segments[0], 'from_component', None)
+                except Exception:
+                    source_comp = None
+
+            source_cfm = None
+            source_noise = None
+            source_type = None
+            if source_comp is not None:
+                source_cfm = getattr(source_comp, 'cfm', None)
+                source_noise = getattr(source_comp, 'noise_level', None)
+                source_type = getattr(source_comp, 'component_type', None)
+                # Passive inheritance of CFM from upstream if needed
+                try:
+                    passive_components = {'elbow','junction','tee','reducer','damper','silencer'}
+                    if (source_type or '').lower() in passive_components and (not source_cfm or source_cfm == 0):
+                        up = getattr(segments[0], 'from_component', None) if segments else None
+                        if up is not None and getattr(up, 'cfm', None):
+                            source_cfm = getattr(up, 'cfm', None)
                 except Exception:
                     pass
-            return None
+            # Reasonable fallbacks
+            if source_cfm is None:
+                try:
+                    from .hvac_constants import DEFAULT_CFM_FALLBACK as _DEFAULT_CFM
+                except Exception:
+                    _DEFAULT_CFM = 500.0
+                source_cfm = _DEFAULT_CFM
+            if source_noise is None:
+                source_noise = DEFAULT_COMPONENT_NOISE_LEVELS.get((source_type or '').lower(), 50.0)
+
+            path_data['source_component'] = {
+                'component_type': source_type or 'unit',
+                'noise_level': float(source_noise) if isinstance(source_noise, (int, float)) else 50.0,
+                'octave_band_levels': None,
+                'flow_rate': float(source_cfm) if isinstance(source_cfm, (int, float)) else 0.0,
+            }
+
+            # Terminal component: last segment's to_component
+            try:
+                last_seg = segments[-1]
+                term = getattr(last_seg, 'to_component', None)
+                if term is not None:
+                    path_data['terminal_component'] = {
+                        'component_type': getattr(term, 'component_type', None),
+                        'noise_level': getattr(term, 'noise_level', None)
+                    }
+            except Exception:
+                pass
+
+            # Build segments with propagated flow using object-level attributes only
+            try:
+                effective_origin = os.environ.get('HVAC_CALC_ORIGIN') or 'user'
+            except Exception:
+                effective_origin = 'user'
+            try:
+                effective_path_id = int(getattr(hvac_path, 'id', 0) or 0)
+            except Exception:
+                effective_path_id = 0
+            path_data['segments'] = self._build_segments_with_flow_propagation(segments, float(source_cfm or 0.0), effective_origin, effective_path_id)
+
+            return path_data
         except Exception:
             return None
 
@@ -1197,6 +1285,26 @@ class HVACPathCalculator:
             except Exception:
                 pass
         
+        # Propagate user selection for BRANCH_TAKEOFF_90, if any, from adjacent components
+        try:
+            branch_choice = None
+            if getattr(segment, 'from_component', None):
+                branch_choice = getattr(segment.from_component, 'branch_takeoff_choice', None) or branch_choice
+            if getattr(segment, 'to_component', None) and not branch_choice:
+                branch_choice = getattr(segment.to_component, 'branch_takeoff_choice', None) or branch_choice
+            if branch_choice:
+                segment_data['branch_takeoff_choice'] = str(branch_choice)
+        except Exception:
+            pass
+        
+        # Debug: log branch_takeoff_choice propagated from components
+        try:
+            if 'branch_takeoff_choice' in segment_data and segment_data['branch_takeoff_choice']:
+                if self.debug_export_enabled:
+                    print(f"DEBUG_BUILD_SEG:   branch_takeoff_choice propagated -> {segment_data['branch_takeoff_choice']}")
+        except Exception:
+            pass
+
         return segment_data
 
     def find_matching_mechanical_unit(self, component: 'HVACComponent', project_id: int) -> Optional['MechanicalUnit']:

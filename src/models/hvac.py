@@ -25,6 +25,10 @@ class HVACComponent(Base):
     # Acoustic properties
     noise_level = Column(Float)  # Base noise level in dB(A)
     cfm = Column(Float)  # Air flow rate in CFM
+    # Junction behavior preferences (component-level)
+    # For components acting as 90° branch takeoffs, allow user override of which
+    # junction spectrum to use in path calculations: 'auto' | 'main' | 'branch'
+    branch_takeoff_choice = Column(String(20))
     
     # Silencer-specific fields
     is_silencer = Column(Boolean, default=False)

@@ -141,6 +141,15 @@ class HVACComponentDialog(QDialog):
         
         acoustic_group.setLayout(acoustic_layout)
         layout.addWidget(acoustic_group)
+
+        # Junction Preferences (only shown for relevant component types)
+        self.junction_group = QGroupBox("Junction Preferences")
+        self.junction_layout = QFormLayout()
+        self.branch_takeoff_choice_combo = QComboBox()
+        self.branch_takeoff_choice_combo.addItems(["auto", "main_duct", "branch_duct"])
+        self.junction_layout.addRow("BRANCH_TAKEOFF_90 spectrum:", self.branch_takeoff_choice_combo)
+        self.junction_group.setLayout(self.junction_layout)
+        layout.addWidget(self.junction_group)
         
         # Component Details
         details_group = QGroupBox("Component Details")
@@ -388,6 +397,10 @@ class HVACComponentDialog(QDialog):
             # Update name suggestion
             if not self.name_edit.text():
                 self.name_edit.setText(f"{component_type.upper()}-1")
+        # Show the junction preferences only for branch/junction-like components
+        ctype = (component_type or '').lower()
+        show_junction = ('branch' in ctype) or ('junction' in ctype) or ('tee' in ctype)
+        self.junction_group.setVisible(show_junction)
     
     def on_use_standard_toggled(self, checked):
         """Handle use standard checkbox toggle"""
@@ -509,6 +522,16 @@ class HVACComponentDialog(QDialog):
             except Exception:
                 pass
             print("DEBUG[HVACComponentDialog]: Failed to restore Mechanical Unit preview:", e)
+
+        # Restore BRANCH_TAKEOFF_90 choice if present
+        try:
+            value = getattr(self.component, 'branch_takeoff_choice', None)
+            if value:
+                idx = self.branch_takeoff_choice_combo.findText(str(value))
+                if idx >= 0:
+                    self.branch_takeoff_choice_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
     
     def save_component(self):
         """Save the HVAC component using standardized session management"""
@@ -603,6 +626,11 @@ class HVACComponentDialog(QDialog):
         component.x_position = self.x_spin.value()
         component.y_position = self.y_spin.value()
         component.noise_level = self.noise_spin.value()
+        # Persist BRANCH_TAKEOFF_90 preference
+        try:
+            component.branch_takeoff_choice = self.branch_takeoff_choice_combo.currentText()
+        except Exception:
+            pass
         
         # Debug CFM save process
         cfm_value = self.cfm_spin.value()
@@ -629,7 +657,8 @@ class HVACComponentDialog(QDialog):
             x_position=self.x_spin.value(),
             y_position=self.y_spin.value(),
             noise_level=self.noise_spin.value(),
-            cfm=cfm_value
+            cfm=cfm_value,
+            branch_takeoff_choice=self.branch_takeoff_choice_combo.currentText()
         )
     
     def update_mechanical_unit_associations(self, component, session):

@@ -23,6 +23,9 @@ class SourceComponentBuilder:
         """Build source component data from HVACComponent"""
         
         # Enhanced debugging for source component
+        print("--------------------------------")
+        print("DEBUG_SOURCE: Building source component data from HVACComponent")
+        print("--------------------------------")
         print(f"DEBUG_SOURCE: Source component object:")
         print(f"DEBUG_SOURCE:   Type: {type(source_comp)}")
         print(f"DEBUG_SOURCE:   ID: {getattr(source_comp, 'id', 'None')}")
@@ -135,6 +138,9 @@ class SourceComponentBuilder:
         comp = first_segment.from_component
         
         # Enhanced debugging for fallback source component
+        print("--------------------------------")
+        print("DEBUG_FALLBACK: Building fallback source component data from HVACComponent")
+        print("--------------------------------")
         print(f"DEBUG_FALLBACK: Fallback source component object:")
         print(f"DEBUG_FALLBACK:   Type: {type(comp)}")
         print(f"DEBUG_FALLBACK:   ID: {getattr(comp, 'id', 'None')}")

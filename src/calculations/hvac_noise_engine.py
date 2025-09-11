@@ -67,6 +67,8 @@ class PathElement:
     octave_band_levels: Optional[List[float]] = None  # 8-band spectrum
     # Optional fitting subtype hint (e.g., 'elbow_90', 'tee_branch', 'x_junction')
     fitting_type: Optional[str] = None
+    # Optional override for BRANCH_TAKEOFF_90 spectrum choice: 'auto' | 'main_duct' | 'branch_duct'
+    branch_takeoff_choice: Optional[str] = None
 
 
 @dataclass
@@ -389,10 +391,10 @@ class HVACNoiseEngine:
                         branch_velocity_ft_s = branch_flow / (branch_area * 60) if branch_area > 0 else 0
                         main_velocity_ft_s = main_flow / (main_area * 60) if main_area > 0 else 0
 
-                        if debug_export_enabled:
-                            print(f"DEBUG_ENGINE:     Velocity calculations:")
-                            print(f"DEBUG_ENGINE:       Branch velocity: {branch_velocity_ft_s:.3f} ft/s")
-                            print(f"DEBUG_ENGINE:       Main velocity: {main_velocity_ft_s:.3f} ft/s")
+
+                        print(f"DEBUG_ENGINE:     Velocity calculations:")
+                        print(f"DEBUG_ENGINE:       Branch velocity: {branch_velocity_ft_s:.3f} ft/s")
+                        print(f"DEBUG_ENGINE:       Main velocity: {main_velocity_ft_s:.3f} ft/s")
 
                         # Calculate spectra using contextual flows/areas
                         spectrum_data = self.junction_calc.calculate_junction_noise_spectrum(
@@ -402,16 +404,36 @@ class HVACNoiseEngine:
                             main_cross_sectional_area=max(main_area, 1e-6),
                             junction_type=jtype
                         )
-
-                        # Decide if path follows branch (downstream smaller than upstream)
-                        follows_branch = (downstream_flow > 0 and upstream_flow > 0 and downstream_flow < upstream_flow)
-                        chosen = spectrum_data.get('branch_duct' if follows_branch else 'main_duct') or {}
-
+                        print("--------------------------------")
+                        print(f"DEBUG_ENGINE:   JUNCTION CALCULATOR RETURNED DATA: {spectrum_data}")
+                        print("--------------------------------")
+                        # Decide spectrum based on user override first, then auto heuristic
+                        override = None
+                        try:
+                            # PathElement may carry a hint via fitting_type or extra attribute on upstream element
+                            override = getattr(element, 'branch_takeoff_choice', None)
+                            if not override and isinstance(last_element_with_geometry, PathElement):
+                                override = getattr(last_element_with_geometry, 'branch_takeoff_choice', None)
+                        except Exception:
+                            override = None
                         if debug_export_enabled:
+                            try:
+                                print(f"DEBUG_ENGINE:     Junction override preference detected: {override}")
+                            except Exception:
+                                pass
+                        if (jtype == JunctionType.BRANCH_TAKEOFF_90) and override and str(override).lower() in {'main', 'main_duct'}:
+                            which = 'main_duct'
+                        elif (jtype == JunctionType.BRANCH_TAKEOFF_90) and override and str(override).lower() in {'branch', 'branch_duct'}:
+                            which = 'branch_duct'
+                        else:
+                            # Auto: path follows branch when downstream flow is smaller than upstream
+                            follows_branch = (downstream_flow > 0 and upstream_flow > 0 and downstream_flow < upstream_flow)
                             which = 'branch_duct' if follows_branch else 'main_duct'
-                            params = spectrum_data.get('parameters', {})
-                            print(f"DEBUG_ENGINE:     Junction spectra computed. Using '{which}' spectrum")
-                            print(f"DEBUG_ENGINE:     Calc params: vel_ratio={params.get('velocity_ratio', 0):.3f}, main_vel={params.get('main_velocity_ft_s', 0):.3f} ft/s, branch_vel={params.get('branch_velocity_ft_s', 0):.3f} ft/s")
+                        chosen = spectrum_data.get(which) or {}
+
+                        params = spectrum_data.get('parameters', {})
+                        print(f"DEBUG_ENGINE:     Junction spectra computed. Using '{which}' spectrum")
+                        print(f"DEBUG_ENGINE:     Calc params: vel_ratio={params.get('velocity_ratio', 0):.3f}, main_vel={params.get('main_velocity_ft_s', 0):.3f} ft/s, branch_vel={params.get('branch_velocity_ft_s', 0):.3f} ft/s")
 
                         element_result = {
                             'attenuation_spectrum': None,
@@ -434,7 +456,9 @@ class HVACNoiseEngine:
                         element_result = self._calculate_element_effect(element, current_spectrum, current_dba)
                 else:
                     element_result = self._calculate_element_effect(element, current_spectrum, current_dba)
-                
+                    print(f"DEBUG_ENGINE:   Element result: {element_result}")
+                    print("FALLBACK CONDITION MET - PATH NOISE")
+                    print("--------------------------------")
                 if debug_export_enabled:
                     att_dba = element_result.get('attenuation_dba') or 0.0
                     gen_dba = element_result.get('generated_dba') or 0.0
@@ -1530,8 +1554,14 @@ class HVACNoiseEngine:
                 num_vanes=segment.get('num_vanes', 0),
                 room_volume=segment.get('room_volume', 0.0),
                 room_absorption=segment.get('room_absorption', 0.0),
-                fitting_type=segment.get('fitting_type')
+                fitting_type=segment.get('fitting_type'),
+                branch_takeoff_choice=segment.get('branch_takeoff_choice')
             )
+            if debug_export_enabled and element.branch_takeoff_choice:
+                try:
+                    print(f"DEBUG_HNE_LEGACY:   PathElement {i+1} branch_takeoff_choice={element.branch_takeoff_choice}")
+                except Exception:
+                    pass
             
             if debug_export_enabled:
                 print(f"DEBUG_HNE_LEGACY:   Created PathElement {i+1}:")
