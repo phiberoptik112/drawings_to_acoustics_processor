@@ -1741,6 +1741,9 @@ class DrawingInterface(QMainWindow):
             
             for hvac_path in hvac_paths:
                 # Build path data from database
+                print("--------------------------------")
+                print("DEBUG_UI: Building path data from database - inside drawing interface and proceeding to build path data from db")
+                print("--------------------------------")
                 path_data = self.build_path_data_from_db(hvac_path)
                 
                 if path_data:
@@ -1853,64 +1856,14 @@ class DrawingInterface(QMainWindow):
         msg_box.exec()
     
     def build_path_data_from_db(self, hvac_path) -> dict:
-        """Build path data structure from database HVAC path"""
+        """DEPRECATED UI helper.
+        Delegates to HVACPathCalculator.build_path_data_from_db to avoid duplication.
+        """
         try:
-            path_data = {
-                'source_component': {},
-                'terminal_component': {},
-                'segments': []
-            }
-            
-            segments = hvac_path.segments
-            if not segments:
-                return None
-            
-            # Get source and terminal components
-            first_segment = segments[0]
-            last_segment = segments[-1]
-            
-            if first_segment.from_component:
-                comp = first_segment.from_component
-                path_data['source_component'] = {
-                    'component_type': comp.component_type,
-                    'noise_level': comp.noise_level or STANDARD_COMPONENTS.get(comp.component_type, {}).get('noise_level', 50.0)
-                }
-            
-            if last_segment.to_component:
-                comp = last_segment.to_component
-                path_data['terminal_component'] = {
-                    'component_type': comp.component_type,
-                    'noise_level': comp.noise_level or STANDARD_COMPONENTS.get(comp.component_type, {}).get('noise_level', 25.0)
-                }
-            
-            # Convert segments
-            for segment in segments:
-                segment_data = {
-                    'length': segment.length or 0,
-                    'duct_width': segment.duct_width or 12,
-                    'duct_height': segment.duct_height or 8,
-                    'diameter': getattr(segment, 'diameter', 0) or 0,
-                    'duct_shape': segment.duct_shape or 'rectangular',
-                    'duct_type': segment.duct_type or 'sheet_metal',
-                    'insulation': segment.insulation,
-                    'lining_thickness': getattr(segment, 'lining_thickness', 0) or 0,
-                    'fittings': []
-                }
-                
-                # Add fittings if any
-                for fitting in segment.fittings:
-                    fitting_data = {
-                        'fitting_type': fitting.fitting_type,
-                        'noise_adjustment': fitting.noise_adjustment or 0
-                    }
-                    segment_data['fittings'].append(fitting_data)
-                
-                path_data['segments'].append(segment_data)
-            
-            return path_data
-            
+            # Single source of truth lives in HVACPathCalculator
+            return self.hvac_path_calculator.build_path_data_from_db(hvac_path)
         except Exception as e:
-            print(f"Error building path data: {e}")
+            print(f"Error building path data (delegated): {e}")
             return None
     
     def analyze_nc_compliance(self):

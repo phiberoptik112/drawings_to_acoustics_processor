@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Default to enabling HVAC debug export unless already set by caller
 export HVAC_DEBUG_EXPORT="${HVAC_DEBUG_EXPORT:-1}"
-
+export HVAC_USE_PATH_DATA_BUILDER="${HVAC_USE_PATH_DATA_BUILDER:-1}"
 # Activate virtual environment if present
 VENV_ACTIVATE="${SCRIPT_DIR}/.venv/bin/activate"
 if [[ -f "${VENV_ACTIVATE}" ]]; then

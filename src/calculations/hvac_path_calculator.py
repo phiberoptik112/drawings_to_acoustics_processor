@@ -312,7 +312,9 @@ class HVACPathCalculator:
                 print(f"\n===== [PATH CALCULATOR] START | origin={origin} | path_id={path_id} =====")
         except Exception:
             pass
-        
+        print('-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-')
+        print("DEBUG_PATH_CALCULATOR: Starting NEW path noise calculation")
+        print("-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-")
         # Pre-calculation validation
         validation_framework = HVACValidationFramework(self.project_id)
         
@@ -323,12 +325,12 @@ class HVACPathCalculator:
                 if path:
                     validation_result = validation_framework.validate_path(path)
                     
-                    if self.debug_export_enabled:
-                        print(f"DEBUG: Pre-calculation validation - Valid: {validation_result.is_valid}")
-                        if validation_result.errors:
-                            print(f"DEBUG: Validation errors: {validation_result.errors}")
-                        if validation_result.warnings:
-                            print(f"DEBUG: Validation warnings: {validation_result.warnings}")
+
+                    print(f"DEBUG: Pre-calculation validation - Valid: {validation_result.is_valid}")
+                    if validation_result.errors:
+                        print(f"DEBUG: Validation errors: {validation_result.errors}")
+                    if validation_result.warnings:
+                        print(f"DEBUG: Validation warnings: {validation_result.warnings}")
                     
                     # Log validation issues but don't stop calculation unless critical
                     if not validation_result.is_valid and any("None" in error or "must have" in error for error in validation_result.errors):
@@ -355,6 +357,9 @@ class HVACPathCalculator:
             except Exception:
                 pass
             try:
+                print("--------------------------------")
+                print("DEBUG_PATH_CALCULATOR: Building path data from database")
+                print("--------------------------------")
                 path_data = self.build_path_data_from_db(hvac_path)
             finally:
                 try:
@@ -555,7 +560,47 @@ class HVACPathCalculator:
     def _build_path_data_within_session(self, hvac_path: HVACPath, session) -> Optional[Dict]:
         """Build path data within an active database session to avoid detached instances"""
         print(f"DEBUG_LEGACY: _build_path_data_within_session called for path {getattr(hvac_path, 'id', 'unknown')}")
-        print(f"DEBUG_LEGACY: This is the OLD method - PathDataBuilder is NOT being used!")
+        # Feature flag to use PathDataBuilder instead of legacy method
+        try:
+            import os as _os
+            use_pdb = bool(_os.environ.get('HVAC_USE_PATH_DATA_BUILDER'))
+        except Exception:
+            use_pdb = False
+        if use_pdb:
+            try:
+                from .path_data_builder import PathDataBuilder
+                # Wire dependencies
+                segment_builder = self._build_segment_data
+                mechanical_unit_finder = self.find_matching_mechanical_unit
+                pdb = PathDataBuilder(self.debug_logger, segment_builder, mechanical_unit_finder)
+                # Build ordered segments first using existing ordering logic
+                segments = hvac_path.segments
+                print(f"DEBUG_PDB: Number of segments: {len(segments) if segments else 0}")
+                try:
+                    preferred_source_id = getattr(hvac_path, 'primary_source_id', None)
+                    segments = self.order_segments_for_path(list(segments), preferred_source_id)
+                except Exception as _e:
+                    if self.debug_export_enabled:
+                        print(f"DEBUG_PDB: Using stored segment order; connectivity ordering failed: {_e}")
+                # Validation framework for range checks
+                try:
+                    from src.calculations.hvac_validation import HVACValidationFramework
+                    validation_framework = HVACValidationFramework(self.project_id)
+                except Exception:
+                    validation_framework = None
+                path_data = pdb.build_path_data(hvac_path, segments, validation_framework, session)
+                if path_data is not None:
+                    # Enhanced debug export
+                    if self.debug_export_enabled:
+                        self._export_enhanced_debug_data(hvac_path, path_data)
+                    print(f"DEBUG_PDB: PathDataBuilder successfully built path data")
+                    return path_data
+                else:
+                    print(f"DEBUG_PDB: PathDataBuilder returned None — falling back to legacy method")
+            except Exception as _e:
+                print(f"DEBUG_PDB: PathDataBuilder failed with error: {_e}; falling back to legacy method")
+        else:
+            print(f"DEBUG_LEGACY: This is the OLD method - PathDataBuilder is NOT being used!")
         
         try:
             from models.mechanical import MechanicalUnit
@@ -1182,7 +1227,7 @@ class HVACPathCalculator:
                 height_ft = (segment_data['duct_height'] or 0.0) / 12.0
                 area_ft2 = max(0.0, width_ft * height_ft)
             else:
-                diameter_in = segment_data.get('diameter', 0.0) or 0.0
+                diameter_in = segment_data.get('diameter', 0.0) or 1.0
                 radius_ft = (diameter_in / 2.0) / 12.0
                 area_ft2 = max(0.0, 3.141592653589793 * radius_ft * radius_ft)
             
@@ -1245,6 +1290,7 @@ class HVACPathCalculator:
 
         # Derive fitting type
         fitting_types = [f.get('fitting_type', '') for f in segment_data['fittings']]
+        print(f"DEBUG_BUILD_SEG: Fitting types: {fitting_types}")
         inferred_type = None
         specific_type = None
         for ft in fitting_types:
@@ -1255,7 +1301,7 @@ class HVACPathCalculator:
                 inferred_type = 'elbow'
             if 'tee' in lower_ft or 'junction' in lower_ft:
                 inferred_type = inferred_type or 'junction'
-        
+        print(f"DEBUG_BUILD_SEG: Inferred type: {inferred_type}")
         if specific_type:
             segment_data['fitting_type'] = specific_type
         elif inferred_type:
@@ -1288,10 +1334,13 @@ class HVACPathCalculator:
         # Propagate user selection for BRANCH_TAKEOFF_90, if any, from adjacent components
         try:
             branch_choice = None
+            print(f"DEBUG_BUILD_SEG: Branch choice: {branch_choice}")
             if getattr(segment, 'from_component', None):
                 branch_choice = getattr(segment.from_component, 'branch_takeoff_choice', None) or branch_choice
+            print(f"DEBUG_BUILD_SEG: Branch choice: {branch_choice}")
             if getattr(segment, 'to_component', None) and not branch_choice:
                 branch_choice = getattr(segment.to_component, 'branch_takeoff_choice', None) or branch_choice
+            print(f"DEBUG_BUILD_SEG: Branch choice: {branch_choice}")
             if branch_choice:
                 segment_data['branch_takeoff_choice'] = str(branch_choice)
         except Exception:
@@ -1301,6 +1350,7 @@ class HVACPathCalculator:
         try:
             if 'branch_takeoff_choice' in segment_data and segment_data['branch_takeoff_choice']:
                 if self.debug_export_enabled:
+                    print(f"DEBUG_BUILD_SEG: Branch choice: {branch_choice}")
                     print(f"DEBUG_BUILD_SEG:   branch_takeoff_choice propagated -> {segment_data['branch_takeoff_choice']}")
         except Exception:
             pass

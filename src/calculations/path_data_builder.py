@@ -276,9 +276,9 @@ class PathValidator:
         
         if not valid_bands:
             self.debug_logger.warning('PathBuilder', 
-                "Source missing valid octave band spectrum", 
+                "Source missing valid octave band spectrum — proceeding; engine will estimate spectrum from dBA if available",
                 {'source_component': source_component})
-            return False
+            return True
         
         return True
     
@@ -327,11 +327,93 @@ class SegmentProcessor:
     def process_segments(self, segments: List[HVACSegment]) -> List[Dict]:
         """Process all segments and return segment data list"""
         segment_data_list = []
-        
+        print("--------------------------------")
+        print("DEBUG_PATH_BUILDER: Processing segments")
+        print("--------------------------------")
         for segment in segments:
             try:
+                print("--------------------------------")
+                print("DEBUG_PATH_BUILDER: Building segment data")
+                print("--------------------------------")
                 segment_data = self.build_segment_data(segment)
+                print(f"DEBUG_PATH_BUILDER: Segment data: {segment_data}")
                 segment_data_list.append(segment_data)
+
+                # Insert standalone junction element when fitting indicates tee/branch/cross
+                try:
+                    def _tokenize(ft: str):
+                        import re as _re
+                        toks = _re.findall(r"[a-z0-9_]+", (ft or '').lower())
+                        return toks, set(toks)
+
+                    def _is_junction_like(ft: str) -> bool:
+                        toks, tset = _tokenize(ft)
+                        has_elbow = 'elbow' in tset or any('elbow' in t for t in toks)
+                        has_tee_like = ('tee' in tset) or any('tee' in t for t in toks) or ('t_junction' in tset)
+                        has_branch = ('branch' in tset) or any('branch' in t for t in toks)
+                        has_cross = ('cross' in tset) or any('cross' in t for t in toks) or ('x' in tset and 'junction' in tset)
+                        has_junction_word = ('junction' in tset) or any('junction' in t for t in toks)
+                        return (has_junction_word or has_tee_like or has_branch or has_cross) and not has_elbow
+
+                    inserted_any = False
+                    inserted_fittings: set = set()
+                    # 1) Check top-level fitting_type
+                    print(f"DEBUG_PATH_BUILDER: Top fitting type: {segment_data.get('fitting_type')}")
+                    top_ft = (segment_data.get('fitting_type') or '')
+                    if _is_junction_like(top_ft):
+                        norm_top = (top_ft or '').strip().lower()
+                        if norm_top in inserted_fittings:
+                            print(f"DEBUG_PATH_BUILDER: Skipping duplicate junction insertion (top-level): {norm_top}")
+                        else:
+                            junction_element = {
+                                'element_type': 'junction',
+                                'fitting_type': top_ft,
+                                'flow_rate': segment_data.get('flow_rate', 0.0),
+                                'length': 0.0,
+                                'duct_width': 0.0,
+                                'duct_height': 0.0,
+                                'diameter': 0.0,
+                            }
+                            btc = segment_data.get('branch_takeoff_choice')
+                            if btc is not None:
+                                junction_element['branch_takeoff_choice'] = btc
+                            print(f"DEBUG_PATH_BUILDER: Inserted standalone junction element (top-level) after segment: fitting_type={top_ft}, flow_rate={junction_element['flow_rate']}")
+                            segment_data_list.append(junction_element)
+                            inserted_any = True
+                            inserted_fittings.add(norm_top)
+
+                    # 2) Also scan nested fittings array
+                    for f in (segment_data.get('fittings') or []):
+                        ft = (f.get('fitting_type') or '') if isinstance(f, dict) else ''
+                        if _is_junction_like(ft):
+                            norm_ft = (ft or '').strip().lower()
+                            if norm_ft in inserted_fittings:
+                                print(f"DEBUG_PATH_BUILDER: Skipping duplicate junction insertion (nested): {norm_ft}")
+                                continue
+                            junction_element = {
+                                'element_type': 'junction',
+                                'fitting_type': ft,
+                                'flow_rate': segment_data.get('flow_rate', 0.0),
+                                'length': 0.0,
+                                'duct_width': 0.0,
+                                'duct_height': 0.0,
+                                'diameter': 0.0,
+                            }
+                            # Prefer explicit branch_takeoff_choice on segment; otherwise none
+                            btc = segment_data.get('branch_takeoff_choice')
+                            if btc is not None:
+                                junction_element['branch_takeoff_choice'] = btc
+                            print(f"DEBUG_PATH_BUILDER: Inserted standalone junction element (nested) after segment: fitting_type={ft}, flow_rate={junction_element['flow_rate']}")
+                            segment_data_list.append(junction_element)
+                            inserted_any = True
+                            inserted_fittings.add(norm_ft)
+
+                    if not inserted_any:
+                        tokens_dbg, _ = _tokenize(top_ft)
+                        print(f"DEBUG_PATH_BUILDER: No junction insertion for segment; tokens={tokens_dbg}, top_ft={top_ft}")
+                except Exception as _e:
+                    # Non-fatal: continue without junction insertion
+                    print(f"DEBUG_PATH_BUILDER: Junction insertion skipped due to error: {_e}")
             except Exception as e:
                 self.debug_logger.error('PathBuilder', 
                     f"Failed to process segment {getattr(segment, 'id', 'unknown')}", 
@@ -372,14 +454,18 @@ class PathDataBuilder:
             'segments': [],
             'terminal_component': {}
         }
+        print("--------------------------------")
+        print("DEBUG_PATH_BUILDER: Building path data")
+        print("--------------------------------")
         
         # Step 1: Build source component data
+        print("going into _build_source_component")
         source_data = self._build_source_component(hvac_path, segments, session)
+        print(f"DEBUG_PATH_BUILDER: Source data: {source_data}")
         if not source_data:
             self.debug_logger.error('PathBuilder', 
                 "Failed to build source component data")
             return None
-        
         path_data['source_component'] = source_data
         
         # Step 2: Validate source spectrum
@@ -388,6 +474,16 @@ class PathDataBuilder:
         
         # Step 3: Process segments
         segment_data_list = self.segment_processor.process_segments(segments)
+        # Pipeline visibility for segment ordering and types
+        try:
+            print("NOISE_PIPELINE: Emitted path elements (order):")
+            for idx, seg in enumerate(segment_data_list):
+                et = (seg.get('element_type') or 'duct') if isinstance(seg, dict) else 'duct'
+                ft = (seg.get('fitting_type') or '-') if isinstance(seg, dict) else '-'
+                fr = (seg.get('flow_rate') or 0.0) if isinstance(seg, dict) else 0.0
+                print(f"  [{idx}] type={et}, fitting={ft}, flow_rate={fr}")
+        except Exception:
+            pass
         path_data['segments'] = segment_data_list
         
         # Step 4: Build terminal component (if exists)
@@ -413,13 +509,59 @@ class PathDataBuilder:
                                session: Session) -> Optional[Dict]:
         """Build source component data with fallback strategies"""
         print(f"DEBUG_SOURCE_BUILD: Building source component for path {getattr(hvac_path, 'id', 'unknown')}")
-        
+        print("--------------------------------")
+        print("DEBUG_SOURCE_BUILD: Building source component")
+        print("--------------------------------")
+        # Keep a candidate source to use as last resort if equipment strategies fail
+        src_candidate: Optional[Dict[str, Any]] = None
         # Strategy 1: Use explicit primary_source
+        print("going into hvac_path to retrieve primary_source")
         source_comp = getattr(hvac_path, 'primary_source', None)
         print(f"DEBUG_SOURCE_BUILD: Strategy 1 - primary_source: {source_comp}")
         if source_comp:
+            # Validate component type as equipment-like; otherwise prefer MU/segment strategies
+            comp_type = (getattr(source_comp, 'component_type', None) or '').lower()
+            allowed_equipment_types = {
+                'fan', 'ahu', 'equipment', 'unit', 'rtu', 'vav', 'fcu', 'silencer', 'mechanical_unit'
+            }
+            is_equipment_like = comp_type in allowed_equipment_types
             print(f"DEBUG_SOURCE_BUILD: Using Strategy 1 - primary_source")
-            return self.source_builder.build_source_from_component(source_comp, hvac_path, session)
+            src = self.source_builder.build_source_from_component(source_comp, hvac_path, session)
+            bands = (src or {}).get('octave_band_levels')
+            if bands and isinstance(bands, list) and len(bands) == NUM_OCTAVE_BANDS:
+                return src
+            if not is_equipment_like:
+                try:
+                    self.debug_logger.warning('PathBuilder',
+                        "Primary source is non-equipment type; deferring to MU/segment strategies",
+                        {'component_id': getattr(source_comp, 'id', None), 'component_type': comp_type})
+                except Exception:
+                    pass
+            # Try to enrich via first segment's from_component Mechanical Unit (legacy parity)
+            # Try to enrich via first segment's from_component Mechanical Unit (legacy parity)
+            try:
+                if segments:
+                    first_seg = segments[0]
+                    from_comp = getattr(first_seg, 'from_component', None)
+                else:
+                    from_comp = None
+                if from_comp is not None:
+                    unit = self.source_builder.find_mechanical_unit(from_comp, getattr(hvac_path, 'project_id', None))
+                    if unit:
+                        octave_bands = self.source_builder._extract_unit_spectrum(unit)
+                        if octave_bands:
+                            # preserve flow_rate from existing src
+                            src = src or {}
+                            src['octave_band_levels'] = octave_bands
+                            print("DEBUG_SOURCE_BUILD: Enriched primary_source from first segment MU bands")
+                            return src
+            except Exception as _e:
+                print(f"DEBUG_SOURCE_BUILD: MU enrichment from first segment failed: {_e}")
+            # For equipment-like components, accept as source; otherwise keep as candidate and try Strategy 2/3
+            if is_equipment_like:
+                return src
+            else:
+                src_candidate = src
         
         # Strategy 2: Use linked mechanical unit
         primary_source_id = getattr(hvac_path, 'primary_source_id', None)
@@ -438,6 +580,24 @@ class PathDataBuilder:
         print(f"DEBUG_SOURCE_BUILD: Number of segments: {len(segments) if segments else 0}")
         if segments:
             print(f"DEBUG_SOURCE_BUILD: First segment from_component: {getattr(segments[0], 'from_component', None)}")
+            # Try to map first segment's from_component to a Mechanical Unit first
+            try:
+                from_comp = getattr(segments[0], 'from_component', None)
+                if from_comp is not None:
+                    unit = self.source_builder.find_mechanical_unit(from_comp, getattr(hvac_path, 'project_id', None))
+                else:
+                    unit = None
+                if unit:
+                    print("DEBUG_SOURCE_BUILD: Strategy 3 - found Mechanical Unit for first segment from_component")
+                    return self.source_builder.build_source_from_mechanical_unit(unit)
+            except Exception as _e:
+                try:
+                    self.debug_logger.warning('PathBuilder',
+                        'Strategy 3 MU lookup failed; falling back to component source',
+                        {'error': str(_e)})
+                except Exception:
+                    pass
+            # Fallback to using the component directly
             fallback_source = self.source_builder.build_fallback_source(segments[0])
             if fallback_source:
                 print(f"DEBUG_SOURCE_BUILD: Using Strategy 3 - fallback source")
@@ -446,6 +606,15 @@ class PathDataBuilder:
         print(f"DEBUG_SOURCE_BUILD: No valid source component found")
         self.debug_logger.error('PathBuilder', 
             "No valid source component found")
+        # As a last resort, return the Strategy 1 candidate if available
+        if src_candidate:
+            try:
+                self.debug_logger.warning('PathBuilder',
+                    'Returning non-equipment primary source as last resort',
+                    {'component_id': getattr(source_comp, 'id', None), 'component_type': comp_type})
+            except Exception:
+                pass
+            return src_candidate
         return None
     
     def _build_terminal_component(self, hvac_path: HVACPath) -> Optional[Dict]:

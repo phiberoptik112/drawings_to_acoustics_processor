@@ -223,6 +223,7 @@ class HVACNoiseEngine:
                         {'spectrum': current_spectrum, 'dba': current_dba})
                     if debug_export_enabled:
                         print(f"DEBUG_ENGINE: Source from spectrum - dBA={current_dba}, spectrum={current_spectrum}")
+                        print(f"NOISE_PIPELINE: Seed -> dBA={current_dba:.1f}")
                 else:
                     # Estimate spectrum from A-weighted level
                     current_spectrum = self._estimate_spectrum_from_dba(source_element.source_noise_level)
@@ -232,6 +233,7 @@ class HVACNoiseEngine:
                         {'input_dba': current_dba, 'estimated_spectrum': current_spectrum})
                     if debug_export_enabled:
                         print(f"DEBUG_ENGINE: Source estimated - dBA={current_dba}, spectrum={current_spectrum}")
+                        print(f"NOISE_PIPELINE: Seed (estimated) -> dBA={current_dba:.1f}")
 
             # Add a pseudo element result for the Source so UI numbering starts at 1
             try:
@@ -314,6 +316,11 @@ class HVACNoiseEngine:
                 if element.element_type == 'junction':
                     try:
                         # Determine upstream and downstream flows
+                        print("--------------------------------")
+                        print("DEBUG_ENGINE:     Junction context:")
+                        print(f"DEBUG_ENGINE:       Last flow rate: {last_flow_rate:.1f} CFM")
+                        print(f"DEBUG_ENGINE:       Element flow rate: {element.flow_rate:.1f} CFM")
+                        print("--------------------------------")
                         upstream_flow = last_flow_rate or (element.flow_rate or 0.0)
                         # Find next geometric element (skip terminal)
                         next_elem: Optional[PathElement] = None
@@ -331,9 +338,12 @@ class HVACNoiseEngine:
                             # For branch takeoff: main continues with reduced flow, branch takes smaller flow
                             if upstream_flow > downstream_flow:
                                 main_flow = upstream_flow - downstream_flow  # Continuing main duct flow
+                                print("MAIN FLOW SELECTED")
+                                print(f"DEBUG_ENGINE:     Main flow: {main_flow:.1f} CFM")
                                 branch_flow = downstream_flow  # Branch takeoff flow
                             else:
                                 main_flow = upstream_flow
+                                print(f"DEBUG_ENGINE:     Main flow: {main_flow:.1f} CFM")
                                 branch_flow = downstream_flow
                         elif len(flows) == 1:
                             main_flow = flows[0]
@@ -426,29 +436,77 @@ class HVACNoiseEngine:
                         elif (jtype == JunctionType.BRANCH_TAKEOFF_90) and override and str(override).lower() in {'branch', 'branch_duct'}:
                             which = 'branch_duct'
                         else:
-                            # Auto: path follows branch when downstream flow is smaller than upstream
+                            # Auto selection with tie-breakers for BRANCH_TAKEOFF_90
+                            # Primary rule: branch if downstream flow is smaller than upstream
                             follows_branch = (downstream_flow > 0 and upstream_flow > 0 and downstream_flow < upstream_flow)
                             which = 'branch_duct' if follows_branch else 'main_duct'
+                            # Tie-breaker: if flows are approximately equal, prefer branch when branch area is smaller or branch velocity is higher
+                            if jtype == JunctionType.BRANCH_TAKEOFF_90 and upstream_flow > 0 and downstream_flow > 0:
+                                flow_ratio = downstream_flow / upstream_flow if upstream_flow > 0 else 1.0
+                                approx_equal = 0.9 <= flow_ratio <= 1.1
+                                try:
+                                    if approx_equal:
+                                        # Use geometric/velocity cues to infer branch takeoff
+                                        prefer_branch = False
+                                        try:
+                                            prefer_branch = (branch_area > 0 and main_area > 0 and branch_area < main_area)
+                                        except Exception:
+                                            pass
+                                        try:
+                                            prefer_branch = prefer_branch or (branch_velocity_ft_s > 0 and main_velocity_ft_s > 0 and branch_velocity_ft_s >= main_velocity_ft_s)
+                                        except Exception:
+                                            pass
+                                        if prefer_branch:
+                                            which = 'branch_duct'
+                                except Exception:
+                                    pass
                         chosen = spectrum_data.get(which) or {}
 
                         params = spectrum_data.get('parameters', {})
                         print(f"DEBUG_ENGINE:     Junction spectra computed. Using '{which}' spectrum")
                         print(f"DEBUG_ENGINE:     Calc params: vel_ratio={params.get('velocity_ratio', 0):.3f}, main_vel={params.get('main_velocity_ft_s', 0):.3f} ft/s, branch_vel={params.get('branch_velocity_ft_s', 0):.3f} ft/s")
+                        try:
+                            print(f"DEBUG_ENGINE:     Tie-break info: upstream={upstream_flow:.1f} CFM, downstream={downstream_flow:.1f} CFM, main_area={main_area:.3f} ft^2, branch_area={branch_area:.3f} ft^2, main_vel={main_velocity_ft_s:.3f} ft/s, branch_vel={branch_velocity_ft_s:.3f} ft/s")
+                        except Exception:
+                            pass
 
+                        # Treat junction results as generated noise (not insertion loss)
                         element_result = {
-                            'attenuation_spectrum': None,
+                            'attenuation_spectrum': [0.0] * NUM_OCTAVE_BANDS,
                             'generated_spectrum': [0.0] * NUM_OCTAVE_BANDS,
-                            'attenuation_dba': None,
+                            'attenuation_dba': 0.0,
                             'generated_dba': 0.0
                         }
+                        # Convert chosen spectrum to generated noise levels
+                        # Junction calculator returns sound power levels in dB (can be negative for very low levels)
+                        # These represent generated noise, not insertion loss
+                        # Only include generated noise if it's above a reasonable threshold
+                        MIN_GENERATED_NOISE_THRESHOLD = -40.0  # dB - ignore very low generated noise
                         for k, freq in enumerate(self.FREQUENCY_BANDS):
                             key = f"{freq}Hz"
                             if key in chosen:
-                                element_result['generated_spectrum'][k] = float(chosen[key])
+                                val = float(chosen[key])
+                                # Only include generated noise if it's above threshold
+                                if val > MIN_GENERATED_NOISE_THRESHOLD:
+                                    # Convert sound power level to generated noise level
+                                    # Add offset to convert to reasonable noise levels for combination
+                                    generated_noise = val + 50.0  # Offset to make values reasonable for noise combination
+                                    element_result['generated_spectrum'][k] = max(0.0, generated_noise)
+                                else:
+                                    element_result['generated_spectrum'][k] = 0.0
                         element_result['generated_dba'] = self._calculate_dba_from_spectrum(element_result['generated_spectrum'])
 
                         if debug_export_enabled:
-                            print(f"DEBUG_ENGINE:     Junction generated_dba={element_result['generated_dba']:.2f}")
+                            print(f"DEBUG_ENGINE:     Junction generated noise A-weighted={element_result['generated_dba']:.2f} dB")
+                            try:
+                                gen_vals = element_result['generated_spectrum']
+                                if isinstance(gen_vals, list) and gen_vals:
+                                    gen_min = min(gen_vals)
+                                    gen_max = max(gen_vals)
+                                    gen_avg = sum(gen_vals) / len(gen_vals)
+                                    print(f"DEBUG_ENGINE:     Generated noise stats: min={gen_min:.1f} dB, max={gen_max:.1f} dB, avg={gen_avg:.1f} dB")
+                            except Exception:
+                                pass
                     except Exception as _e:
                         # Fallback to legacy per-element calculation on any failure
                         if debug_export_enabled:
@@ -524,18 +582,13 @@ class HVACNoiseEngine:
                         for j in range(min(NUM_OCTAVE_BANDS, len(generated_spectrum))):
                             if (j < len(generated_spectrum) and 
                                 generated_spectrum[j] is not None and 
-                                generated_spectrum[j] != 0):
+                                generated_spectrum[j] > 0):
                                 old_level = current_spectrum[j]
-                                if generated_spectrum[j] > 0:
-                                    # Positive generated noise - add to existing spectrum
-                                    current_spectrum[j] = self._combine_noise_levels(
-                                        current_spectrum[j], generated_spectrum[j]
-                                    )
-                                    operation = "+"
-                                else:
-                                    # Negative generated noise - subtract from existing spectrum (attenuation)
-                                    current_spectrum[j] = max(0.0, current_spectrum[j] + generated_spectrum[j])
-                                    operation = "+"
+                                # Positive generated noise - add to existing spectrum
+                                current_spectrum[j] = self._combine_noise_levels(
+                                    current_spectrum[j], generated_spectrum[j]
+                                )
+                                operation = "+"
                                 
                                 # Debug output for each band combination
                                 if debug_export_enabled and abs(current_spectrum[j] - old_level) > 0.1:
@@ -556,6 +609,13 @@ class HVACNoiseEngine:
                 if debug_export_enabled:
                     print(f"DEBUG_ENGINE:   Output - dBA={current_dba:.1f}, spectrum={[f'{x:.1f}' for x in current_spectrum]}, NC={nc_after}")
                     print(f"DEBUG_ENGINE:   Change - dBA_delta={current_dba - noise_before_dba:.1f}")
+                    # Explicit pipeline log for pass-through clarity
+                    try:
+                        att_dba_dbg = element_result.get('attenuation_dba') or 0.0
+                        gen_dba_dbg = element_result.get('generated_dba') or 0.0
+                        print(f"NOISE_PIPELINE: After element {i} ({element.element_type}) -> before={noise_before_dba:.1f} dBA, att={att_dba_dbg:.2f}, gen={gen_dba_dbg:.2f}, after={current_dba:.1f}")
+                    except Exception:
+                        pass
                 
                 debug_logger.log_element_processing('HVACEngine', 
                     element.element_type, 
@@ -582,6 +642,8 @@ class HVACNoiseEngine:
                     if element.element_type not in ['source', 'terminal']:
                         last_flow_rate = float(getattr(element, 'flow_rate', 0.0) or 0.0)
                         last_element_with_geometry = element
+                        if debug_export_enabled:
+                            print(f"DEBUG_ENGINE:   Flow context update -> last_flow_rate={last_flow_rate:.1f} CFM")
                 except Exception:
                     pass
 
@@ -859,17 +921,13 @@ class HVACNoiseEngine:
             result['attenuation_dba'] = self._calculate_dba_from_spectrum(result['attenuation_spectrum'])
             
             if debug_export_enabled:
-                print(f"DEBUG_DUCT:   Duct attenuation calculated: {result['attenuation_dba']:.2f} dB(A)")
-                print(f"DEBUG_DUCT:   Duct attenuation spectrum: {[f'{x:.1f}' for x in result['attenuation_spectrum']]}")
+                print(f"DEBUG_DUCT:   Duct attenuation A-weighted IL (diagnostic): {result['attenuation_dba']:.2f} dB")
+                print(f"DEBUG_DUCT:   Duct attenuation spectrum (IL): {[f'{x:.1f}' for x in result['attenuation_spectrum']]}")
             
             # 2. If this duct segment also has a fitting, calculate fitting effects
             fitting_type_lower = (element.fitting_type or '').lower()
-            has_fitting = (element.fitting_type and 
-                          (fitting_type_lower in ['elbow', 'junction', 'tee', 'branch'] or
-                           'elbow' in fitting_type_lower or
-                           'tee' in fitting_type_lower or
-                           'branch' in fitting_type_lower or
-                           'junction' in fitting_type_lower))
+            # Only elbows are handled as duct-contained fittings. Junction-like fittings are modeled as standalone elements.
+            has_fitting = (element.fitting_type and ('elbow' in fitting_type_lower))
             
             if debug_export_enabled:
                 print(f"DEBUG_DUCT:   Fitting type check:")
@@ -908,7 +966,7 @@ class HVACNoiseEngine:
                     result['generated_dba'] = self._calculate_dba_from_spectrum(result['generated_spectrum'])
                     
                     if debug_export_enabled:
-                        print(f"DEBUG_DUCT:   Combined attenuation: {result['attenuation_dba']:.2f} dB(A)")
+                        print(f"DEBUG_DUCT:   Combined IL (A-weighted diagnostic): {result['attenuation_dba']:.2f} dB")
                         print(f"DEBUG_DUCT:   Fitting generated noise: {result['generated_dba']:.2f} dB(A)")
             
         except Exception as e:
@@ -921,7 +979,7 @@ class HVACNoiseEngine:
                 print("RETURNING FROM THE CIRCULAR DUCT CALCULATION")
             else:
                 print("RETURNING FROM THE RECTANGULAR DUCT CALCULATION")
-            print(f"ATTENUATION SPECTRUM: {result['attenuation_spectrum']}")
+            print(f"IL SPECTRUM (attenuation): {result['attenuation_spectrum']}")
             print(f"GENERATED SPECTRUM: {result['generated_spectrum']}")
         
         return result
@@ -1064,9 +1122,9 @@ class HVACNoiseEngine:
     def _calculate_elbow_effect(self, element: PathElement) -> Dict[str, Any]:
         """Calculate elbow generated noise effect"""
         result: Dict[str, Any] = {
-            'attenuation_spectrum': None,
+            'attenuation_spectrum': [0.0] * NUM_OCTAVE_BANDS,
             'generated_spectrum': [0.0] * NUM_OCTAVE_BANDS,
-            'attenuation_dba': None,
+            'attenuation_dba': 0.0,
             'generated_dba': 0.0
         }
         
@@ -1222,19 +1280,27 @@ class HVACNoiseEngine:
                 print(f"DEBUG_JUNCTION:   Junction calculator returned spectrum data")
                 print(f"DEBUG_JUNCTION:   Available keys: {list(spectrum_data.keys())}")
             
-            # For junctions, use main duct spectrum per Eq (4.24)
+            # For junctions, interpret spectrum as generated noise (not insertion loss)
             junction_spectrum = spectrum_data.get('main_duct') or {}
+            MIN_GENERATED_NOISE_THRESHOLD = -40.0  # dB - ignore very low generated noise
             for i, freq in enumerate(self.FREQUENCY_BANDS):
                 band_key = f"{freq}Hz"
                 if band_key in junction_spectrum:
-                    result['generated_spectrum'][i] = junction_spectrum[band_key]
+                    val = float(junction_spectrum[band_key])
+                    # Only include generated noise if it's above threshold
+                    if val > MIN_GENERATED_NOISE_THRESHOLD:
+                        # Convert sound power level to generated noise level
+                        generated_noise = val + 50.0  # Offset to make values reasonable for noise combination
+                        result['generated_spectrum'][i] = max(0.0, generated_noise)
+                    else:
+                        result['generated_spectrum'][i] = 0.0
             
-            # Calculate A-weighted generated noise
+            # Calculate A-weighted generated noise (diagnostic)
             result['generated_dba'] = self._calculate_dba_from_spectrum(result['generated_spectrum'])
             
             if debug_export_enabled:
-                print(f"DEBUG_JUNCTION:   Generated spectrum: {[f'{x:.1f}' for x in result['generated_spectrum']]}")
-                print(f"DEBUG_JUNCTION:   Generated dBA: {result['generated_dba']:.2f}")
+                print(f"DEBUG_JUNCTION:   Generated noise spectrum: {[f'{x:.1f}' for x in result['generated_spectrum']]}")
+                print(f"DEBUG_JUNCTION:   Generated noise A-weighted: {result['generated_dba']:.2f} dB")
             
         except Exception as e:
             result['error'] = f"Junction calculation error: {str(e)}"
@@ -1597,6 +1663,22 @@ class HVACNoiseEngine:
         import re
         debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
         
+        # Allow explicit override from builder
+        try:
+            override = segment.get('element_type')
+            if isinstance(override, str):
+                ot = override.strip().lower()
+                # Normalize common aliases
+                if ot == 'flex':
+                    ot = 'flex_duct'
+                allowed = {'duct', 'junction', 'elbow', 'flex_duct', 'terminal', 'source'}
+                if ot in allowed:
+                    if debug_export_enabled:
+                        print(f"DEBUG_HNE_LEGACY: Explicit element_type override detected: {ot}")
+                    return ot
+        except Exception:
+            pass
+
         if debug_export_enabled:
             print(f"DEBUG_HNE_LEGACY: Determining element type for segment:")
             print(f"DEBUG_HNE_LEGACY:   duct_type: {segment.get('duct_type')}")
