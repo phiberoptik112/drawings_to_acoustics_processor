@@ -20,7 +20,7 @@ if [[ "${1:-}" == "setup" ]]; then
 fi
 
 # Default environment variables for existing functionality
-export HVAC_DEBUG_EXPORT="${HVAC_DEBUG_EXPORT:-1}"
+export HVAC_DEBUG_EXPORT="${HVAC_DEBUG_EXPORT:-0}"
 export HVAC_USE_PATH_DATA_BUILDER="${HVAC_USE_PATH_DATA_BUILDER:-1}"
 
 # Enhanced Calculator Flow Tracer Configuration

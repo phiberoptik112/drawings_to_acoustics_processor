@@ -169,6 +169,7 @@ class MaterialListWidget(QWidget):
         self.materials_data = []  # List of dicts with material_key and square_footage
         self.total_surface_area = 0  # Total available surface area
         self.all_materials = get_all_materials()
+        self._cell_changed_connected = False
         self.init_ui()
         
     def init_ui(self):
@@ -279,6 +280,17 @@ class MaterialListWidget(QWidget):
     def update_display(self):
         """Update the display of materials"""
         print(f"DEBUG: MaterialListWidget.update_display({self.surface_type}): {len(self.materials_data)} materials")
+
+        # Avoid triggering edits while we repopulate the table
+        try:
+            if self._cell_changed_connected:
+                self.materials_table.cellChanged.disconnect(self.on_cell_changed)
+                self._cell_changed_connected = False
+        except Exception:
+            self._cell_changed_connected = False
+
+        self.materials_table.blockSignals(True)
+        self.materials_table.clearContents()
         self.materials_table.setRowCount(len(self.materials_data))
         
         total_used_area = 0
@@ -314,8 +326,13 @@ class MaterialListWidget(QWidget):
                 coverage_item.setFlags(coverage_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 self.materials_table.setItem(row, 3, coverage_item)
         
-        # Connect cell changed signal for area editing
-        self.materials_table.cellChanged.connect(self.on_cell_changed)
+        # Re-enable signals and ensure a single connection for edits
+        self.materials_table.blockSignals(False)
+        try:
+            self.materials_table.cellChanged.connect(self.on_cell_changed)
+            self._cell_changed_connected = True
+        except Exception:
+            self._cell_changed_connected = False
         
         # Update usage summary
         if self.materials_data:
@@ -331,6 +348,9 @@ class MaterialListWidget(QWidget):
         else:
             self.usage_label.setText("No materials selected")
             self.usage_label.setStyleSheet("color: #7f8c8d; font-size: 10px; margin: 5px;")
+
+        # Sync remove button enabled state
+        self.update_remove_button()
             
     def on_cell_changed(self, row, column):
         """Handle cell value changes (for square footage editing)"""
@@ -979,93 +999,128 @@ class SpaceEditDialog(QDialog):
         ceiling_area = floor_area
         wall_area = self.wall_area_spin.value()
         height = self.ceiling_height_spin.value()
-        
+
         # Update areas preview
         areas_text = f"Floor Area: {floor_area:,.0f} sf\n"
         areas_text += f"Ceiling Area: {ceiling_area:,.0f} sf\n"
         areas_text += f"Wall Area: {wall_area:,.0f} sf\n"
         areas_text += f"Total Surface Area: {floor_area + ceiling_area + wall_area:,.0f} sf"
-        
         self.areas_preview_label.setText(areas_text)
-        
-        # Get selected materials
-        ceiling_materials = self.ceiling_materials.get_materials()
-        wall_materials = self.wall_materials.get_materials()
-        floor_materials = self.floor_materials.get_materials()
-        
-        # Update materials preview
-        materials_text = "Selected Materials:\n"
-        
+
+        # Use detailed materials with square footages if available
+        ceiling_materials_data = self.ceiling_materials.get_materials_data()
+        wall_materials_data = self.wall_materials.get_materials_data()
+        floor_materials_data = self.floor_materials.get_materials_data()
+
+        # Also keep simple lists for fallback
+        ceiling_materials = [m['material_key'] for m in ceiling_materials_data] or self.ceiling_materials.get_materials()
+        wall_materials = [m['material_key'] for m in wall_materials_data] or self.wall_materials.get_materials()
+        floor_materials = [m['material_key'] for m in floor_materials_data] or self.floor_materials.get_materials()
+
         all_materials = get_all_materials()
+
+        # Build materials text similar to summary
+        materials_text = "Selected Materials:\n"
         if ceiling_materials:
             materials_text += "Ceiling:\n"
             for key in ceiling_materials:
-                if key in all_materials:
-                    material = all_materials[key]
+                material = all_materials.get(key)
+                if material:
                     coeff = material.get('nrc', material.get('absorption_coeff', 0))
                     materials_text += f"  • {material['name']} (α={coeff:.2f})\n"
         else:
             materials_text += "Ceiling: No materials selected\n"
-            
+
         if wall_materials:
             materials_text += "Walls:\n"
             for key in wall_materials:
-                if key in all_materials:
-                    material = all_materials[key]
+                material = all_materials.get(key)
+                if material:
                     coeff = material.get('nrc', material.get('absorption_coeff', 0))
                     materials_text += f"  • {material['name']} (α={coeff:.2f})\n"
         else:
             materials_text += "Walls: No materials selected\n"
-            
+
         if floor_materials:
             materials_text += "Floor:\n"
             for key in floor_materials:
-                if key in all_materials:
-                    material = all_materials[key]
+                material = all_materials.get(key)
+                if material:
                     coeff = material.get('nrc', material.get('absorption_coeff', 0))
                     materials_text += f"  • {material['name']} (α={coeff:.2f})\n"
         else:
             materials_text += "Floor: No materials selected\n"
-            
         self.materials_preview_label.setText(materials_text)
-        
-        # Calculate absorption using average coefficients
-        if all([floor_area, wall_area, height]) and (ceiling_materials or wall_materials or floor_materials):
-            ceiling_coeff = self.get_average_absorption_coefficient(ceiling_materials)
-            wall_coeff = self.get_average_absorption_coefficient(wall_materials)
-            floor_coeff = self.get_average_absorption_coefficient(floor_materials)
-            
-            ceiling_absorption = ceiling_area * ceiling_coeff
-            wall_absorption = wall_area * wall_coeff
-            floor_absorption = floor_area * floor_coeff
-            total_absorption = ceiling_absorption + wall_absorption + floor_absorption
-            
-            # Update absorption preview
-            absorption_text = f"Ceiling: {ceiling_area:.0f} sf × {ceiling_coeff:.3f} = {ceiling_absorption:.1f} sabins\n"
-            absorption_text += f"Walls: {wall_area:.0f} sf × {wall_coeff:.3f} = {wall_absorption:.1f} sabins\n"
-            absorption_text += f"Floor: {floor_area:.0f} sf × {floor_coeff:.3f} = {floor_absorption:.1f} sabins\n"
+
+        # Compute absorption with detailed areas when provided
+        total_absorption = 0.0
+        ceiling_absorption = 0.0
+        wall_absorption = 0.0
+        floor_absorption = 0.0
+
+        if ceiling_materials_data:
+            for m in ceiling_materials_data:
+                mat = all_materials.get(m['material_key'])
+                if mat:
+                    coeff = mat.get('nrc', mat.get('absorption_coeff', 0))
+                    ceiling_absorption += float(m.get('square_footage', 0)) * coeff
+        else:
+            coeff = self.get_average_absorption_coefficient(ceiling_materials)
+            ceiling_absorption = ceiling_area * coeff
+
+        if wall_materials_data:
+            for m in wall_materials_data:
+                mat = all_materials.get(m['material_key'])
+                if mat:
+                    coeff = mat.get('nrc', mat.get('absorption_coeff', 0))
+                    wall_absorption += float(m.get('square_footage', 0)) * coeff
+        else:
+            coeff = self.get_average_absorption_coefficient(wall_materials)
+            wall_absorption = wall_area * coeff
+
+        if floor_materials_data:
+            for m in floor_materials_data:
+                mat = all_materials.get(m['material_key'])
+                if mat:
+                    coeff = mat.get('nrc', mat.get('absorption_coeff', 0))
+                    floor_absorption += float(m.get('square_footage', 0)) * coeff
+        else:
+            coeff = self.get_average_absorption_coefficient(floor_materials)
+            floor_absorption = floor_area * coeff
+
+        total_absorption = ceiling_absorption + wall_absorption + floor_absorption
+
+        if all([floor_area, wall_area, height]) and total_absorption > 0:
+            absorption_text = f"Ceiling: {ceiling_absorption:.1f} sabins\n"
+            absorption_text += f"Walls: {wall_absorption:.1f} sabins\n"
+            absorption_text += f"Floor: {floor_absorption:.1f} sabins\n"
             absorption_text += f"Total Absorption: {total_absorption:.1f} sabins"
-            
             self.absorption_preview_label.setText(absorption_text)
-            
-            # Calculate RT60 (simplified Sabine formula)
+
+            # Use the engine with detailed materials to compute RT60
             volume = floor_area * height
-            if total_absorption > 0:
-                rt60_calculated = 0.161 * volume / total_absorption
-                target_rt60 = self.target_rt60_spin.value()
-                
-                status = "✅ MEETS TARGET" if abs(rt60_calculated - target_rt60) <= 0.2 else "❌ NEEDS ADJUSTMENT"
-                
-                rt60_text = f"Volume: {volume:,.0f} cf\n"
-                rt60_text += f"Total Absorption: {total_absorption:.1f} sabins\n"
-                rt60_text += f"Calculated RT60: {rt60_calculated:.2f} seconds\n"
-                rt60_text += f"Target RT60: {target_rt60:.1f} seconds\n"
-                rt60_text += f"Status: {status}"
-                
-                self.rt60_preview_label.setText(rt60_text)
-            else:
-                self.rt60_preview_label.setText("Please select materials to calculate RT60")
-                self.absorption_preview_label.setText("No materials selected")
+            doors_windows_data = self.plot_container.get_doors_windows_data()
+            space_data = {
+                'volume': volume,
+                'floor_area': floor_area,
+                'ceiling_area': ceiling_area,
+                'wall_area': wall_area,
+                'ceiling_materials_data': ceiling_materials_data,
+                'wall_materials_data': wall_materials_data,
+                'floor_materials_data': floor_materials_data,
+                'doors_windows': doors_windows_data,
+                'include_doors_windows': True
+            }
+            results = self.rt60_calculator.calculate_space_rt60(space_data)
+            rt60_calculated = results.get('rt60', 0)
+            target_rt60 = self.target_rt60_spin.value()
+            status = "✅ MEETS TARGET" if abs(rt60_calculated - target_rt60) <= 0.2 else "❌ NEEDS ADJUSTMENT"
+            rt60_text = f"Volume: {volume:,.0f} cf\n"
+            rt60_text += f"Total Absorption: {total_absorption:.1f} sabins\n"
+            rt60_text += f"Calculated RT60: {rt60_calculated:.2f} seconds\n"
+            rt60_text += f"Target RT60: {target_rt60:.1f} seconds\n"
+            rt60_text += f"Status: {status}"
+            self.rt60_preview_label.setText(rt60_text)
         else:
             self.rt60_preview_label.setText("Please enter room dimensions and select materials")
             self.absorption_preview_label.setText("No materials selected")

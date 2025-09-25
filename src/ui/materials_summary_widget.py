@@ -12,22 +12,19 @@ from typing import Dict, List, Optional, Tuple
 import json
 
 try:
-    from ..data.materials import STANDARD_MATERIALS
-    from ..data.enhanced_materials import ENHANCED_MATERIALS
+    # Use the unified materials database so UI selections (including enhanced DB) match calculations
+    from ..data.materials_database import get_all_materials
 except ImportError:
     try:
-        from data.materials import STANDARD_MATERIALS
-        from data.enhanced_materials import ENHANCED_MATERIALS
+        from data.materials_database import get_all_materials
     except ImportError:
         import sys
         import os
-        # Add src directory to path for testing
         current_dir = os.path.dirname(__file__)
         src_dir = os.path.dirname(current_dir)
         if src_dir not in sys.path:
             sys.path.insert(0, src_dir)
-        from data.materials import STANDARD_MATERIALS
-        from data.enhanced_materials import ENHANCED_MATERIALS
+        from data.materials_database import get_all_materials
 
 
 class MaterialsSummaryWidget(QWidget):
@@ -57,6 +54,8 @@ class MaterialsSummaryWidget(QWidget):
             'floor': []
         }
         self.frequencies = [125, 250, 500, 1000, 2000, 4000]
+        # Unified materials mapping used for all lookups
+        self.all_materials = get_all_materials()
         
         self.init_ui()
         
@@ -250,10 +249,10 @@ class MaterialsSummaryWidget(QWidget):
                     material_key = material_data.get('material_key')
                     actual_area = material_data.get('square_footage', 0)
                     
-                    if material_key not in STANDARD_MATERIALS or actual_area <= 0:
+                    if material_key not in self.all_materials or actual_area <= 0:
                         continue
                         
-                    material = STANDARD_MATERIALS[material_key]
+                    material = self.all_materials[material_key]
                     self.materials_table.insertRow(row)
                     
                     # Surface type
@@ -296,10 +295,10 @@ class MaterialsSummaryWidget(QWidget):
                 area_per_material = total_area / len(materials) if materials else 0
                 
                 for material_key in materials:
-                    if material_key not in STANDARD_MATERIALS:
+                    if material_key not in self.all_materials:
                         continue
                         
-                    material = STANDARD_MATERIALS[material_key]
+                    material = self.all_materials[material_key]
                     self.materials_table.insertRow(row)
                     
                     # Surface type
@@ -376,8 +375,8 @@ class MaterialsSummaryWidget(QWidget):
             area_per_material = total_area / len(materials) if materials else 0
             
             for material_key in materials:
-                if material_key in STANDARD_MATERIALS:
-                    material = STANDARD_MATERIALS[material_key]
+                if material_key in self.all_materials:
+                    material = self.all_materials[material_key]
                     for freq in self.frequencies:
                         coeff = self.get_material_coefficient(material, freq)
                         absorption_by_freq[freq] += area_per_material * coeff
