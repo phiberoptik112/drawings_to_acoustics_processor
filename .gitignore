@@ -76,3 +76,5 @@ resources/
 test_output/
 debug/
 debug_data/
+export_testing/
+**/export_testing/

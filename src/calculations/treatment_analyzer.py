@@ -362,9 +362,9 @@ class TreatmentAnalyzer:
             current_rt60 = gap_info.get('current_rt60', 0)
             
             if current_rt60 > 0:
-                current_absorption = 0.161 * volume / current_rt60
+                current_absorption = 0.049 * volume / current_rt60
                 new_absorption = current_absorption + additional_absorption
-                new_rt60 = 0.161 * volume / new_absorption if new_absorption > 0 else current_rt60
+                new_rt60 = 0.049 * volume / new_absorption if new_absorption > 0 else current_rt60
                 rt60_reduction = current_rt60 - new_rt60
                 
                 impact['frequency_impacts'][frequency] = {

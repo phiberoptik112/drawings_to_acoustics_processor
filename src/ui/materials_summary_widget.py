@@ -364,22 +364,40 @@ class MaterialsSummaryWidget(QWidget):
         # Absorption by frequency
         absorption_by_freq = {freq: 0 for freq in self.frequencies}
         
-        # Add surface materials absorption
+        # Add surface materials absorption using actual square footages
         for surface_type in ['ceiling', 'wall', 'floor']:
-            materials = self.current_materials[surface_type]
-            if not materials:
-                continue
-                
-            area_key = f'{surface_type}_area'
-            total_area = self.current_areas.get(area_key, 0)
-            area_per_material = total_area / len(materials) if materials else 0
+            # Use detailed materials data with actual square footages
+            materials_data = self.current_materials_data.get(surface_type, [])
             
-            for material_key in materials:
-                if material_key in self.all_materials:
+            if materials_data:
+                # Use actual square footage data
+                for material_data in materials_data:
+                    material_key = material_data.get('material_key')
+                    actual_area = material_data.get('square_footage', 0)
+                    
+                    if material_key not in self.all_materials or actual_area <= 0:
+                        continue
+                        
                     material = self.all_materials[material_key]
                     for freq in self.frequencies:
                         coeff = self.get_material_coefficient(material, freq)
-                        absorption_by_freq[freq] += area_per_material * coeff
+                        absorption_by_freq[freq] += actual_area * coeff
+            else:
+                # Fallback to old equal distribution method
+                materials = self.current_materials[surface_type]
+                if not materials:
+                    continue
+                    
+                area_key = f'{surface_type}_area'
+                total_area = self.current_areas.get(area_key, 0)
+                area_per_material = total_area / len(materials) if materials else 0
+                
+                for material_key in materials:
+                    if material_key in self.all_materials:
+                        material = self.all_materials[material_key]
+                        for freq in self.frequencies:
+                            coeff = self.get_material_coefficient(material, freq)
+                            absorption_by_freq[freq] += area_per_material * coeff
         
         # Add doors/windows absorption
         doors_windows_data = self.get_doors_windows_data()
