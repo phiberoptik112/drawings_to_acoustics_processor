@@ -15,7 +15,7 @@ def test_calculation_pipeline():
     os.environ['HVAC_DEBUG_EXPORT'] = '1'
     
     try:
-        from calculations.noise_calculator import NoiseCalculator
+        from calculations.hvac_noise_engine import NoiseCalculator
         
         print("=== CALCULATION PIPELINE TEST ===")
         
@@ -114,7 +114,7 @@ def test_element_conversion():
     os.environ['HVAC_DEBUG_EXPORT'] = '1'
     
     try:
-        from calculations.noise_calculator import NoiseCalculator
+        from calculations.hvac_noise_engine import NoiseCalculator
         from calculations.hvac_noise_engine import PathElement
         
         print("\n=== ELEMENT CONVERSION TEST ===")

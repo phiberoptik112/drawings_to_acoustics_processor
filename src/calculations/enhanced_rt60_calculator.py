@@ -68,7 +68,7 @@ class EnhancedRT60Calculator:
         """
         Calculate RT60 using Sabine formula for each frequency band
         
-        RT60 = 0.161 * V / A
+        RT60 = 0.049 * V / A (imperial units)
         
         Args:
             volume: Room volume in cubic feet
@@ -84,7 +84,7 @@ class EnhancedRT60Calculator:
             if absorption <= 0:
                 rt60_values[freq] = 999.9  # Very high RT60 for no absorption
             else:
-                rt60_values[freq] = 0.161 * volume / absorption
+                rt60_values[freq] = 0.049 * volume / absorption
                 
         return rt60_values
     
@@ -93,7 +93,7 @@ class EnhancedRT60Calculator:
         """
         Calculate RT60 using Eyring formula for each frequency band
         
-        RT60 = 0.161 * V / (-S * ln(1 - α_avg))
+        RT60 = 0.049 * V / (-S * ln(1 - α_avg)) (imperial units)
         
         Args:
             volume: Room volume in cubic feet
@@ -137,7 +137,7 @@ class EnhancedRT60Calculator:
                 if denominator <= 0:
                     rt60_values[freq] = 999.9
                 else:
-                    rt60_values[freq] = 0.161 * volume / denominator
+                    rt60_values[freq] = 0.049 * volume / denominator
             except (ValueError, ZeroDivisionError):
                 rt60_values[freq] = 999.9
         
@@ -360,7 +360,7 @@ class EnhancedRT60Calculator:
         
         if current_avg > target_rt60:
             # RT60 too high - need more absorption
-            required_absorption = 0.161 * volume / target_rt60
+            required_absorption = 0.049 * volume / target_rt60
             current_absorption = sum(self.calculate_total_absorption_by_frequency(surface_instances).values()) / len(self.octave_bands)
             additional_needed = required_absorption - current_absorption
             
@@ -440,7 +440,7 @@ class EnhancedRT60Calculator:
         # Calculate required absorption change
         if current_avg > target_rt60:
             # Need more absorption
-            required_total_absorption = 0.161 * volume / target_rt60
+            required_total_absorption = 0.049 * volume / target_rt60
             current_total_absorption = sum(current_results.get('absorption_by_frequency', {}).values()) / len(self.octave_bands)
             additional_absorption_needed = required_total_absorption - current_total_absorption
             
@@ -529,13 +529,13 @@ class EnhancedRT60Calculator:
         if current_rt60 <= 0:
             return 0
         
-        current_absorption = 0.161 * volume / current_rt60
+        current_absorption = 0.049 * volume / current_rt60
         new_absorption = current_absorption + absorption_change
         
         if new_absorption <= 0:
             return 999  # Very high RT60
         
-        new_rt60 = 0.161 * volume / new_absorption
+        new_rt60 = 0.049 * volume / new_absorption
         return round(new_rt60 - current_rt60, 2)
     
     def format_frequency_report(self, results: Dict) -> str:

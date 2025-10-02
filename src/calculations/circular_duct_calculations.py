@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Tuple, Dict, List, Optional, Union, Any
 import warnings
+from .acoustic_utilities import AcousticConstants
 
 # Set up plotting style
 plt.style.use('seaborn-v0_8')
@@ -75,7 +76,7 @@ class CircularDuctCalculator:
         
     def _initialize_frequency_bands(self):
         """Initialize standard frequency bands."""
-        self.frequency_bands = [63, 125, 250, 500, 1000, 2000, 4000, 8000]
+        self.frequency_bands = AcousticConstants.FREQUENCY_BANDS.copy()
         
     def get_diameter_range(self, diameter: float) -> str:
         """
@@ -121,13 +122,15 @@ class CircularDuctCalculator:
         # Find closest frequency band
         freq_bands = [63, 125, 250, 500, 1000, 2000, 4000]
         closest_freq = min(freq_bands, key=lambda x: abs(x - frequency))
-        
+        print("INSIDE THE CIRCULAR DUCT CALCULATION")
         # Get attenuation per foot from Table 5.5
         attenuation_per_ft = self.unlined_attenuation_data[diameter_range][str(closest_freq)]
-        
-        # Calculate total attenuation
+        print("RETURNING FROM THE CIRCULAR DUCT CALCULATION")
+        print(f"ATTENUATION PER FOOT: {attenuation_per_ft}")
+        # Calculate total attenuation   
         total_attenuation = attenuation_per_ft * length
-        
+        print("RETURNING FROM THE CIRCULAR DUCT CALCULATION")
+        print(f"TOTAL ATTENUATION: {total_attenuation}")
         return total_attenuation
         
     def calculate_lined_insertion_loss(self, diameter: float, lining_thickness: float, 

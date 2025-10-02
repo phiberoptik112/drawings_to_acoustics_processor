@@ -10,9 +10,9 @@ The system integrates all specialized HVAC acoustic calculators into a unified e
 
 ### Core Components
 
-1. **HVACNoiseEngine** (`hvac_noise_engine.py`) - The main calculation engine
+1. **HVACNoiseEngine** (`hvac_noise_engine.py`) - The unified calculation engine with legacy compatibility
 2. **HVACPathCalculator** (`hvac_path_calculator.py`) - Path management and analysis
-3. **NoiseCalculator** (`noise_calculator.py`) - Legacy compatibility layer
+3. **NoiseCalculator** - Legacy compatibility wrapper (deprecated, use HVACNoiseEngine directly)
 
 ### Integrated Calculators
 

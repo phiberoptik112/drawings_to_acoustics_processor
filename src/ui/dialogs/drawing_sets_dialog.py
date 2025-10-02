@@ -203,6 +203,17 @@ class DrawingSetsDialog(QDialog):
 		splitter.addWidget(drawings_widget)
 		
 		layout.addWidget(splitter)
+
+		# Action buttons for assignment
+		buttons_layout = QHBoxLayout()
+		self.assign_button = QPushButton("Assign to Set")
+		self.remove_button = QPushButton("Remove from Set")
+		self.assign_button.clicked.connect(self.assign_selected_drawing_to_set)
+		self.remove_button.clicked.connect(self.remove_selected_drawing_from_set)
+		buttons_layout.addStretch()
+		buttons_layout.addWidget(self.assign_button)
+		buttons_layout.addWidget(self.remove_button)
+		layout.addLayout(buttons_layout)
 		widget.setLayout(layout)
 		return widget
 	
@@ -258,6 +269,67 @@ class DrawingSetsDialog(QDialog):
 			drawing_item = QListWidgetItem(f"📄 {drawing.name} - {set_name}")
 			drawing_item.setData(Qt.UserRole, {'type': 'drawing', 'id': drawing.id, 'set_id': drawing.drawing_set_id})
 			self.assignment_drawings_list.addItem(drawing_item)
+
+	def _get_selected_set_id(self):
+		"""Return the currently selected drawing set id from the left list, or None."""
+		current_item = self.assignment_sets_list.currentItem() if hasattr(self, 'assignment_sets_list') else None
+		if not current_item:
+			return None
+		data = current_item.data(Qt.UserRole)
+		if isinstance(data, dict) and data.get('type') == 'set':
+			return data.get('id')
+		# If a child drawing is selected on the left, use its parent set id if present
+		if isinstance(data, dict) and data.get('type') == 'drawing':
+			return data.get('set_id')
+		return None
+
+	def _get_selected_drawing_id(self):
+		"""Return the selected drawing id from the right list, or None."""
+		current_item = self.assignment_drawings_list.currentItem() if hasattr(self, 'assignment_drawings_list') else None
+		if not current_item:
+			return None
+		data = current_item.data(Qt.UserRole)
+		if isinstance(data, dict) and data.get('type') == 'drawing':
+			return data.get('id')
+		return None
+
+	def assign_selected_drawing_to_set(self):
+		"""Assign the selected drawing (right) to the selected set (left)."""
+		drawing_id = self._get_selected_drawing_id()
+		set_id = self._get_selected_set_id()
+		if not drawing_id:
+			QMessageBox.information(self, "Assign to Set", "Select a drawing from the right list.")
+			return
+		if not set_id:
+			QMessageBox.information(self, "Assign to Set", "Select a drawing set from the left list.")
+			return
+		session = get_session()
+		try:
+			session.query(Drawing).filter(Drawing.id == drawing_id).update({Drawing.drawing_set_id: set_id})
+			session.commit()
+			self.refresh_data()
+		except Exception as e:
+			session.rollback()
+			QMessageBox.critical(self, "Error", f"Failed to assign drawing to set:\n{str(e)}")
+		finally:
+			session.close()
+
+	def remove_selected_drawing_from_set(self):
+		"""Unassign the selected drawing (right) from any set."""
+		drawing_id = self._get_selected_drawing_id()
+		if not drawing_id:
+			QMessageBox.information(self, "Remove from Set", "Select a drawing from the right list.")
+			return
+		session = get_session()
+		try:
+			session.query(Drawing).filter(Drawing.id == drawing_id).update({Drawing.drawing_set_id: None})
+			session.commit()
+			self.refresh_data()
+		except Exception as e:
+			session.rollback()
+			QMessageBox.critical(self, "Error", f"Failed to remove drawing from set:\n{str(e)}")
+		finally:
+			session.close()
 	
 	def create_new_set(self):
 		"""Create a new drawing set (simple prompt)"""

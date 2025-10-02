@@ -100,7 +100,7 @@ class RT60Calculator:
         """
         Calculate RT60 using Sabine formula
         
-        RT60 = 0.161 * V / A
+        RT60 = 0.049 * V / A (imperial units)
         where V = volume (cubic feet), A = total absorption (sabins)
         
         Args:
@@ -113,13 +113,13 @@ class RT60Calculator:
         if total_absorption <= 0:
             return float('inf')  # Infinite reverberation
             
-        return 0.161 * volume / total_absorption
+        return 0.049 * volume / total_absorption
         
     def calculate_rt60_eyring(self, volume, surfaces, frequency=None):
         """
         Calculate RT60 using Eyring formula (more accurate for high absorption)
         
-        RT60 = 0.161 * V / (-S * ln(1 - α_avg))
+        RT60 = 0.049 * V / (-S * ln(1 - α_avg)) (imperial units)
         where α_avg is the average absorption coefficient
         
         Args:
@@ -164,14 +164,14 @@ class RT60Calculator:
         elif avg_absorption_coeff <= 0:
             return float('inf')
             
-        try:
-            denominator = -total_area * math.log(1 - avg_absorption_coeff)
-            if denominator <= 0:
+            try:
+                denominator = -total_area * math.log(1 - avg_absorption_coeff)
+                if denominator <= 0:
+                    return float('inf')
+                    
+                return 0.049 * volume / denominator
+            except (ValueError, ZeroDivisionError):
                 return float('inf')
-                
-            return 0.161 * volume / denominator
-        except (ValueError, ZeroDivisionError):
-            return float('inf')
             
     def calculate_space_rt60(self, space_data, method='sabine'):
         """
@@ -445,7 +445,7 @@ class RT60Calculator:
             return {'error': 'Invalid RT60 values'}
             
         # Calculate required total absorption for target RT60
-        required_absorption = 0.161 * volume / target_rt60
+        required_absorption = 0.049 * volume / target_rt60
         current_absorption = self.calculate_total_absorption(surfaces)
         
         absorption_needed = required_absorption - current_absorption

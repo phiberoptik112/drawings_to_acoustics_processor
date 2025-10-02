@@ -47,6 +47,8 @@ def ensure_hvac_schema():
                 ("frequency_requirements", "TEXT"),
                 ("space_constraints", "TEXT"),
                 ("selected_product_id", "INTEGER"),
+                # Junction preference for BRANCH_TAKEOFF_90 selection
+                ("branch_takeoff_choice", "TEXT"),
             ],
         )
 

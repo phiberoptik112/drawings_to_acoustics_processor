@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Tuple, Dict, List, Optional, Union, Any
 import warnings
+from .acoustic_utilities import AcousticConstants
 
 # Set up plotting style
 plt.style.use('seaborn-v0_8')
@@ -45,7 +46,7 @@ class ElbowTurningVaneCalculator:
         
     def _initialize_frequency_bands(self):
         """Initialize standard 1/1 octave frequency bands."""
-        self.frequency_bands = [63, 125, 250, 500, 1000, 2000, 4000, 8000]
+        self.frequency_bands = AcousticConstants.FREQUENCY_BANDS.copy()
         
     def calculate_pressure_loss_coefficient(self, total_pressure_drop: float, 
                                          flow_rate: float, duct_area: float) -> float:

@@ -32,6 +32,7 @@ class ExportOptions:
     include_nc_analysis: bool = True
     include_recommendations: bool = True
     include_charts: bool = True
+    leed_format: bool = True  # Export in LEED Acoustic Performance Template format
 
 
 class ExcelExporter:
@@ -101,6 +102,14 @@ class ExcelExporter:
             
             if options.include_nc_analysis:
                 self.create_nc_analysis_sheet(wb, project, session, options)
+            
+            # Create LEED format sheets if requested
+            if options.leed_format:
+                self.create_leed_reverberation_time_sheet(wb, project, session)
+                self.create_leed_absorptive_materials_sheet(wb, project, session)
+                self.create_leed_background_noise_sheet(wb, project, session)
+                self.create_leed_sound_transmission_sheet(wb, project, session)
+                self.create_leed_wall_ceiling_floor_data_sheet(wb, project, session)
             
             # Save workbook
             wb.save(export_path)
@@ -555,21 +564,57 @@ class ExcelExporter:
     
     def apply_header_style(self, ws, range_str):
         """Apply header styling to a range"""
-        for row in ws[range_str]:
-            for cell in row:
-                cell.font = self.header_font
-                cell.fill = self.header_fill
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                cell.border = self.border
+        cells = ws[range_str]
+        
+        # Handle single cell vs range
+        if isinstance(cells, tuple):
+            # It's a range - iterate over rows and cells
+            for row in cells:
+                if isinstance(row, tuple):
+                    for cell in row:
+                        cell.font = self.header_font
+                        cell.fill = self.header_fill
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+                        cell.border = self.border
+                else:
+                    # Single row
+                    row.font = self.header_font
+                    row.fill = self.header_fill
+                    row.alignment = Alignment(horizontal='center', vertical='center')
+                    row.border = self.border
+        else:
+            # Single cell
+            cells.font = self.header_font
+            cells.fill = self.header_fill
+            cells.alignment = Alignment(horizontal='center', vertical='center')
+            cells.border = self.border
     
     def apply_subheader_style(self, ws, range_str):
         """Apply subheader styling to a range"""
-        for row in ws[range_str]:
-            for cell in row:
-                cell.font = self.subheader_font
-                cell.fill = self.subheader_fill
-                cell.alignment = Alignment(horizontal='center', vertical='center')
-                cell.border = self.border
+        cells = ws[range_str]
+        
+        # Handle single cell vs range
+        if isinstance(cells, tuple):
+            # It's a range - iterate over rows and cells
+            for row in cells:
+                if isinstance(row, tuple):
+                    for cell in row:
+                        cell.font = self.subheader_font
+                        cell.fill = self.subheader_fill
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+                        cell.border = self.border
+                else:
+                    # Single row
+                    row.font = self.subheader_font
+                    row.fill = self.subheader_fill
+                    row.alignment = Alignment(horizontal='center', vertical='center')
+                    row.border = self.border
+        else:
+            # Single cell
+            cells.font = self.subheader_font
+            cells.fill = self.subheader_fill
+            cells.alignment = Alignment(horizontal='center', vertical='center')
+            cells.border = self.border
     
     def auto_size_columns(self, ws):
         """Auto-size all columns in worksheet"""
@@ -586,6 +631,276 @@ class ExcelExporter:
             
             adjusted_width = min(max_length + 2, 50)  # Cap at 50 characters
             ws.column_dimensions[column_letter].width = adjusted_width
+    
+    def create_leed_reverberation_time_sheet(self, wb, project, session):
+        """Create LEED Reverberation Time sheet"""
+        ws = wb.create_sheet("LEED - Reverberation Time")
+        
+        # Headers matching LEED template
+        headers = [
+            "Room ID", "Room Name", "Type", "Grouping Type (if applicable)",
+            "Required RT (sec)", "Calculated RT (sec)", "Surface Treatments Applied",
+            "Source of RT Data", "Notes"
+        ]
+        
+        row = 1
+        for col, header in enumerate(headers, 1):
+            ws.cell(row=row, column=col, value=header)
+            self.apply_header_style(ws, f'{get_column_letter(col)}{row}')
+        
+        # Get spaces data
+        spaces = session.query(Space).filter(Space.project_id == project.id).all()
+        
+        for space in spaces:
+            row += 1
+            
+            # Get surface treatments (materials applied)
+            surface_treatments = []
+            if space.ceiling_material:
+                surface_treatments.append(f"Ceiling: {space.ceiling_material}")
+            if space.wall_material:
+                surface_treatments.append(f"Wall: {space.wall_material}")
+            if space.floor_material:
+                surface_treatments.append(f"Floor: {space.floor_material}")
+            
+            treatments_text = "; ".join(surface_treatments) if surface_treatments else ""
+            
+            data = [
+                space.id or "",  # Room ID
+                space.name or "",  # Room Name
+                space.space_type or "",  # Type
+                "",  # Grouping Type (if applicable)
+                space.target_rt60 or "",  # Required RT (sec)
+                space.calculated_rt60 or "",  # Calculated RT (sec)
+                treatments_text,  # Surface Treatments Applied
+                "Calculated using Sabine Formula",  # Source of RT Data
+                space.description or ""  # Notes
+            ]
+            
+            for col, value in enumerate(data, 1):
+                cell = ws.cell(row=row, column=col, value=value)
+                if col in [5, 6] and isinstance(value, (int, float)):
+                    cell.number_format = '0.00'
+        
+        self.auto_size_columns(ws)
+    
+    def create_leed_absorptive_materials_sheet(self, wb, project, session):
+        """Create LEED Absorptive Materials sheet"""
+        ws = wb.create_sheet("LEED - Absorptive Materials")
+        
+        # Headers matching LEED template
+        headers = [
+            "Space ID", "Room Name / Type", "Surface Material ID", "Description of Material",
+            "Manufacturer", "Absorption Coefficient (500 Hz)", "Absorption Coefficient (1000 Hz)",
+            "Absorption Coefficient (2000 Hz)", "Surface Area (SF)",
+            "Material Location (Floor, Ceiling, Wall)",
+            "Source of Material Info (e.g. Spec Section, Submittal)", "Notes"
+        ]
+        
+        row = 1
+        for col, header in enumerate(headers, 1):
+            ws.cell(row=row, column=col, value=header)
+            self.apply_header_style(ws, f'{get_column_letter(col)}{row}')
+        
+        # Get spaces data
+        spaces = session.query(Space).filter(Space.project_id == project.id).all()
+        
+        for space in spaces:
+            # Add ceiling material if present
+            if space.ceiling_material:
+                row += 1
+                data = [
+                    space.id or "",
+                    f"{space.name} / {space.space_type or 'N/A'}",
+                    "",  # Surface Material ID
+                    space.ceiling_material or "",
+                    "",  # Manufacturer
+                    "",  # Absorption Coefficient (500 Hz)
+                    "",  # Absorption Coefficient (1000 Hz)
+                    "",  # Absorption Coefficient (2000 Hz)
+                    space.ceiling_area or 0,
+                    "Ceiling",
+                    "Materials Database",
+                    ""
+                ]
+                for col, value in enumerate(data, 1):
+                    ws.cell(row=row, column=col, value=value)
+            
+            # Add wall material if present
+            if space.wall_material:
+                row += 1
+                data = [
+                    space.id or "",
+                    f"{space.name} / {space.space_type or 'N/A'}",
+                    "",  # Surface Material ID
+                    space.wall_material or "",
+                    "",  # Manufacturer
+                    "",  # Absorption Coefficient (500 Hz)
+                    "",  # Absorption Coefficient (1000 Hz)
+                    "",  # Absorption Coefficient (2000 Hz)
+                    space.wall_area or 0,
+                    "Wall",
+                    "Materials Database",
+                    ""
+                ]
+                for col, value in enumerate(data, 1):
+                    ws.cell(row=row, column=col, value=value)
+            
+            # Add floor material if present
+            if space.floor_material:
+                row += 1
+                data = [
+                    space.id or "",
+                    f"{space.name} / {space.space_type or 'N/A'}",
+                    "",  # Surface Material ID
+                    space.floor_material or "",
+                    "",  # Manufacturer
+                    "",  # Absorption Coefficient (500 Hz)
+                    "",  # Absorption Coefficient (1000 Hz)
+                    "",  # Absorption Coefficient (2000 Hz)
+                    space.floor_area or 0,
+                    "Floor",
+                    "Materials Database",
+                    ""
+                ]
+                for col, value in enumerate(data, 1):
+                    ws.cell(row=row, column=col, value=value)
+        
+        self.auto_size_columns(ws)
+    
+    def create_leed_background_noise_sheet(self, wb, project, session):
+        """Create LEED Background Noise sheet"""
+        ws = wb.create_sheet("LEED - Background Noise")
+        
+        # Headers matching LEED template
+        headers = [
+            "Room ID", "Room Name", "Type", "Sound Rating Method (NC/RC)",
+            "Background Noise Level (dBA)",
+            "Source of Noise Data (e.g. Spec Section, Acoustic Report)", "Notes"
+        ]
+        
+        row = 1
+        for col, header in enumerate(headers, 1):
+            ws.cell(row=row, column=col, value=header)
+            self.apply_header_style(ws, f'{get_column_letter(col)}{row}')
+        
+        # Get spaces data with receiver results
+        spaces = session.query(Space).filter(Space.project_id == project.id).all()
+        
+        for space in spaces:
+            row += 1
+            
+            # Get latest receiver result if available
+            latest_rec = space.get_latest_receiver_result() if hasattr(space, 'get_latest_receiver_result') else None
+            nc_rating = getattr(latest_rec, 'nc_rating', None)
+            dba_level = getattr(latest_rec, 'total_dba', None)
+            
+            rating_method = "NC" if nc_rating else ""
+            
+            data = [
+                space.id or "",
+                space.name or "",
+                space.space_type or "",
+                rating_method,
+                dba_level or "",
+                "HVAC Noise Calculation" if dba_level else "",
+                f"NC-{int(nc_rating)}" if nc_rating else ""
+            ]
+            
+            for col, value in enumerate(data, 1):
+                cell = ws.cell(row=row, column=col, value=value)
+                if col == 5 and isinstance(value, (int, float)):
+                    cell.number_format = '0.0'
+        
+        self.auto_size_columns(ws)
+    
+    def create_leed_sound_transmission_sheet(self, wb, project, session):
+        """Create LEED Sound Transmission sheet"""
+        ws = wb.create_sheet("LEED - Sound Transmission")
+        
+        # Headers matching LEED template
+        headers = [
+            "Room ID", "Room Name", "Type", "Assembly Location (Wall, Floor, Ceiling)",
+            "Assembly ID / Description", "Adjacent Space(s)", "STC Rating",
+            "Source of Assembly Data (e.g. A6.1 Wall Types)", "Notes"
+        ]
+        
+        row = 1
+        for col, header in enumerate(headers, 1):
+            ws.cell(row=row, column=col, value=header)
+            self.apply_header_style(ws, f'{get_column_letter(col)}{row}')
+        
+        # Get spaces data
+        spaces = session.query(Space).filter(Space.project_id == project.id).all()
+        
+        for space in spaces:
+            row += 1
+            data = [
+                space.id or "",
+                space.name or "",
+                space.space_type or "",
+                "",  # Assembly Location
+                "",  # Assembly ID / Description
+                "",  # Adjacent Space(s)
+                "",  # STC Rating
+                "",  # Source of Assembly Data
+                space.description or ""
+            ]
+            
+            for col, value in enumerate(data, 1):
+                ws.cell(row=row, column=col, value=value)
+        
+        self.auto_size_columns(ws)
+    
+    def create_leed_wall_ceiling_floor_data_sheet(self, wb, project, session):
+        """Create LEED Wall Ceiling Floor Data sheet"""
+        ws = wb.create_sheet("LEED - Wall Ceiling Floor Data")
+        
+        # Headers matching LEED template
+        headers = [
+            "Assembly Location (Wall, Floor, Ceiling)", "Assembly ID / Description",
+            "STC Rating", "Source of Assembly Data (e.g. A6.1 Wall Types)", "Notes"
+        ]
+        
+        row = 1
+        for col, header in enumerate(headers, 1):
+            ws.cell(row=row, column=col, value=header)
+            self.apply_header_style(ws, f'{get_column_letter(col)}{row}')
+        
+        # Get unique materials from all spaces
+        spaces = session.query(Space).filter(Space.project_id == project.id).all()
+        
+        # Collect unique materials by location
+        materials_by_location = {
+            'Wall': set(),
+            'Ceiling': set(),
+            'Floor': set()
+        }
+        
+        for space in spaces:
+            if space.wall_material:
+                materials_by_location['Wall'].add(space.wall_material)
+            if space.ceiling_material:
+                materials_by_location['Ceiling'].add(space.ceiling_material)
+            if space.floor_material:
+                materials_by_location['Floor'].add(space.floor_material)
+        
+        # Add rows for each unique material
+        for location in ['Wall', 'Ceiling', 'Floor']:
+            for material in sorted(materials_by_location[location]):
+                row += 1
+                data = [
+                    location,
+                    material,
+                    "",  # STC Rating (would need to be looked up from materials DB)
+                    "Materials Database",
+                    ""
+                ]
+                
+                for col, value in enumerate(data, 1):
+                    ws.cell(row=row, column=col, value=value)
+        
+        self.auto_size_columns(ws)
     
     def get_export_summary(self, project_id: int) -> Dict[str, Any]:
         """
@@ -621,7 +936,12 @@ class ExcelExporter:
                     "Spaces Analysis" if spaces else None,
                     "HVAC Paths" if hvac_paths else None,
                     "HVAC Components" if hvac_components else None,
-                    "NC Analysis" if hvac_paths else None
+                    "NC Analysis" if hvac_paths else None,
+                    "LEED - Reverberation Time",
+                    "LEED - Absorptive Materials",
+                    "LEED - Background Noise",
+                    "LEED - Sound Transmission",
+                    "LEED - Wall Ceiling Floor Data"
                 ]
             }
             
