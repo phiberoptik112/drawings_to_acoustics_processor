@@ -69,6 +69,8 @@ class PathElement:
     fitting_type: Optional[str] = None
     # Optional override for BRANCH_TAKEOFF_90 spectrum choice: 'auto' | 'main_duct' | 'branch_duct'
     branch_takeoff_choice: Optional[str] = None
+    # Terminal end condition for End Reflection Loss: 'flush' (grille/diffuser) or 'free' (open to space)
+    termination_type: Optional[str] = None
 
 
 @dataclass
@@ -1334,7 +1336,9 @@ class HVACNoiseEngine:
         return result
     
     def _calculate_terminal_effect(self, element: PathElement) -> Dict[str, Any]:
-        """Calculate terminal unit effect (room correction)"""
+        """Calculate terminal unit effect including End Reflection Loss (ERL)"""
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
         result: Dict[str, Any] = {
             'attenuation_spectrum': None,
             'generated_spectrum': None,
@@ -1343,18 +1347,38 @@ class HVACNoiseEngine:
         }
         
         try:
-            # 1) End Reflection Loss at terminal (treat grille/diffuser termination as 'flush')
+            # 1) End Reflection Loss at terminal
             diameter_in: float = 0.0
+            width_in: float = 0.0
+            height_in: float = 0.0
+            
             try:
                 if (getattr(element, 'duct_shape', 'rectangular') or '').lower() == 'circular':
                     diameter_in = float(getattr(element, 'diameter', 0.0) or 0.0)
+                    if debug_export_enabled:
+                        print(f"DEBUG_ERL: Circular duct - diameter={diameter_in:.2f} inches")
                 else:
                     width_in = float(getattr(element, 'width', 0.0) or 0.0)
                     height_in = float(getattr(element, 'height', 0.0) or 0.0)
+                    if debug_export_enabled:
+                        print(f"DEBUG_ERL: Rectangular duct - width={width_in:.2f}, height={height_in:.2f} inches")
                     if width_in > 0 and height_in > 0:
                         diameter_in = float(compute_effective_diameter_rectangular(width_in, height_in))
-            except Exception:
+                        if debug_export_enabled:
+                            print(f"DEBUG_ERL: Effective diameter={diameter_in:.2f} inches")
+            except Exception as e:
                 diameter_in = 0.0
+                if debug_export_enabled:
+                    print(f"DEBUG_ERL: Error computing diameter: {e}")
+
+            # Get termination type (flush for grilles/diffusers, free for open terminations)
+            termination_type = getattr(element, 'termination_type', 'flush') or 'flush'
+            if termination_type not in ['flush', 'free']:
+                termination_type = 'flush'
+            
+            if debug_export_enabled:
+                print(f"DEBUG_ERL: Termination type: {termination_type}")
+                print(f"DEBUG_ERL: Computing End Reflection Loss...")
 
             if diameter_in > 0:
                 erl_spectrum: List[float] = []
@@ -1364,18 +1388,33 @@ class HVACNoiseEngine:
                             diameter=diameter_in,
                             frequency_hz=float(freq),
                             diameter_units='in',
-                            termination='flush',
+                            termination=termination_type,
                         ))
-                    except Exception:
+                    except Exception as e:
                         erl_db = 0.0
+                        if debug_export_enabled:
+                            print(f"DEBUG_ERL: Error computing ERL at {freq}Hz: {e}")
                     erl_spectrum.append(max(0.0, erl_db))
+                
                 result['attenuation_spectrum'] = erl_spectrum
                 result['attenuation_dba'] = self._calculate_dba_from_spectrum(erl_spectrum)
+                
+                if debug_export_enabled:
+                    print(f"DEBUG_ERL: ERL spectrum (dB): {[f'{x:.2f}' for x in erl_spectrum]}")
+                    print(f"DEBUG_ERL: ERL A-weighted total: {result['attenuation_dba']:.2f} dB")
+                
                 debug_logger.debug('HVACEngine', 
                     "Terminal ERL attenuation", 
-                    {'diameter_in': diameter_in, 
+                    {'diameter_in': diameter_in,
+                     'width_in': width_in,
+                     'height_in': height_in,
+                     'termination_type': termination_type,
                      'attenuation_spectrum': erl_spectrum,
                      'attenuation_dba': result['attenuation_dba']})
+            else:
+                if debug_export_enabled:
+                    print(f"DEBUG_ERL: WARNING - No valid duct dimensions for ERL calculation")
+                    print(f"DEBUG_ERL: Element width={width_in}, height={height_in}, diameter={diameter_in}")
 
             # 2) Optional receiver room correction metadata (non-blocking)
             try:
@@ -1388,6 +1427,8 @@ class HVACNoiseEngine:
                 
         except Exception as e:
             result['error'] = f"Terminal calculation error: {str(e)}"
+            if debug_export_enabled:
+                print(f"DEBUG_ERL: Terminal calculation error: {e}")
             
         return result
     
@@ -1647,12 +1688,44 @@ class HVACNoiseEngine:
         # Add terminal element
         terminal_component = path_data.get('terminal_component', {})
         if terminal_component:
+            # Propagate duct dimensions from the last segment for End Reflection Loss calculation
+            last_width = 0.0
+            last_height = 0.0
+            last_diameter = 0.0
+            last_shape = 'rectangular'
+            
+            if elements:
+                # Find the last element with duct dimensions
+                for elem in reversed(elements):
+                    if elem.element_type in ['duct', 'flex_duct', 'elbow', 'junction']:
+                        last_width = elem.width
+                        last_height = elem.height
+                        last_diameter = elem.diameter
+                        last_shape = elem.duct_shape
+                        break
+            
+            # Get termination type from terminal_component or default to 'flush'
+            termination_type = terminal_component.get('termination_type', 'flush')
+            if termination_type not in ['flush', 'free']:
+                termination_type = 'flush'  # Default to flush for grilles/diffusers
+            
+            if debug_export_enabled:
+                print(f"DEBUG_HNE_LEGACY: Creating terminal element:")
+                print(f"DEBUG_HNE_LEGACY:   Propagated dimensions - width={last_width}, height={last_height}, diameter={last_diameter}")
+                print(f"DEBUG_HNE_LEGACY:   Duct shape: {last_shape}")
+                print(f"DEBUG_HNE_LEGACY:   Termination type: {termination_type}")
+            
             terminal_element = PathElement(
                 element_type='terminal',
                 element_id='terminal_1',
+                width=last_width,
+                height=last_height,
+                diameter=last_diameter,
+                duct_shape=last_shape,
                 source_noise_level=terminal_component.get('noise_level', 0.0),
                 room_volume=terminal_component.get('room_volume', 0.0),
-                room_absorption=terminal_component.get('room_absorption', 0.0)
+                room_absorption=terminal_component.get('room_absorption', 0.0),
+                termination_type=termination_type
             )
             elements.append(terminal_element)
         
