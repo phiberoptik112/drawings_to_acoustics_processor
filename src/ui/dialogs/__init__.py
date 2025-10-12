@@ -3,6 +3,7 @@ UI Dialogs package
 """
 
 from .project_dialog import ProjectDialog
+from .project_settings_dialog import ProjectSettingsDialog
 from .scale_dialog import ScaleDialog
 from .room_properties import RoomPropertiesDialog
 from .material_search_dialog import MaterialSearchDialog
@@ -17,6 +18,7 @@ from .comparison_selection_dialog import ComparisonSelectionDialog
 
 __all__ = [
 	'ProjectDialog',
+	'ProjectSettingsDialog',
 	'ScaleDialog',
 	'RoomPropertiesDialog',
 	'MaterialSearchDialog',
