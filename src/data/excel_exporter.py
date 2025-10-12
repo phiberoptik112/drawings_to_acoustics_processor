@@ -665,10 +665,15 @@ class ExcelExporter:
             
             treatments_text = "; ".join(surface_treatments) if surface_treatments else ""
             
+            # Get room type name from the room_type key
+            room_type_name = ""
+            if space.room_type and space.room_type in ROOM_TYPE_DEFAULTS:
+                room_type_name = ROOM_TYPE_DEFAULTS[space.room_type]['name']
+            
             data = [
                 space.id or "",  # Room ID
                 space.name or "",  # Room Name
-                space.space_type or "",  # Type
+                room_type_name or "",  # Type
                 "",  # Grouping Type (if applicable)
                 space.target_rt60 or "",  # Required RT (sec)
                 space.calculated_rt60 or "",  # Calculated RT (sec)
@@ -709,16 +714,21 @@ class ExcelExporter:
             # Add ceiling material if present
             if space.ceiling_material:
                 row += 1
+                # Get room type name from the room_type key
+                room_type_name = ""
+                if space.room_type and space.room_type in ROOM_TYPE_DEFAULTS:
+                    room_type_name = ROOM_TYPE_DEFAULTS[space.room_type]['name']
+                
                 data = [
                     space.id or "",
-                    f"{space.name} / {space.space_type or 'N/A'}",
+                    f"{space.name} / {room_type_name or 'N/A'}",
                     "",  # Surface Material ID
                     space.ceiling_material or "",
                     "",  # Manufacturer
                     "",  # Absorption Coefficient (500 Hz)
                     "",  # Absorption Coefficient (1000 Hz)
                     "",  # Absorption Coefficient (2000 Hz)
-                    space.ceiling_area or 0,
+                    space.get_ceiling_area() or 0,
                     "Ceiling",
                     "Materials Database",
                     ""
@@ -729,9 +739,14 @@ class ExcelExporter:
             # Add wall material if present
             if space.wall_material:
                 row += 1
+                # Get room type name from the room_type key
+                room_type_name = ""
+                if space.room_type and space.room_type in ROOM_TYPE_DEFAULTS:
+                    room_type_name = ROOM_TYPE_DEFAULTS[space.room_type]['name']
+                
                 data = [
                     space.id or "",
-                    f"{space.name} / {space.space_type or 'N/A'}",
+                    f"{space.name} / {room_type_name or 'N/A'}",
                     "",  # Surface Material ID
                     space.wall_material or "",
                     "",  # Manufacturer
@@ -749,9 +764,14 @@ class ExcelExporter:
             # Add floor material if present
             if space.floor_material:
                 row += 1
+                # Get room type name from the room_type key
+                room_type_name = ""
+                if space.room_type and space.room_type in ROOM_TYPE_DEFAULTS:
+                    room_type_name = ROOM_TYPE_DEFAULTS[space.room_type]['name']
+                
                 data = [
                     space.id or "",
-                    f"{space.name} / {space.space_type or 'N/A'}",
+                    f"{space.name} / {room_type_name or 'N/A'}",
                     "",  # Surface Material ID
                     space.floor_material or "",
                     "",  # Manufacturer
@@ -797,10 +817,15 @@ class ExcelExporter:
             
             rating_method = "NC" if nc_rating else ""
             
+            # Get room type name from the room_type key
+            room_type_name = ""
+            if space.room_type and space.room_type in ROOM_TYPE_DEFAULTS:
+                room_type_name = ROOM_TYPE_DEFAULTS[space.room_type]['name']
+            
             data = [
                 space.id or "",
                 space.name or "",
-                space.space_type or "",
+                room_type_name or "",
                 rating_method,
                 dba_level or "",
                 "HVAC Noise Calculation" if dba_level else "",
@@ -835,10 +860,15 @@ class ExcelExporter:
         
         for space in spaces:
             row += 1
+            # Get room type name from the room_type key
+            room_type_name = ""
+            if space.room_type and space.room_type in ROOM_TYPE_DEFAULTS:
+                room_type_name = ROOM_TYPE_DEFAULTS[space.room_type]['name']
+            
             data = [
                 space.id or "",
                 space.name or "",
-                space.space_type or "",
+                room_type_name or "",
                 "",  # Assembly Location
                 "",  # Assembly ID / Description
                 "",  # Adjacent Space(s)
