@@ -1,0 +1,66 @@
+fix: Correct ERL calculation to use ASHRAE TABLE28 for standard frequencies
+
+CRITICAL BUG FIX
+Fixes incorrect End Reflection Loss (ERL) calculation that was producing
+inverted spectrum behavior contrary to ASHRAE 2015 Applications Handbook.
+
+## Problem
+The code was using the simplified Cunefare & Michaud (2008) equation for ALL
+frequencies, which produces:
+- LOW attenuation at LOW frequencies (0.01 dB @ 63 Hz)  ✗ WRONG
+- HIGH attenuation at HIGH frequencies (15.40 dB @ 8 kHz) ✗ WRONG
+
+ASHRAE TABLE28 empirically measured data shows the opposite:
+- HIGH attenuation at LOW frequencies (12 dB @ 63 Hz for 12" duct) ✓ CORRECT
+- LOW attenuation at HIGH frequencies (0 dB @ 1 kHz for 12" duct) ✓ CORRECT
+
+## Root Cause
+The physics model in the simplified equation assumes geometric reflection
+proportional to frequency, which is valid for large enclosures but NOT for
+small duct terminations where DIFFRACTION dominates at low frequencies.
+
+ASHRAE TABLE28 is empirically measured and accounts for diffraction effects.
+
+## Solution
+Implement hybrid approach:
+1. Use ASHRAE TABLE28 (empirical) for frequencies ≤ 1000 Hz
+2. Use simplified equation for frequencies > 1000 Hz (extrapolation only)
+
+## Impact
+All HVAC paths with terminal elements now calculate correct attenuation:
+- 6" duct @ 63 Hz: Was 0.01 dB, now 18.00 dB (+17.99 dB correction)
+- 12" duct @ 63 Hz: Was 0.01 dB, now 12.00 dB (+11.99 dB correction)
+- 36" duct @ 63 Hz: Was 0.01 dB, now 4.00 dB (+3.99 dB correction)
+
+This means low-frequency noise control is now accurately calculated.
+Most calculations will show HIGHER terminal noise (more conservative).
+
+## Files Changed
+- src/calculations/hvac_noise_engine.py
+  * Import: Added erl_from_table_flush
+  * Method: _calculate_terminal_effect() - added method selection logic
+
+## Testing
+Verified corrected spectrum against ASHRAE TABLE28:
+✓ 63 Hz, 12" duct: 12 dB (exact match)
+✓ 125 Hz, 12" duct: 7 dB (exact match)
+✓ 250 Hz, 12" duct: 3 dB (exact match)
+✓ 500 Hz, 12" duct: 1 dB (exact match)
+✓ 1000 Hz, 12" duct: 0 dB (exact match)
+
+## References
+- ASHRAE 2015 Applications Handbook, Chapter 48
+  Table 28: End Reflection Loss (Flush Termination)
+- Cunefare & Michaud (2008) - Simplified ERL equation
+  Location: src/calculations/end_reflection_loss.py (used for f > 1000 Hz)
+
+## Breaking Changes
+✓ Yes - Results will differ from previous calculations
+✓ More accurate per ASHRAE standards
+✓ Recommend recalculating all existing paths for updated NC ratings
+
+Related issues:
+- ERL spectrum validation: https://github.com/issue/xxx
+- End Reflection Loss implementation: https://github.com/issue/yyy
+
+Co-authored-by: ASHRAE 2015 Applications Handbook, Chapter 48

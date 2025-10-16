@@ -37,7 +37,7 @@ from .elbow_turning_vane_generated_noise_calculations import ElbowTurningVaneCal
 from .junction_elbow_generated_noise_calculations import JunctionElbowNoiseCalculator, JunctionType
 from .rectangular_elbows_calculations import RectangularElbowsCalculator
 from .receiver_room_sound_correction_calculations import ReceiverRoomSoundCorrection
-from .end_reflection_loss import erl_from_equation, compute_effective_diameter_rectangular
+from .end_reflection_loss import erl_from_equation, erl_from_table_flush, compute_effective_diameter_rectangular
 # Note: Unlined rectangular duct calculations are handled by RectangularDuctCalculator.get_unlined_attenuation()
 
 
@@ -1414,23 +1414,40 @@ class HVACNoiseEngine:
                 erl_spectrum: List[float] = []
                 for freq in self.FREQUENCY_BANDS:
                     try:
-                        erl_db = float(erl_from_equation(
-                            diameter=diameter_in,
-                            frequency_hz=float(freq),
-                            diameter_units='in',
-                            termination=termination_type,
-                        ))
+                        # Use ASHRAE TABLE28 for frequencies where it's available (<=1000 Hz)
+                        # TABLE28 is empirically measured and more accurate than the equation
+                        # For frequencies >1000 Hz, use the simplified equation for extrapolation
+                        if freq <= 1000:
+                            # Use TABLE28 (flush termination, most common)
+                            erl_db = float(erl_from_table_flush(
+                                diameter_in=diameter_in,
+                                frequency_hz=float(freq),
+                            ))
+                            method_used = "TABLE28"
+                        else:
+                            # Use equation for frequencies beyond TABLE28 range
+                            erl_db = float(erl_from_equation(
+                                diameter=diameter_in,
+                                frequency_hz=float(freq),
+                                diameter_units='in',
+                                termination=termination_type,
+                            ))
+                            method_used = "Equation"
+                        
+                        if debug_export_enabled:
+                            print(f"DEBUG_ERL: {freq}Hz: {erl_db:.2f} dB ({method_used})")
                     except Exception as e:
                         erl_db = 0.0
                         if debug_export_enabled:
                             print(f"DEBUG_ERL: Error computing ERL at {freq}Hz: {e}")
                     erl_spectrum.append(max(0.0, erl_db))
-                
+
                 result['attenuation_spectrum'] = erl_spectrum
                 result['attenuation_dba'] = self._calculate_dba_from_spectrum(erl_spectrum)
                 
                 if debug_export_enabled:
                     print(f"DEBUG_ERL: ERL spectrum (dB): {[f'{x:.2f}' for x in erl_spectrum]}")
+                    print(f"Frequency Bands: {self.FREQUENCY_BANDS}")
                     print(f"DEBUG_ERL: ERL A-weighted total: {result['attenuation_dba']:.2f} dB")
                 
                 debug_logger.debug('HVACEngine', 
