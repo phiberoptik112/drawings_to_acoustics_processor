@@ -30,6 +30,13 @@ class HVACComponent(Base):
     # junction spectrum to use in path calculations: 'auto' | 'main' | 'branch'
     branch_takeoff_choice = Column(String(20))
     
+    # Elbow-specific fields (turning vanes and lining)
+    has_turning_vanes = Column(Boolean, default=False)
+    vane_chord_length = Column(Float)  # Chord length of typical vane (inches)
+    num_vanes = Column(Integer)  # Number of turning vanes
+    lining_thickness = Column(Float)  # Lining thickness (inches)
+    pressure_drop = Column(Float)  # Pressure drop across elbow (in. w.g.)
+    
     # Silencer-specific fields
     is_silencer = Column(Boolean, default=False)
     silencer_type = Column(String(50))  # 'reactive', 'dissipative', 'hybrid'

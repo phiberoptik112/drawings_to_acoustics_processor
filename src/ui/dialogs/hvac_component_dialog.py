@@ -141,6 +141,45 @@ class HVACComponentDialog(QDialog):
         
         acoustic_group.setLayout(acoustic_layout)
         layout.addWidget(acoustic_group)
+        
+        # Elbow Properties (only shown for elbow component types)
+        self.elbow_group = QGroupBox("Elbow Properties")
+        elbow_layout = QFormLayout()
+        
+        # Lining checkbox and thickness
+        self.has_lining_cb = QCheckBox("Has Lining")
+        self.has_lining_cb.toggled.connect(self.on_has_lining_toggled)
+        elbow_layout.addRow("", self.has_lining_cb)
+        
+        self.lining_thickness_spin = QDoubleSpinBox()
+        self.lining_thickness_spin.setRange(0, 2.0)
+        self.lining_thickness_spin.setSuffix(" in")
+        self.lining_thickness_spin.setDecimals(2)
+        self.lining_thickness_spin.setSingleStep(0.25)
+        self.lining_thickness_spin.setEnabled(False)
+        elbow_layout.addRow("  Lining Thickness:", self.lining_thickness_spin)
+        
+        # Turning vanes checkbox and properties
+        self.has_vanes_cb = QCheckBox("Has Turning Vanes")
+        self.has_vanes_cb.toggled.connect(self.on_has_vanes_toggled)
+        elbow_layout.addRow("", self.has_vanes_cb)
+        
+        self.vane_chord_spin = QDoubleSpinBox()
+        self.vane_chord_spin.setRange(1, 24)
+        self.vane_chord_spin.setSuffix(" in")
+        self.vane_chord_spin.setDecimals(1)
+        self.vane_chord_spin.setValue(6.0)
+        self.vane_chord_spin.setEnabled(False)
+        elbow_layout.addRow("  Vane Chord Length:", self.vane_chord_spin)
+        
+        self.num_vanes_spin = QSpinBox()
+        self.num_vanes_spin.setRange(1, 20)
+        self.num_vanes_spin.setValue(5)
+        self.num_vanes_spin.setEnabled(False)
+        elbow_layout.addRow("  Number of Vanes:", self.num_vanes_spin)
+        
+        self.elbow_group.setLayout(elbow_layout)
+        layout.addWidget(self.elbow_group)
 
         # Junction Preferences (only shown for relevant component types)
         self.junction_group = QGroupBox("Junction Preferences")
@@ -386,6 +425,20 @@ class HVACComponentDialog(QDialog):
         # default
         return 'ahu'
         
+    def on_has_lining_toggled(self, checked):
+        """Handle lining checkbox toggle"""
+        self.lining_thickness_spin.setEnabled(checked)
+        if not checked:
+            self.lining_thickness_spin.setValue(0)
+    
+    def on_has_vanes_toggled(self, checked):
+        """Handle turning vanes checkbox toggle"""
+        self.vane_chord_spin.setEnabled(checked)
+        self.num_vanes_spin.setEnabled(checked)
+        if not checked:
+            self.vane_chord_spin.setValue(6.0)
+            self.num_vanes_spin.setValue(5)
+    
     def on_component_type_changed(self, component_type):
         """Handle component type change"""
         if component_type in STANDARD_COMPONENTS:
@@ -397,8 +450,15 @@ class HVACComponentDialog(QDialog):
             # Update name suggestion
             if not self.name_edit.text():
                 self.name_edit.setText(f"{component_type.upper()}-1")
-        # Show the junction preferences only for branch/junction-like components
+        
+        # Get component type string
         ctype = (component_type or '').lower()
+        
+        # Show the elbow properties only for elbow components
+        show_elbow = 'elbow' in ctype
+        self.elbow_group.setVisible(show_elbow)
+        
+        # Show the junction preferences only for branch/junction-like components
         show_junction = ('branch' in ctype) or ('junction' in ctype) or ('tee' in ctype)
         self.junction_group.setVisible(show_junction)
     
@@ -532,6 +592,31 @@ class HVACComponentDialog(QDialog):
                     self.branch_takeoff_choice_combo.setCurrentIndex(idx)
         except Exception:
             pass
+        
+        # Load elbow properties if present
+        try:
+            # Lining
+            lining_thickness = getattr(self.component, 'lining_thickness', None)
+            if lining_thickness and lining_thickness > 0:
+                self.has_lining_cb.setChecked(True)
+                self.lining_thickness_spin.setValue(lining_thickness)
+            else:
+                self.has_lining_cb.setChecked(False)
+            
+            # Turning vanes
+            has_vanes = getattr(self.component, 'has_turning_vanes', False)
+            if has_vanes:
+                self.has_vanes_cb.setChecked(True)
+                vane_chord = getattr(self.component, 'vane_chord_length', 6.0)
+                num_vanes = getattr(self.component, 'num_vanes', 5)
+                if vane_chord:
+                    self.vane_chord_spin.setValue(vane_chord)
+                if num_vanes:
+                    self.num_vanes_spin.setValue(num_vanes)
+            else:
+                self.has_vanes_cb.setChecked(False)
+        except Exception as e:
+            print(f"DEBUG: Failed to load elbow properties: {e}")
     
     def save_component(self):
         """Save the HVAC component using standardized session management"""
@@ -639,6 +724,29 @@ class HVACComponentDialog(QDialog):
         print(f"DEBUG_COMPONENT_SAVE:   Setting component.cfm to: {cfm_value}")
         component.cfm = cfm_value
         
+        # Save elbow properties
+        try:
+            # Lining
+            if self.has_lining_cb.isChecked():
+                component.lining_thickness = self.lining_thickness_spin.value()
+            else:
+                component.lining_thickness = None
+            
+            # Turning vanes
+            component.has_turning_vanes = self.has_vanes_cb.isChecked()
+            if self.has_vanes_cb.isChecked():
+                component.vane_chord_length = self.vane_chord_spin.value()
+                component.num_vanes = self.num_vanes_spin.value()
+            else:
+                component.vane_chord_length = None
+                component.num_vanes = None
+            
+            print(f"DEBUG_COMPONENT_SAVE:   Elbow properties: lining={component.lining_thickness}, "
+                  f"has_vanes={component.has_turning_vanes}, chord={component.vane_chord_length}, "
+                  f"num_vanes={component.num_vanes}")
+        except Exception as e:
+            print(f"DEBUG_COMPONENT_SAVE:   Error saving elbow properties: {e}")
+        
         # Handle mechanical unit association propagation
         self.update_mechanical_unit_associations(component, session)
     
@@ -649,6 +757,12 @@ class HVACComponentDialog(QDialog):
         print(f"DEBUG_COMPONENT_CREATE: Creating new component")
         print(f"DEBUG_COMPONENT_CREATE:   UI CFM value: {cfm_value}")
         
+        # Prepare elbow properties
+        lining_thickness = self.lining_thickness_spin.value() if self.has_lining_cb.isChecked() else None
+        has_vanes = self.has_vanes_cb.isChecked()
+        vane_chord = self.vane_chord_spin.value() if has_vanes else None
+        num_vanes = self.num_vanes_spin.value() if has_vanes else None
+        
         return HVACComponent(
             project_id=self.project_id,
             drawing_id=self.drawing_id,
@@ -658,7 +772,11 @@ class HVACComponentDialog(QDialog):
             y_position=self.y_spin.value(),
             noise_level=self.noise_spin.value(),
             cfm=cfm_value,
-            branch_takeoff_choice=self.branch_takeoff_choice_combo.currentText()
+            branch_takeoff_choice=self.branch_takeoff_choice_combo.currentText(),
+            has_turning_vanes=has_vanes,
+            vane_chord_length=vane_chord,
+            num_vanes=num_vanes,
+            lining_thickness=lining_thickness
         )
     
     def update_mechanical_unit_associations(self, component, session):
