@@ -37,7 +37,7 @@ from .elbow_turning_vane_generated_noise_calculations import ElbowTurningVaneCal
 from .junction_elbow_generated_noise_calculations import JunctionElbowNoiseCalculator, JunctionType
 from .rectangular_elbows_calculations import RectangularElbowsCalculator
 from .receiver_room_sound_correction_calculations import ReceiverRoomSoundCorrection
-from .end_reflection_loss import erl_from_equation, compute_effective_diameter_rectangular
+from .end_reflection_loss import erl_from_equation, erl_from_table_flush, compute_effective_diameter_rectangular
 # Note: Unlined rectangular duct calculations are handled by RectangularDuctCalculator.get_unlined_attenuation()
 
 
@@ -69,6 +69,8 @@ class PathElement:
     fitting_type: Optional[str] = None
     # Optional override for BRANCH_TAKEOFF_90 spectrum choice: 'auto' | 'main_duct' | 'branch_duct'
     branch_takeoff_choice: Optional[str] = None
+    # Terminal end condition for End Reflection Loss: 'flush' (grille/diffuser) or 'free' (open to space)
+    termination_type: Optional[str] = None
 
 
 @dataclass
@@ -924,50 +926,18 @@ class HVACNoiseEngine:
                 print(f"DEBUG_DUCT:   Duct attenuation A-weighted IL (diagnostic): {result['attenuation_dba']:.2f} dB")
                 print(f"DEBUG_DUCT:   Duct attenuation spectrum (IL): {[f'{x:.1f}' for x in result['attenuation_spectrum']]}")
             
-            # 2. If this duct segment also has a fitting, calculate fitting effects
-            fitting_type_lower = (element.fitting_type or '').lower()
-            # Only elbows are handled as duct-contained fittings. Junction-like fittings are modeled as standalone elements.
-            has_fitting = (element.fitting_type and ('elbow' in fitting_type_lower))
+            # 2. FITTING CALCULATIONS DISABLED
+            # Note: Fittings are now modeled as standalone components for better control
+            # This section is disabled to prevent fittings from affecting NC calculations
+            # Only standalone elbow/junction components will affect path noise
             
             if debug_export_enabled:
-                print(f"DEBUG_DUCT:   Fitting type check:")
+                fitting_type_lower = (element.fitting_type or '').lower()
+                print(f"DEBUG_DUCT:   Fitting type check (DISABLED):")
                 print(f"DEBUG_DUCT:     Raw fitting_type: '{element.fitting_type}'")
-                print(f"DEBUG_DUCT:     Lower fitting_type: '{fitting_type_lower}'")
-                print(f"DEBUG_DUCT:     Has fitting: {has_fitting}")
-                if has_fitting:
-                    print(f"DEBUG_DUCT:   Duct also contains fitting: {element.fitting_type}")
+                print(f"DEBUG_DUCT:     ⚠️  Fitting calculations are DISABLED - use component-based elbows instead")
             
-            if has_fitting:
-                # Calculate fitting effects (both attenuation and generated noise)
-                fitting_result = self._calculate_fitting_effect_for_duct(element)
-                
-                if fitting_result:
-                    # Combine duct attenuation with fitting attenuation
-                    if fitting_result.get('attenuation_spectrum'):
-                        fitting_attenuation = fitting_result['attenuation_spectrum']
-                        for i in range(NUM_OCTAVE_BANDS):
-                            result['attenuation_spectrum'][i] += fitting_attenuation[i]
-                    
-                    # Add fitting generated noise (combine with existing, don't overwrite)
-                    if fitting_result.get('generated_spectrum'):
-                        fitting_generated = fitting_result['generated_spectrum']
-                        for i in range(NUM_OCTAVE_BANDS):
-                            if i < len(fitting_generated) and fitting_generated[i] is not None:
-                                # Combine generated noise using logarithmic addition
-                                if result['generated_spectrum'][i] > 0 and fitting_generated[i] > 0:
-                                    result['generated_spectrum'][i] = self._combine_noise_levels(
-                                        result['generated_spectrum'][i], fitting_generated[i]
-                                    )
-                                elif fitting_generated[i] > 0:
-                                    result['generated_spectrum'][i] = fitting_generated[i]
-                    
-                    # Recalculate A-weighted values
-                    result['attenuation_dba'] = self._calculate_dba_from_spectrum(result['attenuation_spectrum'])
-                    result['generated_dba'] = self._calculate_dba_from_spectrum(result['generated_spectrum'])
-                    
-                    if debug_export_enabled:
-                        print(f"DEBUG_DUCT:   Combined IL (A-weighted diagnostic): {result['attenuation_dba']:.2f} dB")
-                        print(f"DEBUG_DUCT:   Fitting generated noise: {result['generated_dba']:.2f} dB(A)")
+            # Fitting effects are now disabled - use standalone elbow/junction components instead
             
         except Exception as e:
             result['error'] = f"Duct calculation error: {str(e)}"
@@ -1130,14 +1100,40 @@ class HVACNoiseEngine:
         
         debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
         
+        print(f"╔═══════════════════════════════════════════════════════════════╗")
+        print(f"║  ELBOW EFFECT CALCULATION - STARTING                         ║")
+        print(f"╚═══════════════════════════════════════════════════════════════╝")
+        print(f"DEBUG_ELBOW_ENGINE: Element properties received:")
+        print(f"DEBUG_ELBOW_ENGINE:   element.element_id = {getattr(element, 'element_id', 'N/A')}")
+        print(f"DEBUG_ELBOW_ENGINE:   element.duct_shape = {getattr(element, 'duct_shape', 'N/A')}")
+        print(f"DEBUG_ELBOW_ENGINE:   element.width = {getattr(element, 'width', 'N/A')} in")
+        print(f"DEBUG_ELBOW_ENGINE:   element.lining_thickness = {getattr(element, 'lining_thickness', 'N/A')} in")
+        print(f"DEBUG_ELBOW_ENGINE:   element.num_vanes = {getattr(element, 'num_vanes', 'N/A')}")
+        print(f"DEBUG_ELBOW_ENGINE:   element.vane_chord_length = {getattr(element, 'vane_chord_length', 'N/A')} in")
+        
         try:
             # Optional insertion loss due to elbow (rectangular elbows per ASHRAE tables)
             # Apply only for rectangular ducts; circular elbow insertion loss model not integrated here
             attenuation_spectrum: List[float] = [0.0] * NUM_OCTAVE_BANDS
             if (getattr(element, 'duct_shape', 'rectangular') != 'circular'):
-                lined = (element.lining_thickness or 0.0) > 0.0
+                lining_value = element.lining_thickness or 0.0
+                lined = lining_value > 0.0
+                
+                print(f"DEBUG_ELBOW_ENGINE: Rectangular elbow insertion loss calculation:")
+                print(f"DEBUG_ELBOW_ENGINE:   lining_value = {lining_value} in")
+                print(f"DEBUG_ELBOW_ENGINE:   lined (boolean) = {lined}")
+                
                 # Determine elbow type from hints
                 elbow_type = 'square_with_vanes' if (element.num_vanes or 0) > 0 else 'square_no_vanes'
+                print(f"DEBUG_ELBOW_ENGINE:   elbow_type = {elbow_type}")
+                
+                if lined:
+                    print(f"DEBUG_ELBOW_ENGINE:   ✓✓✓ LINING BEING APPLIED IN CALCULATION ✓✓✓")
+                    print(f"DEBUG_ELBOW_ENGINE:   Calling rect_elbows_calc with lined=True")
+                else:
+                    print(f"DEBUG_ELBOW_ENGINE:   ✗✗✗ NO LINING IN CALCULATION ✗✗✗")
+                    print(f"DEBUG_ELBOW_ENGINE:   Calling rect_elbows_calc with lined=False")
+                
                 # Use width in inches; calculator expects per-frequency calls
                 for i, freq in enumerate(self.FREQUENCY_BANDS):
                     attenuation_spectrum[i] = float(self.rect_elbows_calc.calculate_elbow_insertion_loss(
@@ -1146,16 +1142,29 @@ class HVACNoiseEngine:
                         elbow_type=elbow_type,
                         lined=lined
                     ) or 0.0)
+                
                 result['attenuation_spectrum'] = attenuation_spectrum
                 result['attenuation_dba'] = self._calculate_dba_from_spectrum(attenuation_spectrum)
+                
+                print(f"DEBUG_ELBOW_ENGINE: Insertion loss calculation complete:")
+                print(f"DEBUG_ELBOW_ENGINE:   attenuation_spectrum = {[f'{x:.2f}' for x in attenuation_spectrum]}")
+                print(f"DEBUG_ELBOW_ENGINE:   attenuation_dba = {result['attenuation_dba']:.2f} dB")
 
             if element.vane_chord_length > 0 and element.num_vanes > 0:
-                # Elbow with turning vanes
+                # Elbow with turning vanes - estimate pressure drop if not provided
+                pressure_drop = element.pressure_drop if element.pressure_drop else 0.2  # Typical elbow: 0.1-0.3 in. w.g.
+                
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE:     Turning vane elbow detected")
+                    print(f"DEBUG_ENGINE:       vane_chord_length={element.vane_chord_length} in")
+                    print(f"DEBUG_ENGINE:       num_vanes={element.num_vanes}")
+                    print(f"DEBUG_ENGINE:       pressure_drop={pressure_drop} in. w.g. {'(estimated)' if not element.pressure_drop else '(provided)'}")
+                
                 duct_area = self._calculate_duct_area(element)
                 spectrum = self.elbow_calc.calculate_complete_spectrum(
                     element.flow_rate, duct_area, element.height,
                     element.vane_chord_length, element.num_vanes,
-                    element.pressure_drop, element.flow_velocity
+                    pressure_drop, element.flow_velocity
                 )
                 
                 for i, freq in enumerate(self.FREQUENCY_BANDS):
@@ -1229,8 +1238,31 @@ class HVACNoiseEngine:
             # Calculate A-weighted generated noise
             result['generated_dba'] = self._calculate_dba_from_spectrum(result['generated_spectrum'])
             
+            # Debug: Verify insertion loss propagation
+            print(f"╔═══════════════════════════════════════════════════════════════╗")
+            print(f"║  ELBOW EFFECT CALCULATION - COMPLETE                         ║")
+            print(f"╚═══════════════════════════════════════════════════════════════╝")
+            print(f"DEBUG_ELBOW_ENGINE: Final results:")
+            print(f"DEBUG_ELBOW_ENGINE:   Insertion loss spectrum: {[f'{x:.2f}' for x in result['attenuation_spectrum']]}")
+            print(f"DEBUG_ELBOW_ENGINE:   Insertion loss dBA: {result['attenuation_dba']:.2f}")
+            print(f"DEBUG_ELBOW_ENGINE:   Generated noise spectrum: {[f'{x:.2f}' for x in result['generated_spectrum']]}")
+            print(f"DEBUG_ELBOW_ENGINE:   Generated noise dBA: {result['generated_dba']:.2f}")
+            
+            if element.lining_thickness and element.lining_thickness > 0:
+                print(f"DEBUG_ELBOW_ENGINE:   ✓ Lining effect included: {element.lining_thickness} in")
+            else:
+                print(f"DEBUG_ELBOW_ENGINE:   ✗ No lining applied")
+                
+            if element.vane_chord_length and element.num_vanes:
+                print(f"DEBUG_ELBOW_ENGINE:   ✓ Turning vane effect included: {element.num_vanes} vanes, {element.vane_chord_length} in chord")
+            else:
+                print(f"DEBUG_ELBOW_ENGINE:   ✗ No turning vanes")
+            print(f"═══════════════════════════════════════════════════════════════")
+            
         except Exception as e:
             result['error'] = f"Elbow calculation error: {str(e)}"
+            if debug_export_enabled:
+                print(f"DEBUG_ELBOW: Error in elbow calculation: {e}")
             
         return result
     
@@ -1334,7 +1366,9 @@ class HVACNoiseEngine:
         return result
     
     def _calculate_terminal_effect(self, element: PathElement) -> Dict[str, Any]:
-        """Calculate terminal unit effect (room correction)"""
+        """Calculate terminal unit effect including End Reflection Loss (ERL)"""
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
         result: Dict[str, Any] = {
             'attenuation_spectrum': None,
             'generated_spectrum': None,
@@ -1343,39 +1377,91 @@ class HVACNoiseEngine:
         }
         
         try:
-            # 1) End Reflection Loss at terminal (treat grille/diffuser termination as 'flush')
+            # 1) End Reflection Loss at terminal
             diameter_in: float = 0.0
+            width_in: float = 0.0
+            height_in: float = 0.0
+            
             try:
                 if (getattr(element, 'duct_shape', 'rectangular') or '').lower() == 'circular':
                     diameter_in = float(getattr(element, 'diameter', 0.0) or 0.0)
+                    if debug_export_enabled:
+                        print(f"DEBUG_ERL: Circular duct - diameter={diameter_in:.2f} inches")
                 else:
                     width_in = float(getattr(element, 'width', 0.0) or 0.0)
                     height_in = float(getattr(element, 'height', 0.0) or 0.0)
+                    if debug_export_enabled:
+                        print(f"DEBUG_ERL: Rectangular duct - width={width_in:.2f}, height={height_in:.2f} inches")
                     if width_in > 0 and height_in > 0:
                         diameter_in = float(compute_effective_diameter_rectangular(width_in, height_in))
-            except Exception:
+                        if debug_export_enabled:
+                            print(f"DEBUG_ERL: Effective diameter={diameter_in:.2f} inches")
+            except Exception as e:
                 diameter_in = 0.0
+                if debug_export_enabled:
+                    print(f"DEBUG_ERL: Error computing diameter: {e}")
+
+            # Get termination type (flush for grilles/diffusers, free for open terminations)
+            termination_type = getattr(element, 'termination_type', 'flush') or 'flush'
+            if termination_type not in ['flush', 'free']:
+                termination_type = 'flush'
+            
+            if debug_export_enabled:
+                print(f"DEBUG_ERL: Termination type: {termination_type}")
+                print(f"DEBUG_ERL: Computing End Reflection Loss...")
 
             if diameter_in > 0:
                 erl_spectrum: List[float] = []
                 for freq in self.FREQUENCY_BANDS:
                     try:
-                        erl_db = float(erl_from_equation(
-                            diameter=diameter_in,
-                            frequency_hz=float(freq),
-                            diameter_units='in',
-                            termination='flush',
-                        ))
-                    except Exception:
+                        # Use ASHRAE TABLE28 for frequencies where it's available (<=1000 Hz)
+                        # TABLE28 is empirically measured and more accurate than the equation
+                        # For frequencies >1000 Hz, use the simplified equation for extrapolation
+                        if freq <= 1000:
+                            # Use TABLE28 (flush termination, most common)
+                            erl_db = float(erl_from_table_flush(
+                                diameter_in=diameter_in,
+                                frequency_hz=float(freq),
+                            ))
+                            method_used = "TABLE28"
+                        else:
+                            # Use equation for frequencies beyond TABLE28 range
+                            erl_db = float(erl_from_equation(
+                                diameter=diameter_in,
+                                frequency_hz=float(freq),
+                                diameter_units='in',
+                                termination=termination_type,
+                            ))
+                            method_used = "Equation"
+                        
+                        if debug_export_enabled:
+                            print(f"DEBUG_ERL: {freq}Hz: {erl_db:.2f} dB ({method_used})")
+                    except Exception as e:
                         erl_db = 0.0
+                        if debug_export_enabled:
+                            print(f"DEBUG_ERL: Error computing ERL at {freq}Hz: {e}")
                     erl_spectrum.append(max(0.0, erl_db))
+
                 result['attenuation_spectrum'] = erl_spectrum
                 result['attenuation_dba'] = self._calculate_dba_from_spectrum(erl_spectrum)
+                
+                if debug_export_enabled:
+                    print(f"DEBUG_ERL: ERL spectrum (dB): {[f'{x:.2f}' for x in erl_spectrum]}")
+                    print(f"Frequency Bands: {self.FREQUENCY_BANDS}")
+                    print(f"DEBUG_ERL: ERL A-weighted total: {result['attenuation_dba']:.2f} dB")
+                
                 debug_logger.debug('HVACEngine', 
                     "Terminal ERL attenuation", 
-                    {'diameter_in': diameter_in, 
+                    {'diameter_in': diameter_in,
+                     'width_in': width_in,
+                     'height_in': height_in,
+                     'termination_type': termination_type,
                      'attenuation_spectrum': erl_spectrum,
                      'attenuation_dba': result['attenuation_dba']})
+            else:
+                if debug_export_enabled:
+                    print(f"DEBUG_ERL: WARNING - No valid duct dimensions for ERL calculation")
+                    print(f"DEBUG_ERL: Element width={width_in}, height={height_in}, diameter={diameter_in}")
 
             # 2) Optional receiver room correction metadata (non-blocking)
             try:
@@ -1388,6 +1474,8 @@ class HVACNoiseEngine:
                 
         except Exception as e:
             result['error'] = f"Terminal calculation error: {str(e)}"
+            if debug_export_enabled:
+                print(f"DEBUG_ERL: Terminal calculation error: {e}")
             
         return result
     
@@ -1603,6 +1691,17 @@ class HVACNoiseEngine:
                     if debug_export_enabled:
                         print(f"DEBUG_HNE_LEGACY:   Calculated diameter for circular duct: {diameter:.2f} in from {width}x{height} in")
             
+            # Debug: show what's being passed to PathElement
+            print(f"╔═══════════════════════════════════════════════════════════════╗")
+            print(f"║  CREATING PathElement #{i+1} ({element_type})                ")
+            print(f"╚═══════════════════════════════════════════════════════════════╝")
+            print(f"DEBUG_PATH_ELEMENT: Creating PathElement from segment data:")
+            print(f"DEBUG_PATH_ELEMENT:   element_type = {element_type}")
+            print(f"DEBUG_PATH_ELEMENT:   lining_thickness from dict = {segment.get('lining_thickness', 'NOT_IN_DICT')}")
+            print(f"DEBUG_PATH_ELEMENT:   vane_chord_length from dict = {segment.get('vane_chord_length', 'NOT_IN_DICT')}")
+            print(f"DEBUG_PATH_ELEMENT:   num_vanes from dict = {segment.get('num_vanes', 'NOT_IN_DICT')}")
+            print(f"DEBUG_PATH_ELEMENT:   fitting_type from dict = {segment.get('fitting_type', 'NOT_IN_DICT')}")
+            
             element = PathElement(
                 element_type=element_type,
                 element_id=f'segment_{i+1}',
@@ -1623,6 +1722,12 @@ class HVACNoiseEngine:
                 fitting_type=segment.get('fitting_type'),
                 branch_takeoff_choice=segment.get('branch_takeoff_choice')
             )
+            
+            print(f"DEBUG_PATH_ELEMENT: PathElement created with:")
+            print(f"DEBUG_PATH_ELEMENT:   element.lining_thickness = {element.lining_thickness}")
+            print(f"DEBUG_PATH_ELEMENT:   element.vane_chord_length = {element.vane_chord_length}")
+            print(f"DEBUG_PATH_ELEMENT:   element.num_vanes = {element.num_vanes}")
+            print(f"═══════════════════════════════════════════════════════════════")
             if debug_export_enabled and element.branch_takeoff_choice:
                 try:
                     print(f"DEBUG_HNE_LEGACY:   PathElement {i+1} branch_takeoff_choice={element.branch_takeoff_choice}")
@@ -1647,12 +1752,44 @@ class HVACNoiseEngine:
         # Add terminal element
         terminal_component = path_data.get('terminal_component', {})
         if terminal_component:
+            # Propagate duct dimensions from the last segment for End Reflection Loss calculation
+            last_width = 0.0
+            last_height = 0.0
+            last_diameter = 0.0
+            last_shape = 'rectangular'
+            
+            if elements:
+                # Find the last element with duct dimensions
+                for elem in reversed(elements):
+                    if elem.element_type in ['duct', 'flex_duct', 'elbow', 'junction']:
+                        last_width = elem.width
+                        last_height = elem.height
+                        last_diameter = elem.diameter
+                        last_shape = elem.duct_shape
+                        break
+            
+            # Get termination type from terminal_component or default to 'flush'
+            termination_type = terminal_component.get('termination_type', 'flush')
+            if termination_type not in ['flush', 'free']:
+                termination_type = 'flush'  # Default to flush for grilles/diffusers
+            
+            if debug_export_enabled:
+                print(f"DEBUG_HNE_LEGACY: Creating terminal element:")
+                print(f"DEBUG_HNE_LEGACY:   Propagated dimensions - width={last_width}, height={last_height}, diameter={last_diameter}")
+                print(f"DEBUG_HNE_LEGACY:   Duct shape: {last_shape}")
+                print(f"DEBUG_HNE_LEGACY:   Termination type: {termination_type}")
+            
             terminal_element = PathElement(
                 element_type='terminal',
                 element_id='terminal_1',
+                width=last_width,
+                height=last_height,
+                diameter=last_diameter,
+                duct_shape=last_shape,
                 source_noise_level=terminal_component.get('noise_level', 0.0),
                 room_volume=terminal_component.get('room_volume', 0.0),
-                room_absorption=terminal_component.get('room_absorption', 0.0)
+                room_absorption=terminal_component.get('room_absorption', 0.0),
+                termination_type=termination_type
             )
             elements.append(terminal_element)
         

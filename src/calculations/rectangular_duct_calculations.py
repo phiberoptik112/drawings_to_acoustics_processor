@@ -116,8 +116,9 @@ class RectangularDuctCalculator:
         }
         
         # Frequency bands for 2-inch lining data
-        # Use centralized frequency bands (includes 63 Hz that was missing)
-        self.frequency_bands = AcousticConstants.FREQUENCY_BANDS.copy()
+        # Note: 2-inch lining data only includes 7 bands (no 63 Hz data available)
+        # The 63 Hz band is handled separately in the return dictionaries
+        self.frequency_bands = [125, 250, 500, 1000, 2000, 4000, 8000]
     
     def calculate_p_a_ratio(self, width: float, height: float) -> float:
         """
@@ -333,6 +334,15 @@ class RectangularDuctCalculator:
         Returns:
             Dictionary with attenuation values for all frequency bands
         """
+        import os
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
+        if debug_export_enabled:
+            print(f"DEBUG_RECT_2INCH: get_2inch_lining_attenuation called with:")
+            print(f"DEBUG_RECT_2INCH:   width: {width} inches")
+            print(f"DEBUG_RECT_2INCH:   height: {height} inches")
+            print(f"DEBUG_RECT_2INCH:   length: {length} feet")
+        
         # Normalize dimensions
         dim1, dim2 = min(width, height), max(width, height)
         duct_size = (dim1, dim2)
@@ -357,6 +367,18 @@ class RectangularDuctCalculator:
             for i, freq in enumerate(self.frequency_bands):
                 result[str(freq)] = total_attenuation[i]
             
+            if debug_export_enabled:
+                print(f"DEBUG_RECT_2INCH: Calculated 2-inch lining attenuation:")
+                print(f"DEBUG_RECT_2INCH:   Duct size: {dim1} x {dim2} in")
+                print(f"DEBUG_RECT_2INCH:   Method: {result['method']}")
+                print(f"DEBUG_RECT_2INCH:   Frequency bands: {self.frequency_bands}")
+                print(f"DEBUG_RECT_2INCH:   Attenuation per ft: {attenuation_per_ft}")
+                print(f"DEBUG_RECT_2INCH:   Total attenuation: {total_attenuation}")
+                print(f"DEBUG_RECT_2INCH:   Result keys with numeric values:")
+                for key in ['63', '125', '250', '500', '1000', '2000', '4000', '8000']:
+                    if key in result:
+                        print(f"DEBUG_RECT_2INCH:     {key} Hz: {result[key]:.2f} dB")
+            
             return result
         
         # Interpolate if size not in data
@@ -367,6 +389,9 @@ class RectangularDuctCalculator:
         """
         Interpolate 2-inch lining attenuation for duct sizes not in reference data.
         """
+        import os
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+        
         # Find closest duct size for interpolation
         closest_size = min(self.lining_2inch_data.keys(),
                           key=lambda x: abs(x[0] - width) + abs(x[1] - height))
@@ -390,6 +415,16 @@ class RectangularDuctCalculator:
         result['63'] = 0.0
         for i, freq in enumerate(self.frequency_bands):
             result[str(freq)] = total_attenuation[i]
+        
+        if debug_export_enabled:
+            print(f"DEBUG_RECT_2INCH: Interpolated 2-inch lining attenuation:")
+            print(f"DEBUG_RECT_2INCH:   Requested: {width} x {height} in")
+            print(f"DEBUG_RECT_2INCH:   Closest ref: {closest_size[0]} x {closest_size[1]} in")
+            print(f"DEBUG_RECT_2INCH:   Total attenuation: {total_attenuation}")
+            print(f"DEBUG_RECT_2INCH:   Result keys with numeric values:")
+            for key in ['63', '125', '250', '500', '1000', '2000', '4000', '8000']:
+                if key in result:
+                    print(f"DEBUG_RECT_2INCH:     {key} Hz: {result[key]:.2f} dB")
         
         return result
     

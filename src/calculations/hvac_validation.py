@@ -296,7 +296,7 @@ class HVACValidationFramework:
                 if width and height:
                     area = width * height / 144  # Convert to sq ft
                     if area > 0:
-                        velocity = airflow / area / 60  # fpm
+                        velocity = airflow / area  # fpm (CFM / sq ft = ft/min)
                         if velocity < 100:
                             result.add_info(f"Segment {i+1} velocity ({velocity:.0f} fpm) is low")
                         elif velocity > 4000:

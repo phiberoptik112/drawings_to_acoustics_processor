@@ -339,81 +339,11 @@ class SegmentProcessor:
                 print(f"DEBUG_PATH_BUILDER: Segment data: {segment_data}")
                 segment_data_list.append(segment_data)
 
-                # Insert standalone junction element when fitting indicates tee/branch/cross
-                try:
-                    def _tokenize(ft: str):
-                        import re as _re
-                        toks = _re.findall(r"[a-z0-9_]+", (ft or '').lower())
-                        return toks, set(toks)
-
-                    def _is_junction_like(ft: str) -> bool:
-                        toks, tset = _tokenize(ft)
-                        has_elbow = 'elbow' in tset or any('elbow' in t for t in toks)
-                        has_tee_like = ('tee' in tset) or any('tee' in t for t in toks) or ('t_junction' in tset)
-                        has_branch = ('branch' in tset) or any('branch' in t for t in toks)
-                        has_cross = ('cross' in tset) or any('cross' in t for t in toks) or ('x' in tset and 'junction' in tset)
-                        has_junction_word = ('junction' in tset) or any('junction' in t for t in toks)
-                        return (has_junction_word or has_tee_like or has_branch or has_cross) and not has_elbow
-
-                    inserted_any = False
-                    inserted_fittings: set = set()
-                    # 1) Check top-level fitting_type
-                    print(f"DEBUG_PATH_BUILDER: Top fitting type: {segment_data.get('fitting_type')}")
-                    top_ft = (segment_data.get('fitting_type') or '')
-                    if _is_junction_like(top_ft):
-                        norm_top = (top_ft or '').strip().lower()
-                        if norm_top in inserted_fittings:
-                            print(f"DEBUG_PATH_BUILDER: Skipping duplicate junction insertion (top-level): {norm_top}")
-                        else:
-                            junction_element = {
-                                'element_type': 'junction',
-                                'fitting_type': top_ft,
-                                'flow_rate': segment_data.get('flow_rate', 0.0),
-                                'length': 0.0,
-                                'duct_width': 0.0,
-                                'duct_height': 0.0,
-                                'diameter': 0.0,
-                            }
-                            btc = segment_data.get('branch_takeoff_choice')
-                            if btc is not None:
-                                junction_element['branch_takeoff_choice'] = btc
-                            print(f"DEBUG_PATH_BUILDER: Inserted standalone junction element (top-level) after segment: fitting_type={top_ft}, flow_rate={junction_element['flow_rate']}")
-                            segment_data_list.append(junction_element)
-                            inserted_any = True
-                            inserted_fittings.add(norm_top)
-
-                    # 2) Also scan nested fittings array
-                    for f in (segment_data.get('fittings') or []):
-                        ft = (f.get('fitting_type') or '') if isinstance(f, dict) else ''
-                        if _is_junction_like(ft):
-                            norm_ft = (ft or '').strip().lower()
-                            if norm_ft in inserted_fittings:
-                                print(f"DEBUG_PATH_BUILDER: Skipping duplicate junction insertion (nested): {norm_ft}")
-                                continue
-                            junction_element = {
-                                'element_type': 'junction',
-                                'fitting_type': ft,
-                                'flow_rate': segment_data.get('flow_rate', 0.0),
-                                'length': 0.0,
-                                'duct_width': 0.0,
-                                'duct_height': 0.0,
-                                'diameter': 0.0,
-                            }
-                            # Prefer explicit branch_takeoff_choice on segment; otherwise none
-                            btc = segment_data.get('branch_takeoff_choice')
-                            if btc is not None:
-                                junction_element['branch_takeoff_choice'] = btc
-                            print(f"DEBUG_PATH_BUILDER: Inserted standalone junction element (nested) after segment: fitting_type={ft}, flow_rate={junction_element['flow_rate']}")
-                            segment_data_list.append(junction_element)
-                            inserted_any = True
-                            inserted_fittings.add(norm_ft)
-
-                    if not inserted_any:
-                        tokens_dbg, _ = _tokenize(top_ft)
-                        print(f"DEBUG_PATH_BUILDER: No junction insertion for segment; tokens={tokens_dbg}, top_ft={top_ft}")
-                except Exception as _e:
-                    # Non-fatal: continue without junction insertion
-                    print(f"DEBUG_PATH_BUILDER: Junction insertion skipped due to error: {_e}")
+                # FITTING-BASED ELEMENT INSERTION DISABLED
+                # Note: Fittings are now considered optional/informational and do not affect NC calculations
+                # Use standalone component-based elbows and junctions for acoustic modeling instead
+                print(f"DEBUG_PATH_BUILDER: Fitting type: {segment_data.get('fitting_type')} (fittings DISABLED for NC calc)")
+                print(f"DEBUG_PATH_BUILDER: ⚠️  Use standalone component-based elbows/junctions for acoustic effects")
             except Exception as e:
                 self.debug_logger.error('PathBuilder', 
                     f"Failed to process segment {getattr(segment, 'id', 'unknown')}", 

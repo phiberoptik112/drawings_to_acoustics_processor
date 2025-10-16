@@ -1259,7 +1259,18 @@ class ProjectDashboard(QMainWindow):
         
     def project_settings(self):
         """Open project settings"""
-        QMessageBox.information(self, "Project Settings", "Project settings will be implemented.")
+        try:
+            from ui.dialogs.project_settings_dialog import ProjectSettingsDialog
+            
+            dialog = ProjectSettingsDialog(self, self.project_id)
+            if dialog.exec() == QDialog.Accepted:
+                # Reload project data and refresh UI
+                self.load_project()
+                self.setWindowTitle(f"Project: {self.project.name}")
+                self.refresh_all_data()
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open project settings:\n{str(e)}")
         
     def calculate_all_rt60(self):
         """Calculate RT60 for all spaces"""

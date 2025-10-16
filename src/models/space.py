@@ -43,9 +43,11 @@ class Space(Base):
     drawing_id = Column(Integer, ForeignKey('drawings.id'), nullable=True)  # Direct reference to drawing
     name = Column(String(255), nullable=False)
     description = Column(Text)
+    room_type = Column(String(100))  # Room type preset (office, classroom, auditorium, etc.)
     
     # Geometry (calculated from drawing)
     floor_area = Column(Float)      # square feet
+    ceiling_area = Column(Float)    # square feet (defaults to floor_area if not set)
     ceiling_height = Column(Float)  # feet
     volume = Column(Float)          # cubic feet
     wall_area = Column(Float)       # square feet (calculated)
@@ -84,15 +86,19 @@ class Space(Base):
     def __repr__(self):
         return f"<Space(id={self.id}, name='{self.name}', project_id={self.project_id})>"
     
+    def get_ceiling_area(self):
+        """Get ceiling area, defaulting to floor area if not explicitly set"""
+        return self.ceiling_area if self.ceiling_area is not None else (self.floor_area or 0.0)
+    
     def calculate_total_surface_area(self):
         """Calculate total surface area as floor + ceiling + walls (square feet).
 
-        - Ceiling area is assumed equal to floor area.
+        - Ceiling area uses `self.ceiling_area` if set, otherwise defaults to floor area.
         - Wall area uses `self.wall_area` if available; otherwise, it is
           estimated as `perimeter × ceiling_height`.
         """
         floor_area = self.floor_area or 0.0
-        ceiling_area = floor_area
+        ceiling_area = self.get_ceiling_area()
         wall_area = self.wall_area
         if wall_area is None:
             perimeter = self.calculate_perimeter()
@@ -436,7 +442,9 @@ class Space(Base):
             'drawing_name': self.get_drawing_name(),
             'name': self.name,
             'description': self.description,
+            'room_type': self.room_type,
             'floor_area': self.floor_area,
+            'ceiling_area': self.get_ceiling_area(),  # Use getter to default to floor_area
             'ceiling_height': self.ceiling_height,
             'volume': self.volume,
             'wall_area': self.wall_area,

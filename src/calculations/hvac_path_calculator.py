@@ -1287,6 +1287,56 @@ class HVACPathCalculator:
                 segment_data['fittings'].append(fitting_data)
         except Exception:
             pass
+        
+        # Extract elbow properties from connected components (ALWAYS check, regardless of fittings)
+        try:
+            from_comp = getattr(segment, 'from_component', None)
+            to_comp = getattr(segment, 'to_component', None)
+            from_type = (getattr(from_comp, 'component_type', '') or '').lower() if from_comp else ''
+            to_type = (getattr(to_comp, 'component_type', '') or '').lower() if to_comp else ''
+            
+            elbow_comp = None
+            if 'elbow' in from_type:
+                elbow_comp = from_comp
+            elif 'elbow' in to_type:
+                elbow_comp = to_comp
+            
+            if elbow_comp:
+                print(f"═══════════════════════════════════════════════════════")
+                print(f"DEBUG_ELBOW_LINING: Extracting elbow properties from component")
+                print(f"DEBUG_ELBOW_LINING:   Component ID: {getattr(elbow_comp, 'id', 'unknown')}")
+                print(f"DEBUG_ELBOW_LINING:   Component name: {getattr(elbow_comp, 'name', 'unknown')}")
+                print(f"DEBUG_ELBOW_LINING:   Component type: {getattr(elbow_comp, 'component_type', 'unknown')}")
+                
+                # Get lining thickness
+                lining = getattr(elbow_comp, 'lining_thickness', None)
+                print(f"DEBUG_ELBOW_LINING:   Raw lining_thickness value: {lining}")
+                
+                if lining and lining > 0:
+                    segment_data['lining_thickness'] = lining
+                    print(f"DEBUG_ELBOW_LINING:   ✓ LINING APPLIED: {lining} inches")
+                    print(f"DEBUG_ELBOW_LINING:   ✓ Overriding segment_data['lining_thickness'] with component value")
+                else:
+                    print(f"DEBUG_ELBOW_LINING:   ✗ NO LINING: value is {lining}")
+                
+                # Get turning vane properties
+                has_vanes = getattr(elbow_comp, 'has_turning_vanes', False)
+                print(f"DEBUG_ELBOW_LINING:   has_turning_vanes: {has_vanes}")
+                
+                if has_vanes:
+                    segment_data['vane_chord_length'] = getattr(elbow_comp, 'vane_chord_length', 0)
+                    segment_data['num_vanes'] = getattr(elbow_comp, 'num_vanes', 0)
+                    segment_data['pressure_drop'] = getattr(elbow_comp, 'pressure_drop', None)
+                    print(f"DEBUG_ELBOW_LINING:   ✓ TURNING VANES: chord={segment_data.get('vane_chord_length')} in, num={segment_data.get('num_vanes')}")
+                else:
+                    print(f"DEBUG_ELBOW_LINING:   ✗ NO TURNING VANES")
+                
+                print(f"DEBUG_ELBOW_LINING:   Final segment_data lining: {segment_data.get('lining_thickness', 'NOT SET')}")
+                print(f"═══════════════════════════════════════════════════════")
+        except Exception as e:
+            print(f"DEBUG_ELBOW_LINING: ✗✗✗ ERROR extracting elbow properties: {e}")
+            import traceback
+            print(f"DEBUG_ELBOW_LINING: Traceback:\n{traceback.format_exc()}")
 
         # Derive fitting type
         fitting_types = [f.get('fitting_type', '') for f in segment_data['fittings']]

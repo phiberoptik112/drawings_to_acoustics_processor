@@ -867,6 +867,14 @@ class SpaceEditDialog(QDialog):
         self.name_edit.setText(self.space.name or "")
         self.description_edit.setPlainText(self.space.description or "")
         
+        # Load room type if available
+        if self.space.room_type:
+            # Find the index of the room type in the combo box
+            for i in range(self.room_type_combo.count()):
+                if self.room_type_combo.itemData(i) == self.space.room_type:
+                    self.room_type_combo.setCurrentIndex(i)
+                    break
+        
         # Load drawing information
         if self.space.drawing:
             drawing_text = f"{self.space.drawing.name}"
@@ -1201,6 +1209,10 @@ class SpaceEditDialog(QDialog):
         space.ceiling_height = self.ceiling_height_spin.value()
         space.wall_area = self.wall_area_spin.value()
         space.target_rt60 = self.target_rt60_spin.value()
+        
+        # Save room type
+        room_type_key = self.room_type_combo.currentData()
+        space.room_type = room_type_key if room_type_key else None
         
         # Store multiple materials using new system
         space.set_surface_materials(SurfaceType.CEILING, ceiling_materials, session)

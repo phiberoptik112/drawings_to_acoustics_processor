@@ -649,36 +649,23 @@ class HVACPathDialog(QDialog):
 
     def show_validation_results(self, validation_result):
         """Show validation results to the user"""
+        # Disabled: validation info is available in debug dialog and other places
+        # Only show critical errors that prevent calculation
         if not validation_result or not validation_result.has_messages():
             return
         
         from PySide6.QtWidgets import QMessageBox
         
-        message_parts = []
-        
+        # Only show critical errors, skip warnings and info messages
         if validation_result.errors:
-            message_parts.append("ERRORS:")
+            message_parts = ["ERRORS:"]
             for error in validation_result.errors:
                 message_parts.append(f"• {error}")
-            message_parts.append("")
-        
-        if validation_result.warnings:
-            message_parts.append("WARNINGS:")
-            for warning in validation_result.warnings:
-                message_parts.append(f"• {warning}")
-            message_parts.append("")
-        
-        if validation_result.info:
-            message_parts.append("INFORMATION:")
-            for info in validation_result.info:
-                message_parts.append(f"• {info}")
-        
-        if validation_result.errors:
+            
             QMessageBox.critical(self, "Path Validation Issues", "\n".join(message_parts))
-        elif validation_result.warnings:
-            QMessageBox.warning(self, "Path Validation Issues", "\n".join(message_parts))
-        else:
-            QMessageBox.information(self, "Path Validation", "\n".join(message_parts))
+        
+        # Warnings and info messages are suppressed to reduce popup distraction
+        # They are still available in the debug dialog and validation output
 
     def show_debug_dialog(self):
         """Show the HVAC debug dialog"""
