@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtWidgets import QAbstractItemView
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QSizePolicy
+from PySide6.QtGui import QColor
 
 from models import get_session
 from models.mechanical import MechanicalUnit, NoiseSource
@@ -266,8 +267,12 @@ class ComponentLibraryDialog(QDialog):
         silencer_layout.addWidget(silencer_split)
         silencer_tab.setLayout(silencer_layout)
 
+        # Acoustic Treatment tab
+        acoustic_tab = self.create_acoustic_treatment_tab()
+        
         tabs.addTab(mech_tab, "Mechanical Units")
         tabs.addTab(silencer_tab, "Silencers")
+        tabs.addTab(acoustic_tab, "Acoustic Treatment")
 
         layout.addWidget(tabs, 1)
 
@@ -301,6 +306,87 @@ class ComponentLibraryDialog(QDialog):
         column_tools.addWidget(self.import_row_btn)
         right_v.addLayout(column_tools)
 
+    def create_acoustic_treatment_tab(self) -> QWidget:
+        """Create the Acoustic Treatment tab for material schedule management"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Splitter: left list, right preview
+        splitter = QSplitter()
+        splitter.setOrientation(Qt.Horizontal)
+        
+        # Left: Material schedules list grouped by drawing set
+        left_container = QWidget()
+        left_layout = QVBoxLayout(left_container)
+        left_layout.addWidget(QLabel("Material Schedules by Drawing Set"))
+        
+        self.material_schedules_list = QListWidget()
+        self.material_schedules_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.material_schedules_list.itemSelectionChanged.connect(self.on_material_schedule_selected)
+        left_layout.addWidget(self.material_schedules_list)
+        splitter.addWidget(left_container)
+        
+        # Right: PDF preview and controls
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        
+        # PDF Preview
+        preview_group = QGroupBox("Material Schedule Preview")
+        preview_layout = QVBoxLayout()
+        
+        from drawing.pdf_viewer import PDFViewer
+        self.material_schedule_viewer = PDFViewer()
+        preview_layout.addWidget(self.material_schedule_viewer)
+        
+        # Load PDF button
+        load_pdf_row = QHBoxLayout()
+        load_pdf_row.addStretch()
+        self.load_material_pdf_btn = QPushButton("Load PDF…")
+        self.load_material_pdf_btn.clicked.connect(self.load_material_schedule_pdf)
+        load_pdf_row.addWidget(self.load_material_pdf_btn)
+        preview_layout.addLayout(load_pdf_row)
+        
+        preview_group.setLayout(preview_layout)
+        right_layout.addWidget(preview_group)
+        
+        # Management buttons
+        button_layout = QHBoxLayout()
+        
+        add_schedule_btn = QPushButton("Add Schedule")
+        add_schedule_btn.clicked.connect(self.add_material_schedule)
+        
+        edit_schedule_btn = QPushButton("Edit")
+        edit_schedule_btn.clicked.connect(self.edit_material_schedule)
+        self.edit_material_schedule_btn = edit_schedule_btn
+        self.edit_material_schedule_btn.setEnabled(False)
+        
+        delete_schedule_btn = QPushButton("Delete")
+        delete_schedule_btn.clicked.connect(self.delete_material_schedule)
+        self.delete_material_schedule_btn = delete_schedule_btn
+        self.delete_material_schedule_btn.setEnabled(False)
+        
+        compare_btn = QPushButton("Compare Schedules")
+        compare_btn.setToolTip("Compare material schedules from different drawing sets side-by-side")
+        compare_btn.clicked.connect(self.compare_material_schedules)
+        
+        button_layout.addWidget(add_schedule_btn)
+        button_layout.addWidget(edit_schedule_btn)
+        button_layout.addWidget(delete_schedule_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(compare_btn)
+        
+        right_layout.addLayout(button_layout)
+        splitter.addWidget(right_container)
+        
+        # Set splitter proportions
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        
+        layout.addWidget(splitter)
+        widget.setLayout(layout)
+        
+        return widget
+    
     # Data
     def refresh_lists(self) -> None:
         try:
@@ -337,6 +423,9 @@ class ComponentLibraryDialog(QDialog):
                     pass
                 self.silencer_list.itemSelectionChanged.connect(self._on_silencer_selected)
             session.close()
+            
+            # Refresh material schedules
+            self.refresh_material_schedules()
         except Exception as e:
             QMessageBox.warning(self, "Load Error", f"Failed to load component library:\n{e}")
 
@@ -1041,6 +1130,254 @@ class ComponentLibraryDialog(QDialog):
         dlg = ManualMechanicalUnitAddDialog(self, project_id=self.project_id)
         if dlg.exec() == QDialog.Accepted:
             self.refresh_lists()
+    
+    # Material Schedule Management Methods
+    def refresh_material_schedules(self) -> None:
+        """Refresh the material schedules list"""
+        if not hasattr(self, 'material_schedules_list'):
+            return
+        
+        try:
+            from models import MaterialSchedule
+            from models.drawing_sets import DrawingSet
+            
+            session = get_session()
+            
+            # Load all drawing sets with their material schedules
+            drawing_sets = (
+                session.query(DrawingSet)
+                .filter(DrawingSet.project_id == self.project_id)
+                .order_by(DrawingSet.created_date)
+                .all()
+            )
+            
+            self.material_schedules_list.clear()
+            
+            phase_icons = {'DD': '🟦', 'SD': '🟨', 'CD': '🟥', 'Final': '🟩', 'Legacy': '⚫'}
+            
+            for ds in drawing_sets:
+                # Get schedules for this drawing set
+                schedules = (
+                    session.query(MaterialSchedule)
+                    .filter(MaterialSchedule.drawing_set_id == ds.id)
+                    .order_by(MaterialSchedule.name)
+                    .all()
+                )
+                
+                if schedules:
+                    # Add drawing set header
+                    icon = phase_icons.get(ds.phase_type, '⚪')
+                    header_text = f"═══ {icon} {ds.name} ({ds.phase_type}) ═══"
+                    header_item = QListWidgetItem(header_text)
+                    header_item.setFlags(Qt.ItemIsEnabled)  # Not selectable
+                    header_item.setForeground(QColor(180, 180, 180))
+                    self.material_schedules_list.addItem(header_item)
+                    
+                    # Add schedules
+                    for ms in schedules:
+                        schedule_text = f"  📄 {ms.name} ({ms.schedule_type})"
+                        item = QListWidgetItem(schedule_text)
+                        item.setData(Qt.UserRole, ms.id)
+                        self.material_schedules_list.addItem(item)
+            
+            if self.material_schedules_list.count() == 0:
+                placeholder = QListWidgetItem("No material schedules. Click 'Add Schedule' to create one.")
+                placeholder.setFlags(Qt.ItemIsEnabled)
+                placeholder.setForeground(QColor(120, 120, 120))
+                self.material_schedules_list.addItem(placeholder)
+            
+            session.close()
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", f"Failed to load material schedules:\n{e}")
+    
+    def on_material_schedule_selected(self) -> None:
+        """Handle material schedule selection change"""
+        if not hasattr(self, 'material_schedules_list'):
+            return
+        
+        current = self.material_schedules_list.currentItem()
+        
+        # Enable/disable buttons based on selection
+        has_selection = current is not None and current.data(Qt.UserRole) is not None
+        if hasattr(self, 'edit_material_schedule_btn'):
+            self.edit_material_schedule_btn.setEnabled(has_selection)
+        if hasattr(self, 'delete_material_schedule_btn'):
+            self.delete_material_schedule_btn.setEnabled(has_selection)
+        
+        if not has_selection:
+            return
+        
+        schedule_id = current.data(Qt.UserRole)
+        
+        try:
+            from models import MaterialSchedule
+            
+            session = get_session()
+            schedule = session.query(MaterialSchedule).filter(
+                MaterialSchedule.id == schedule_id
+            ).first()
+            session.close()
+            
+            if not schedule:
+                return
+            
+            # Load PDF in viewer
+            file_path = schedule.get_display_path()
+            if file_path and hasattr(self, 'material_schedule_viewer'):
+                import os
+                if os.path.exists(file_path):
+                    self.material_schedule_viewer.load_pdf(file_path)
+                else:
+                    QMessageBox.warning(self, "File Not Found", 
+                                      f"PDF file not found:\n{file_path}")
+        
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", f"Failed to load schedule:\n{e}")
+    
+    def add_material_schedule(self) -> None:
+        """Open dialog to add a new material schedule"""
+        try:
+            from ui.dialogs.material_schedule_dialog import MaterialScheduleDialog
+            from models import Project
+            
+            # Get project location
+            session = get_session()
+            project = session.query(Project).filter(Project.id == self.project_id).first()
+            session.close()
+            
+            if not project:
+                QMessageBox.warning(self, "Add Schedule", "Project not found.")
+                return
+            
+            dialog = MaterialScheduleDialog(
+                self, 
+                project_id=self.project_id,
+                project_location=project.location
+            )
+            
+            if dialog.exec() == QDialog.Accepted:
+                self.refresh_material_schedules()
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Add Schedule", f"Failed to add material schedule:\n{e}")
+    
+    def edit_material_schedule(self) -> None:
+        """Edit the selected material schedule"""
+        if not hasattr(self, 'material_schedules_list'):
+            return
+        
+        current = self.material_schedules_list.currentItem()
+        if not current or current.data(Qt.UserRole) is None:
+            QMessageBox.information(self, "Edit Schedule", "Select a material schedule to edit.")
+            return
+        
+        schedule_id = current.data(Qt.UserRole)
+        
+        try:
+            from ui.dialogs.material_schedule_dialog import MaterialScheduleDialog
+            from models import MaterialSchedule, Project
+            
+            session = get_session()
+            schedule = session.query(MaterialSchedule).filter(
+                MaterialSchedule.id == schedule_id
+            ).first()
+            project = session.query(Project).filter(Project.id == self.project_id).first()
+            session.close()
+            
+            if not schedule:
+                QMessageBox.warning(self, "Edit Schedule", "Selected schedule not found.")
+                return
+            
+            dialog = MaterialScheduleDialog(
+                self,
+                project_id=self.project_id,
+                project_location=project.location if project else None,
+                material_schedule=schedule
+            )
+            
+            if dialog.exec() == QDialog.Accepted:
+                self.refresh_material_schedules()
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Edit Schedule", f"Failed to edit material schedule:\n{e}")
+    
+    def delete_material_schedule(self) -> None:
+        """Delete the selected material schedule"""
+        if not hasattr(self, 'material_schedules_list'):
+            return
+        
+        current = self.material_schedules_list.currentItem()
+        if not current or current.data(Qt.UserRole) is None:
+            QMessageBox.information(self, "Delete Schedule", "Select a material schedule to delete.")
+            return
+        
+        schedule_id = current.data(Qt.UserRole)
+        
+        try:
+            from models import MaterialSchedule
+            
+            session = get_session()
+            schedule = session.query(MaterialSchedule).filter(
+                MaterialSchedule.id == schedule_id
+            ).first()
+            
+            if not schedule:
+                session.close()
+                QMessageBox.warning(self, "Delete Schedule", "Selected schedule not found.")
+                return
+            
+            # Confirm deletion
+            reply = QMessageBox.question(
+                self,
+                "Confirm Delete",
+                f"Delete material schedule '{schedule.name}'?\n\n"
+                "Note: The PDF file itself will not be deleted from disk.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply != QMessageBox.Yes:
+                session.close()
+                return
+            
+            # Delete the schedule record (files remain on disk)
+            session.delete(schedule)
+            session.commit()
+            session.close()
+            
+            self.refresh_material_schedules()
+            QMessageBox.information(self, "Deleted", "Material schedule deleted.")
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Delete Error", f"Failed to delete schedule:\n{e}")
+    
+    def load_material_schedule_pdf(self) -> None:
+        """Load a PDF directly into the material schedule viewer"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select PDF to Preview",
+            "",
+            "PDF Files (*.pdf);;All Files (*)"
+        )
+        
+        if file_path and hasattr(self, 'material_schedule_viewer'):
+            try:
+                self.material_schedule_viewer.load_pdf(file_path)
+            except Exception as e:
+                QMessageBox.critical(self, "Preview Error", f"Failed to load PDF:\n{e}")
+    
+    def compare_material_schedules(self) -> None:
+        """Open the material schedule comparison dialog"""
+        try:
+            from ui.dialogs.material_schedule_comparison_dialog import MaterialScheduleComparisonDialog
+            
+            dialog = MaterialScheduleComparisonDialog(self, project_id=self.project_id)
+            dialog.exec()
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Comparison Error", 
+                               f"Failed to open comparison dialog:\n{e}")
 
 
 class MechanicalUnitEditDialog(QDialog):

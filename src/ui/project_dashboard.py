@@ -464,9 +464,13 @@ class ProjectDashboard(QMainWindow):
 
         # Small actions row above the preview
         preview_actions = QHBoxLayout()
+        self.library_btn = QPushButton("Component Library")
+        self.library_btn.setToolTip("Manage mechanical units, silencers, and acoustic treatment schedules")
+        self.library_btn.clicked.connect(self.open_component_library)
         self.open_editor_btn = QPushButton("Open Drawing Editor…")
         self.open_editor_btn.setToolTip("Open the full drawing editor with rectangle, component, and segment tools")
         self.open_editor_btn.clicked.connect(self.open_selected_drawing_editor)
+        preview_actions.addWidget(self.library_btn)
         preview_actions.addWidget(self.open_editor_btn)
         preview_actions.addStretch()
         preview_layout.addLayout(preview_actions)
