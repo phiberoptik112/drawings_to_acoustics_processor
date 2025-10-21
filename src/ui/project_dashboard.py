@@ -46,6 +46,9 @@ class ProjectDashboard(QMainWindow):
         self.project = None
         self.drawing_interface = None
         
+        # Store reference to space edit dialogs to keep them alive (non-modal)
+        self.space_edit_dialogs = []
+        
         self.load_project()
         self.init_ui()
         self.refresh_all_data()
@@ -1115,18 +1118,36 @@ class ProjectDashboard(QMainWindow):
             # Import the dialog here to avoid circular imports
             from ui.dialogs.space_edit_dialog import SpaceEditDialog
             
+            # Create non-modal dialog
             dialog = SpaceEditDialog(self, space)
-            if dialog.exec() == QDialog.Accepted:
-                # Dialog already commits changes - no need to reload from database
-                # Just refresh the UI to show updated data
-                self.refresh_spaces()
-                self.refresh_all_data()
             
-            # Close session after dialog is done
+            # Connect signals for updates and cleanup
+            dialog.space_updated.connect(self.on_space_updated)
+            dialog.finished.connect(lambda: self.on_space_dialog_closed(dialog))
+            
+            # Store reference to prevent garbage collection
+            self.space_edit_dialogs.append(dialog)
+            
+            # Show as non-modal window
+            dialog.show()
+            
+            # Close session after dialog is shown
             session.close()
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to edit space:\n{str(e)}")
+    
+    def on_space_updated(self):
+        """Handle when a space is updated in the edit dialog"""
+        # Refresh the UI to show updated data
+        self.refresh_spaces()
+        self.refresh_all_data()
+    
+    def on_space_dialog_closed(self, dialog):
+        """Handle cleanup when a space edit dialog is closed"""
+        # Remove the dialog reference to allow garbage collection
+        if dialog in self.space_edit_dialogs:
+            self.space_edit_dialogs.remove(dialog)
         
     def duplicate_space(self):
         """Duplicate the selected space"""
