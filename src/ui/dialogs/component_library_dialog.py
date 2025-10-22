@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
 )
 from PySide6.QtWidgets import QAbstractItemView
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QSizePolicy
 from PySide6.QtGui import QColor
 
@@ -54,14 +54,20 @@ from calculations.hvac_constants import is_valid_cfm_value
 
 class ComponentLibraryDialog(QDialog):
     """Project-level component library management dialog."""
+    
+    # Signal emitted when library data changes (so parent can refresh if needed)
+    library_updated = Signal()
 
     def __init__(self, parent=None, project_id: Optional[int] = None):
         super().__init__(parent)
         self.project_id = project_id
         self.setWindowTitle("Component Library")
+        # Make this a non-modal window so users can reference it while working
+        self.setModal(False)
+        # Set window flags to make it an independent window that can be arranged freely
+        self.setWindowFlags(Qt.Window)
         self.resize(900, 600)
         self.setMinimumSize(1200, 900)
-        self.setModal(True)
 
         self._build_ui()
         self.refresh_lists()
@@ -463,6 +469,7 @@ class ComponentLibraryDialog(QDialog):
         dlg = SilencerEditDialog(self)
         if dlg.exec() == QDialog.Accepted:
             self.refresh_lists()
+            self.library_updated.emit()
 
     def edit_selected_silencer(self) -> None:
         item = self.silencer_list.currentItem()
@@ -477,6 +484,7 @@ class ComponentLibraryDialog(QDialog):
         dlg = SilencerEditDialog(self, s)
         if dlg.exec() == QDialog.Accepted:
             self.refresh_lists()
+            self.library_updated.emit()
 
     def delete_selected_silencer(self) -> None:
         item = self.silencer_list.currentItem()
@@ -493,6 +501,7 @@ class ComponentLibraryDialog(QDialog):
                 session.commit()
             session.close()
             self.refresh_lists()
+            self.library_updated.emit()
         except Exception as e:
             QMessageBox.critical(self, "Delete Error", f"Failed to delete silencer:\n{e}")
 
@@ -523,6 +532,7 @@ class ComponentLibraryDialog(QDialog):
             s.insertion_loss_8000 = vals[7]
             session.commit(); session.close()
             self._toggle_silencer_save(False)
+            self.library_updated.emit()
             QMessageBox.information(self, "Silencer", "Insertion loss values saved.")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save insertion loss:\n{e}")
@@ -773,6 +783,7 @@ class ComponentLibraryDialog(QDialog):
             self._import_csv_into_mechanical_units(csv_path)
             QMessageBox.information(self, "Import Complete", "Mechanical schedule imported successfully.")
             self.refresh_lists()
+            self.library_updated.emit()
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import CSV into database:\n{e}")
 
@@ -833,6 +844,7 @@ class ComponentLibraryDialog(QDialog):
             session.commit()
             session.close()
             self.refresh_lists()
+            self.library_updated.emit()
             QMessageBox.information(self, "Import Complete", f"Imported {len(units)} mechanical units from PDF.")
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import PDF results into database:\n{e}")
@@ -912,6 +924,7 @@ class ComponentLibraryDialog(QDialog):
             session.close()
             self.freq_dirty = False
             self.save_btn.setEnabled(False)
+            self.library_updated.emit()
             QMessageBox.information(self, "Saved", "Frequency values saved to database.")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save changes:\n{e}")
@@ -1099,6 +1112,7 @@ class ComponentLibraryDialog(QDialog):
         dlg = MechanicalUnitEditDialog(self, unit)
         if dlg.exec() == QDialog.Accepted:
             self.refresh_lists()
+            self.library_updated.emit()
 
     def delete_selected_mechanical_unit(self) -> None:
         item = self.mechanical_list.currentItem()
@@ -1122,6 +1136,7 @@ class ComponentLibraryDialog(QDialog):
                 session.commit()
             session.close()
             self.refresh_lists()
+            self.library_updated.emit()
         except Exception as e:
             QMessageBox.critical(self, "Delete Error", f"Failed to delete entry:\n{e}")
 
@@ -1130,6 +1145,7 @@ class ComponentLibraryDialog(QDialog):
         dlg = ManualMechanicalUnitAddDialog(self, project_id=self.project_id)
         if dlg.exec() == QDialog.Accepted:
             self.refresh_lists()
+            self.library_updated.emit()
     
     # Material Schedule Management Methods
     def refresh_material_schedules(self) -> None:
