@@ -66,7 +66,7 @@ class MaterialsSummaryWidget(QWidget):
         # Title
         title_label = QLabel("Materials Summary & Analysis")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #2c3e50; margin: 5px;")
+        title_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #e0e0e0; margin: 5px;")
         layout.addWidget(title_label)
         
         # Create splitter for materials table and doors/windows
@@ -163,7 +163,7 @@ class MaterialsSummaryWidget(QWidget):
         areas_frame = QFrame()
         areas_layout = QVBoxLayout()
         areas_title = QLabel("Surface Areas")
-        areas_title.setStyleSheet("font-weight: bold; color: #2c3e50;")
+        areas_title.setStyleSheet("font-weight: bold; color: #e0e0e0;")
         areas_layout.addWidget(areas_title)
         
         self.areas_summary_label = QLabel("No areas calculated")
@@ -177,7 +177,7 @@ class MaterialsSummaryWidget(QWidget):
         absorption_frame = QFrame()
         absorption_layout = QVBoxLayout()
         absorption_title = QLabel("Total Absorption by Frequency")
-        absorption_title.setStyleSheet("font-weight: bold; color: #2c3e50;")
+        absorption_title.setStyleSheet("font-weight: bold; color: #e0e0e0;")
         absorption_layout.addWidget(absorption_title)
         
         self.absorption_summary_label = QLabel("No absorption calculated")
@@ -191,7 +191,7 @@ class MaterialsSummaryWidget(QWidget):
         avg_frame = QFrame()
         avg_layout = QVBoxLayout()
         avg_title = QLabel("Area-Weighted Averages")
-        avg_title.setStyleSheet("font-weight: bold; color: #2c3e50;")
+        avg_title.setStyleSheet("font-weight: bold; color: #e0e0e0;")
         avg_layout.addWidget(avg_title)
         
         self.avg_summary_label = QLabel("No averages calculated")

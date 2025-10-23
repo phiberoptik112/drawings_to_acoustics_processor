@@ -398,14 +398,22 @@ class ComponentLibraryDialog(QDialog):
         right_container = QWidget()
         right_layout = QVBoxLayout(right_container)
         
-        # Material schedules list grouped by drawing set
-        right_layout.addWidget(QLabel("Material Schedules by Drawing Set"))
+        # Create vertical splitter for resizable list and preview sections
+        right_splitter = QSplitter()
+        right_splitter.setOrientation(Qt.Vertical)
+        
+        # Top section: Material schedules list
+        schedules_list_container = QWidget()
+        schedules_list_layout = QVBoxLayout(schedules_list_container)
+        schedules_list_layout.setContentsMargins(0, 0, 0, 0)
+        schedules_list_layout.addWidget(QLabel("Material Schedules by Drawing Set"))
         self.material_schedules_list = QListWidget()
         self.material_schedules_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.material_schedules_list.itemSelectionChanged.connect(self.on_material_schedule_selected)
-        right_layout.addWidget(self.material_schedules_list)
+        schedules_list_layout.addWidget(self.material_schedules_list)
+        right_splitter.addWidget(schedules_list_container)
         
-        # PDF Preview
+        # Bottom section: PDF Preview
         preview_group = QGroupBox("Material Schedule Preview")
         preview_layout = QVBoxLayout()
         
@@ -422,7 +430,14 @@ class ComponentLibraryDialog(QDialog):
         preview_layout.addLayout(load_pdf_row)
         
         preview_group.setLayout(preview_layout)
-        right_layout.addWidget(preview_group)
+        right_splitter.addWidget(preview_group)
+        
+        # Set initial splitter proportions (40% list, 60% preview)
+        right_splitter.setStretchFactor(0, 2)
+        right_splitter.setStretchFactor(1, 3)
+        
+        # Add splitter to main layout
+        right_layout.addWidget(right_splitter)
         
         # Schedule management buttons
         schedule_btns = QHBoxLayout()

@@ -93,7 +93,7 @@ class DoorWindowEditDialog(QDialog):
         
         # Calculated area (read-only)
         self.area_label = QLabel("0.0 sf")
-        self.area_label.setStyleSheet("font-weight: bold; color: #2c3e50;")
+        self.area_label.setStyleSheet("font-weight: bold; color: #e0e0e0;")
         form_layout.addRow("Total Area:", self.area_label)
         
         layout.addLayout(form_layout)
@@ -258,7 +258,7 @@ class DoorsWindowsWidget(QWidget):
         header_layout = QHBoxLayout()
         
         title_label = QLabel("Doors & Windows")
-        title_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #2c3e50;")
+        title_label.setStyleSheet("font-weight: bold; font-size: 12px; color: #e0e0e0;")
         header_layout.addWidget(title_label)
         
         header_layout.addStretch()

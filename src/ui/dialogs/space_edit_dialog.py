@@ -887,7 +887,7 @@ class SpaceEditDialog(QDialog):
             if self.space.drawing.scale_string:
                 drawing_text += f" (Scale: {self.space.drawing.scale_string})"
             self.drawing_label.setText(drawing_text)
-            self.drawing_label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+            self.drawing_label.setStyleSheet("color: #e0e0e0; font-weight: bold;")
         else:
             self.drawing_label.setText("No drawing assigned")
             self.drawing_label.setStyleSheet("color: #e74c3c; font-style: italic;")
