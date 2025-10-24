@@ -143,13 +143,28 @@ class HVACPathCalculator:
                     if os.environ.get('HVAC_DEBUG_EXPORT'):
                         print(f"DEBUG: Could not match primary source to mechanical unit: {e}")
                 
+                # Derive drawing_set_id from the first component's drawing
+                drawing_set_id = None
+                try:
+                    if source_comp.drawing_id:
+                        from models.drawing import Drawing
+                        drawing = session.query(Drawing).filter(Drawing.id == source_comp.drawing_id).first()
+                        if drawing and hasattr(drawing, 'drawing_set_id'):
+                            drawing_set_id = drawing.drawing_set_id
+                except Exception as e:
+                    import os
+                    if os.environ.get('HVAC_DEBUG_EXPORT'):
+                        print(f"DEBUG: Could not derive drawing_set_id: {e}")
+                
                 hvac_path = HVACPath(
                     project_id=project_id,
                     name=f"Path: {source_comp.component_type.upper()} to {terminal_comp.component_type.upper()}",
                     description=f"HVAC path from {source_comp.name} to {terminal_comp.name}",
                     path_type='supply',
                     # Store the HVACComponent as the primary source per schema
-                    primary_source_id=source_comp.id
+                    primary_source_id=source_comp.id,
+                    # Auto-assign drawing set from source component's drawing
+                    drawing_set_id=drawing_set_id
                 )
                 session.add(hvac_path)
                 session.flush()  # Get ID

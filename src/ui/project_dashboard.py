@@ -625,16 +625,76 @@ class ProjectDashboard(QMainWindow):
             QMessageBox.warning(self, "Warning", f"Could not load spaces:\n{str(e)}")
             
     def refresh_hvac_paths(self):
-        """Refresh the HVAC paths list"""
+        """Refresh the HVAC paths list, grouped by drawing set"""
         try:
+            from models.drawing_sets import DrawingSet
+            from sqlalchemy.orm import selectinload
+            
             session = get_session()
-            paths = session.query(HVACPath).filter(HVACPath.project_id == self.project_id).all()
+            # Load paths with drawing_set relationship
+            paths = (
+                session.query(HVACPath)
+                .options(selectinload(HVACPath.drawing_set))
+                .filter(HVACPath.project_id == self.project_id)
+                .all()
+            )
+            
             self.hvac_list.clear()
+            
+            # Group paths by drawing set
+            grouped_paths = {}
+            no_set_paths = []
+            
             for path in paths:
-                item_text = f"🔀 {path.name} ({path.path_type})"
-                item = QListWidgetItem(item_text)
-                item.setData(Qt.UserRole, path.id)
-                self.hvac_list.addItem(item)
+                if hasattr(path, 'drawing_set') and path.drawing_set:
+                    ds_id = path.drawing_set.id
+                    ds_name = path.drawing_set.name
+                    ds_phase = path.drawing_set.phase_type or ""
+                    if ds_id not in grouped_paths:
+                        grouped_paths[ds_id] = {
+                            'name': ds_name,
+                            'phase': ds_phase,
+                            'paths': []
+                        }
+                    grouped_paths[ds_id]['paths'].append(path)
+                else:
+                    no_set_paths.append(path)
+            
+            # Add grouped paths with headers
+            for ds_id, ds_data in sorted(grouped_paths.items(), key=lambda x: x[1]['name']):
+                # Add drawing set header
+                header_text = f"📁 {ds_data['name']}"
+                if ds_data['phase']:
+                    header_text += f" ({ds_data['phase']})"
+                header_item = QListWidgetItem(header_text)
+                header_item.setFlags(Qt.ItemIsEnabled)  # Not selectable
+                header_item.setFont(QFont("Arial", 10, QFont.Bold))
+                header_item.setBackground(QColor("#2a2a2a"))
+                header_item.setData(Qt.UserRole, None)  # No path ID
+                self.hvac_list.addItem(header_item)
+                
+                # Add paths under this drawing set with indentation
+                for path in sorted(ds_data['paths'], key=lambda p: p.name):
+                    item_text = f"    🔀 {path.name} ({path.path_type})"
+                    item = QListWidgetItem(item_text)
+                    item.setData(Qt.UserRole, path.id)
+                    self.hvac_list.addItem(item)
+            
+            # Add paths without drawing set
+            if no_set_paths:
+                header_item = QListWidgetItem("📁 No Drawing Set")
+                header_item.setFlags(Qt.ItemIsEnabled)  # Not selectable
+                header_item.setFont(QFont("Arial", 10, QFont.Bold))
+                header_item.setBackground(QColor("#2a2a2a"))
+                header_item.setData(Qt.UserRole, None)
+                self.hvac_list.addItem(header_item)
+                
+                for path in sorted(no_set_paths, key=lambda p: p.name):
+                    item_text = f"    🔀 {path.name} ({path.path_type})"
+                    item = QListWidgetItem(item_text)
+                    item.setData(Qt.UserRole, path.id)
+                    self.hvac_list.addItem(item)
+            
             session.close()
         except Exception as e:
             QMessageBox.warning(self, "Warning", f"Could not load HVAC paths:\n{str(e)}")

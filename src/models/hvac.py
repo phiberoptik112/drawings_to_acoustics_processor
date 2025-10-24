@@ -66,6 +66,7 @@ class HVACPath(Base):
     project_id = Column(Integer, ForeignKey('projects.id'), nullable=False)
     target_space_id = Column(Integer, ForeignKey('spaces.id'))
     primary_source_id = Column(Integer, ForeignKey('hvac_components.id'))  # Optional selection of source component
+    drawing_set_id = Column(Integer, ForeignKey('drawing_sets.id'), nullable=True)  # Drawing set association
     name = Column(String(255), nullable=False)
     description = Column(Text)
     
@@ -87,6 +88,7 @@ class HVACPath(Base):
     project = relationship("Project", back_populates="hvac_paths")
     target_space = relationship("Space", back_populates="hvac_paths")
     primary_source = relationship("HVACComponent")
+    drawing_set = relationship("DrawingSet")
     segments = relationship("HVACSegment", back_populates="hvac_path", cascade="all, delete-orphan", order_by="HVACSegment.segment_order")
     placement_analyses = relationship("SilencerPlacementAnalysis", back_populates="hvac_path", cascade="all, delete-orphan")
     
