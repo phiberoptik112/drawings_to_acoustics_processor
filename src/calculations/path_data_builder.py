@@ -468,7 +468,7 @@ class PathDataBuilder:
                 except Exception:
                     pass
             # Try to enrich via first segment's from_component Mechanical Unit (legacy parity)
-            # Try to enrich via first segment's from_component Mechanical Unit (legacy parity)
+
             try:
                 if segments:
                     first_seg = segments[0]
