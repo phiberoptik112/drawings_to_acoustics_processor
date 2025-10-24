@@ -41,6 +41,7 @@ class Space(Base):
     id = Column(Integer, primary_key=True)
     project_id = Column(Integer, ForeignKey('projects.id'), nullable=False)
     drawing_id = Column(Integer, ForeignKey('drawings.id'), nullable=True)  # Direct reference to drawing
+    drawing_set_id = Column(Integer, ForeignKey('drawing_sets.id'), nullable=True)  # Drawing set association
     name = Column(String(255), nullable=False)
     description = Column(Text)
     room_type = Column(String(100))  # Room type preset (office, classroom, auditorium, etc.)
@@ -71,6 +72,7 @@ class Space(Base):
     # Relationships
     project = relationship("Project", back_populates="spaces")
     drawing = relationship("Drawing", back_populates="spaces")  # Direct relationship to drawing
+    drawing_set = relationship("DrawingSet")
     room_boundaries = relationship("RoomBoundary", back_populates="space", cascade="all, delete-orphan")
     hvac_paths = relationship("HVACPath", back_populates="target_space")
     

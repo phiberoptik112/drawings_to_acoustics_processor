@@ -121,6 +121,13 @@ def initialize_database(db_path=None):
 	except Exception as e:
 		print(f"Warning: HVAC drawing sets schema migration failed: {e}")
 	
+	# New: Spaces drawing set association
+	try:
+		from .migrate_space_drawing_sets import ensure_space_drawing_sets_schema
+		ensure_space_drawing_sets_schema()
+	except Exception as e:
+		print(f"Warning: Space drawing sets schema migration failed: {e}")
+	
 	# New: space polygon column migration
 	try:
 		from .migrate_space_polygon_schema import ensure_space_polygon_schema

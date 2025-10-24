@@ -550,13 +550,43 @@ class ProjectDashboard(QMainWindow):
             QMessageBox.warning(self, "Warning", f"Could not load drawings:\n{str(e)}")
             
     def refresh_spaces(self):
-        """Refresh the spaces list with enhanced status information"""
+        """Refresh the spaces list, grouped by drawing set, with enhanced status information"""
         try:
+            from models.drawing_sets import DrawingSet
+            from sqlalchemy.orm import selectinload
+            
             session = get_session()
-            spaces = session.query(Space).filter(Space.project_id == self.project_id).all()
+            # Load spaces with drawing_set relationship
+            spaces = (
+                session.query(Space)
+                .options(selectinload(Space.drawing_set))
+                .filter(Space.project_id == self.project_id)
+                .all()
+            )
             
             self.spaces_list.clear()
+            
+            # Group spaces by drawing set
+            grouped_spaces = {}
+            no_set_spaces = []
+            
             for space in spaces:
+                if hasattr(space, 'drawing_set') and space.drawing_set:
+                    ds_id = space.drawing_set.id
+                    ds_name = space.drawing_set.name
+                    ds_phase = space.drawing_set.phase_type or ""
+                    if ds_id not in grouped_spaces:
+                        grouped_spaces[ds_id] = {
+                            'name': ds_name,
+                            'phase': ds_phase,
+                            'spaces': []
+                        }
+                    grouped_spaces[ds_id]['spaces'].append(space)
+                else:
+                    no_set_spaces.append(space)
+            
+            # Helper function to create space item
+            def create_space_item(space, indented=False):
                 # RT60 analysis status
                 rt60_icon = "✅" if space.calculated_rt60 else "❌"
                 
@@ -581,12 +611,14 @@ class ProjectDashboard(QMainWindow):
                 except Exception:
                     noise_icon = "❓"
                     noise_text = "Error"
+                    nc_rating = None
                 
                 # Drawing association status
                 drawing_icon = "📋" if space.drawing_id else "❔"
                 
                 # Build item text with comprehensive status
-                item_text = f"{drawing_icon} {space.name}"
+                indent = "    " if indented else ""
+                item_text = f"{indent}{drawing_icon} {space.name}"
                 
                 # Add status indicators
                 status_parts = []
@@ -615,8 +647,39 @@ class ProjectDashboard(QMainWindow):
                     # Nothing calculated
                     item.setForeground(QColor(160, 160, 160))      # Gray text
                 
-                self.spaces_list.addItem(item)
+                return item
+            
+            # Add grouped spaces with headers
+            for ds_id, ds_data in sorted(grouped_spaces.items(), key=lambda x: x[1]['name']):
+                # Add drawing set header
+                header_text = f"📁 {ds_data['name']}"
+                if ds_data['phase']:
+                    header_text += f" ({ds_data['phase']})"
+                header_item = QListWidgetItem(header_text)
+                header_item.setFlags(Qt.ItemIsEnabled)  # Not selectable
+                header_item.setFont(QFont("Arial", 10, QFont.Bold))
+                header_item.setBackground(QColor("#2a2a2a"))
+                header_item.setData(Qt.UserRole, None)  # No space ID
+                self.spaces_list.addItem(header_item)
                 
+                # Add spaces under this drawing set with indentation
+                for space in sorted(ds_data['spaces'], key=lambda s: s.name):
+                    item = create_space_item(space, indented=True)
+                    self.spaces_list.addItem(item)
+            
+            # Add spaces without drawing set
+            if no_set_spaces:
+                header_item = QListWidgetItem("📁 No Drawing Set")
+                header_item.setFlags(Qt.ItemIsEnabled)  # Not selectable
+                header_item.setFont(QFont("Arial", 10, QFont.Bold))
+                header_item.setBackground(QColor("#2a2a2a"))
+                header_item.setData(Qt.UserRole, None)
+                self.spaces_list.addItem(header_item)
+                
+                for space in sorted(no_set_spaces, key=lambda s: s.name):
+                    item = create_space_item(space, indented=True)
+                    self.spaces_list.addItem(item)
+            
             session.close()
             # Keep the HVAC pathing table synchronized with current selection
             self.update_space_hvac_paths_table()
