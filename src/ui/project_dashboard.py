@@ -26,8 +26,6 @@ from models.hvac import HVACSegment
 from models.hvac import SegmentFitting
 from sqlalchemy.orm import selectinload
 from ui.drawing_interface import DrawingInterface
-from ui.drawing_panel import DrawingPanel
-from drawing import PDFViewer
 from ui.results_widget import ResultsWidget
 from ui.dialogs.hvac_path_dialog import HVACPathDialog
 from ui.dialogs.drawing_sets_dialog import DrawingSetsDialog
@@ -45,6 +43,12 @@ class ProjectDashboard(QMainWindow):
         self.project_id = project_id
         self.project = None
         self.drawing_interface = None
+        
+        # Store reference to space edit dialogs to keep them alive (non-modal)
+        self.space_edit_dialogs = []
+        
+        # Store reference to component library dialog to keep it alive (non-modal)
+        self.component_library_dialog = None
         
         self.load_project()
         self.init_ui()
@@ -95,13 +99,7 @@ class ProjectDashboard(QMainWindow):
         left_panel = self.create_left_panel()
         splitter.addWidget(left_panel)
         
-        # Prepare embedded drawing panel before creating right panel
-        try:
-            self.drawing_panel = DrawingPanel(self.project_id)
-        except Exception:
-            self.drawing_panel = None
-        
-        # Right panel - details and drawing panel
+        # Right panel - details
         right_panel = self.create_right_panel()
         splitter.addWidget(right_panel)
         
@@ -134,13 +132,6 @@ class ProjectDashboard(QMainWindow):
         # Drawings menu
         drawings_menu = menubar.addMenu('Drawings')
         drawings_menu.addAction('Open Drawing', self.open_drawing)
-        # Link selection toggle for embedded view
-        try:
-            self.link_selection_chk = QAction('Link selection to drawing view', self, checkable=True)
-            self.link_selection_chk.setChecked(True)
-            drawings_menu.addAction(self.link_selection_chk)
-        except Exception:
-            pass
         drawings_menu.addAction('Remove Drawing', self.remove_drawing)
         
         # Calculations menu
@@ -423,8 +414,6 @@ class ProjectDashboard(QMainWindow):
         right_widget = QWidget()
         right_layout = QVBoxLayout()
         
-        # Removed Analysis Status to maximize drawing space
-        
         # HVAC Pathing per Space group
         self.space_hvac_group = QGroupBox("HVAC Pathing per Space")
         space_hvac_layout = QVBoxLayout()
@@ -443,61 +432,29 @@ class ProjectDashboard(QMainWindow):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         
         space_hvac_layout.addWidget(self.space_hvac_table)
-        # Receiver analysis button
+        
+        # Button row for space and drawing actions
+        button_row = QHBoxLayout()
+        
         self.edit_receiver_btn = QPushButton("Edit Space HVAC Receiver")
         self.edit_receiver_btn.clicked.connect(self.open_space_receiver_dialog)
-        space_hvac_layout.addWidget(self.edit_receiver_btn)
-        self.space_hvac_group.setLayout(space_hvac_layout)
-        # Keep this section compact so the drawing preview has room
-        try:
-            self.space_hvac_group.setSizePolicy(self.space_hvac_group.sizePolicy().Preferred, self.space_hvac_group.sizePolicy().Maximum)
-            self.space_hvac_group.setMaximumHeight(260)
-        except Exception:
-            pass
-        right_layout.addWidget(self.space_hvac_group)
-
-        # Removed Component Library to maximize drawing space
-
-        # Embedded Drawing preview (expands to fill remaining space)
-        preview_group = QGroupBox("Drawing")
-        preview_layout = QVBoxLayout()
-
-        # Small actions row above the preview
-        preview_actions = QHBoxLayout()
+        button_row.addWidget(self.edit_receiver_btn)
+        
+        self.library_btn = QPushButton("Component Library")
+        self.library_btn.setToolTip("Manage mechanical units, silencers, and acoustic treatment schedules")
+        self.library_btn.clicked.connect(self.open_component_library)
+        button_row.addWidget(self.library_btn)
+        
         self.open_editor_btn = QPushButton("Open Drawing Editor…")
         self.open_editor_btn.setToolTip("Open the full drawing editor with rectangle, component, and segment tools")
         self.open_editor_btn.clicked.connect(self.open_selected_drawing_editor)
-        preview_actions.addWidget(self.open_editor_btn)
-        preview_actions.addStretch()
-        preview_layout.addLayout(preview_actions)
-
-        # The embedded PDF viewer provides page/zoom controls and scrollable canvas
-        self.preview_viewer = PDFViewer()
-        try:
-            self.preview_viewer.setMinimumHeight(420)
-        except Exception:
-            pass
-        self.preview_viewer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        preview_layout.addWidget(self.preview_viewer)
-
-        preview_group.setLayout(preview_layout)
-        right_layout.addWidget(preview_group)
-
-        # Give most vertical space to the preview
-        try:
-            right_layout.setStretch(0, 0)  # HVAC Pathing per Space
-            right_layout.setStretch(1, 1)  # Drawing preview
-        except Exception:
-            pass
+        button_row.addWidget(self.open_editor_btn)
         
-        # No library wiring (section removed)
-
-        # Embedded drawing panel area takes remaining space
-        try:
-            if getattr(self, 'drawing_panel', None) is not None:
-                right_layout.addWidget(self.drawing_panel, 1)
-        except Exception:
-            pass
+        button_row.addStretch()
+        
+        space_hvac_layout.addLayout(button_row)
+        self.space_hvac_group.setLayout(space_hvac_layout)
+        right_layout.addWidget(self.space_hvac_group)
  
         right_widget.setLayout(right_layout)
         
@@ -593,13 +550,43 @@ class ProjectDashboard(QMainWindow):
             QMessageBox.warning(self, "Warning", f"Could not load drawings:\n{str(e)}")
             
     def refresh_spaces(self):
-        """Refresh the spaces list with enhanced status information"""
+        """Refresh the spaces list, grouped by drawing set, with enhanced status information"""
         try:
+            from models.drawing_sets import DrawingSet
+            from sqlalchemy.orm import selectinload
+            
             session = get_session()
-            spaces = session.query(Space).filter(Space.project_id == self.project_id).all()
+            # Load spaces with drawing_set relationship
+            spaces = (
+                session.query(Space)
+                .options(selectinload(Space.drawing_set))
+                .filter(Space.project_id == self.project_id)
+                .all()
+            )
             
             self.spaces_list.clear()
+            
+            # Group spaces by drawing set
+            grouped_spaces = {}
+            no_set_spaces = []
+            
             for space in spaces:
+                if hasattr(space, 'drawing_set') and space.drawing_set:
+                    ds_id = space.drawing_set.id
+                    ds_name = space.drawing_set.name
+                    ds_phase = space.drawing_set.phase_type or ""
+                    if ds_id not in grouped_spaces:
+                        grouped_spaces[ds_id] = {
+                            'name': ds_name,
+                            'phase': ds_phase,
+                            'spaces': []
+                        }
+                    grouped_spaces[ds_id]['spaces'].append(space)
+                else:
+                    no_set_spaces.append(space)
+            
+            # Helper function to create space item
+            def create_space_item(space, indented=False):
                 # RT60 analysis status
                 rt60_icon = "✅" if space.calculated_rt60 else "❌"
                 
@@ -624,12 +611,14 @@ class ProjectDashboard(QMainWindow):
                 except Exception:
                     noise_icon = "❓"
                     noise_text = "Error"
+                    nc_rating = None
                 
                 # Drawing association status
                 drawing_icon = "📋" if space.drawing_id else "❔"
                 
                 # Build item text with comprehensive status
-                item_text = f"{drawing_icon} {space.name}"
+                indent = "    " if indented else ""
+                item_text = f"{indent}{drawing_icon} {space.name}"
                 
                 # Add status indicators
                 status_parts = []
@@ -658,8 +647,39 @@ class ProjectDashboard(QMainWindow):
                     # Nothing calculated
                     item.setForeground(QColor(160, 160, 160))      # Gray text
                 
-                self.spaces_list.addItem(item)
+                return item
+            
+            # Add grouped spaces with headers
+            for ds_id, ds_data in sorted(grouped_spaces.items(), key=lambda x: x[1]['name']):
+                # Add drawing set header
+                header_text = f"📁 {ds_data['name']}"
+                if ds_data['phase']:
+                    header_text += f" ({ds_data['phase']})"
+                header_item = QListWidgetItem(header_text)
+                header_item.setFlags(Qt.ItemIsEnabled)  # Not selectable
+                header_item.setFont(QFont("Arial", 10, QFont.Bold))
+                header_item.setBackground(QColor("#2a2a2a"))
+                header_item.setData(Qt.UserRole, None)  # No space ID
+                self.spaces_list.addItem(header_item)
                 
+                # Add spaces under this drawing set with indentation
+                for space in sorted(ds_data['spaces'], key=lambda s: s.name):
+                    item = create_space_item(space, indented=True)
+                    self.spaces_list.addItem(item)
+            
+            # Add spaces without drawing set
+            if no_set_spaces:
+                header_item = QListWidgetItem("📁 No Drawing Set")
+                header_item.setFlags(Qt.ItemIsEnabled)  # Not selectable
+                header_item.setFont(QFont("Arial", 10, QFont.Bold))
+                header_item.setBackground(QColor("#2a2a2a"))
+                header_item.setData(Qt.UserRole, None)
+                self.spaces_list.addItem(header_item)
+                
+                for space in sorted(no_set_spaces, key=lambda s: s.name):
+                    item = create_space_item(space, indented=True)
+                    self.spaces_list.addItem(item)
+            
             session.close()
             # Keep the HVAC pathing table synchronized with current selection
             self.update_space_hvac_paths_table()
@@ -668,16 +688,76 @@ class ProjectDashboard(QMainWindow):
             QMessageBox.warning(self, "Warning", f"Could not load spaces:\n{str(e)}")
             
     def refresh_hvac_paths(self):
-        """Refresh the HVAC paths list"""
+        """Refresh the HVAC paths list, grouped by drawing set"""
         try:
+            from models.drawing_sets import DrawingSet
+            from sqlalchemy.orm import selectinload
+            
             session = get_session()
-            paths = session.query(HVACPath).filter(HVACPath.project_id == self.project_id).all()
+            # Load paths with drawing_set relationship
+            paths = (
+                session.query(HVACPath)
+                .options(selectinload(HVACPath.drawing_set))
+                .filter(HVACPath.project_id == self.project_id)
+                .all()
+            )
+            
             self.hvac_list.clear()
+            
+            # Group paths by drawing set
+            grouped_paths = {}
+            no_set_paths = []
+            
             for path in paths:
-                item_text = f"🔀 {path.name} ({path.path_type})"
-                item = QListWidgetItem(item_text)
-                item.setData(Qt.UserRole, path.id)
-                self.hvac_list.addItem(item)
+                if hasattr(path, 'drawing_set') and path.drawing_set:
+                    ds_id = path.drawing_set.id
+                    ds_name = path.drawing_set.name
+                    ds_phase = path.drawing_set.phase_type or ""
+                    if ds_id not in grouped_paths:
+                        grouped_paths[ds_id] = {
+                            'name': ds_name,
+                            'phase': ds_phase,
+                            'paths': []
+                        }
+                    grouped_paths[ds_id]['paths'].append(path)
+                else:
+                    no_set_paths.append(path)
+            
+            # Add grouped paths with headers
+            for ds_id, ds_data in sorted(grouped_paths.items(), key=lambda x: x[1]['name']):
+                # Add drawing set header
+                header_text = f"📁 {ds_data['name']}"
+                if ds_data['phase']:
+                    header_text += f" ({ds_data['phase']})"
+                header_item = QListWidgetItem(header_text)
+                header_item.setFlags(Qt.ItemIsEnabled)  # Not selectable
+                header_item.setFont(QFont("Arial", 10, QFont.Bold))
+                header_item.setBackground(QColor("#2a2a2a"))
+                header_item.setData(Qt.UserRole, None)  # No path ID
+                self.hvac_list.addItem(header_item)
+                
+                # Add paths under this drawing set with indentation
+                for path in sorted(ds_data['paths'], key=lambda p: p.name):
+                    item_text = f"    🔀 {path.name} ({path.path_type})"
+                    item = QListWidgetItem(item_text)
+                    item.setData(Qt.UserRole, path.id)
+                    self.hvac_list.addItem(item)
+            
+            # Add paths without drawing set
+            if no_set_paths:
+                header_item = QListWidgetItem("📁 No Drawing Set")
+                header_item.setFlags(Qt.ItemIsEnabled)  # Not selectable
+                header_item.setFont(QFont("Arial", 10, QFont.Bold))
+                header_item.setBackground(QColor("#2a2a2a"))
+                header_item.setData(Qt.UserRole, None)
+                self.hvac_list.addItem(header_item)
+                
+                for path in sorted(no_set_paths, key=lambda p: p.name):
+                    item_text = f"    🔀 {path.name} ({path.path_type})"
+                    item = QListWidgetItem(item_text)
+                    item.setData(Qt.UserRole, path.id)
+                    self.hvac_list.addItem(item)
+            
             session.close()
         except Exception as e:
             QMessageBox.warning(self, "Warning", f"Could not load HVAC paths:\n{str(e)}")
@@ -759,11 +839,27 @@ class ProjectDashboard(QMainWindow):
     def open_component_library(self):
         """Open the Component Library management dialog."""
         try:
+            # If dialog already exists and is visible, just raise it to front
+            if self.component_library_dialog and self.component_library_dialog.isVisible():
+                self.component_library_dialog.raise_()
+                self.component_library_dialog.activateWindow()
+                return
+            
             from ui.dialogs.component_library_dialog import ComponentLibraryDialog
+            
+            # Create non-modal dialog
             dialog = ComponentLibraryDialog(self, project_id=self.project_id)
-            dialog.exec()
-            # After closing, refresh the library list for any changes
-            self.refresh_component_library()
+            
+            # Connect signals for updates and cleanup
+            dialog.library_updated.connect(self.on_component_library_updated)
+            dialog.finished.connect(self.on_component_library_closed)
+            
+            # Store reference to prevent garbage collection
+            self.component_library_dialog = dialog
+            
+            # Show as non-modal window
+            dialog.show()
+            
         except Exception as e:
             QMessageBox.critical(self, "Component Library", f"Failed to open Component Library:\n{e}")
             
@@ -806,86 +902,41 @@ class ProjectDashboard(QMainWindow):
         self.open_selected_drawing(self.drawings_list.currentItem())
         
     def open_selected_drawing(self, item):
-        """Open the selected drawing in the embedded preview; keep external window for full edit via menu."""
+        """Open the selected drawing in the drawing editor."""
         if not item:
             return
         drawing_id = item.data(Qt.UserRole)
         try:
-            # Load into embedded preview by resolving path
             session = get_session()
             drawing = session.query(Drawing).filter(Drawing.id == drawing_id).first()
             session.close()
-            if drawing and getattr(drawing, 'file_path', None):
-                self.preview_viewer.load_pdf(drawing.file_path)
-            else:
-                QMessageBox.information(self, "Open Drawing", "Selected drawing has no file path.")
+            if not drawing:
+                QMessageBox.information(self, "Open Drawing", "Selected drawing not found.")
+                return
+            # Open in the drawing editor
+            self.drawing_interface = DrawingInterface(drawing_id, self.project_id)
+            try:
+                self.drawing_interface.paths_updated.connect(self.refresh_hvac_paths)
+            except Exception:
+                pass
+            self.drawing_interface.show()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Could not load drawing in preview:\n{e}")
+            QMessageBox.critical(self, "Error", f"Could not open drawing:\n{e}")
 
     def on_drawings_selection_changed(self, current, _previous):
-        """When selection changes, render the drawing in the embedded preview."""
-        try:
-            if current is not None:
-                self.open_selected_drawing(current)
-        except Exception:
-            pass
+        """Handle drawing selection changes."""
+        # Drawing preview removed - selection change no longer triggers automatic action
+        pass
         
     def _on_drawing_selected(self, current, _previous):
-        """Synchronize drawings list selection to the embedded drawing panel."""
-        try:
-            if current is None:
-                return
-            if getattr(self, 'link_selection_chk', None) and not self.link_selection_chk.isChecked():
-                return
-            if getattr(self, 'drawing_panel', None) is None:
-                return
-            drawing_id = current.data(Qt.UserRole)
-            if drawing_id is None:
-                return
-            self.drawing_panel.load_drawing(drawing_id)
-        except Exception:
-            pass
+        """Handle drawing selection - drawing panel removed."""
+        # Drawing panel removed - no action needed
+        pass
  
     def _on_hvac_path_clicked(self, item):
-        """Focus a single-clicked HVAC path in the embedded drawing panel."""
-        try:
-            if item is None:
-                return
-            if getattr(self, 'link_selection_chk', None) and not self.link_selection_chk.isChecked():
-                return
-            if getattr(self, 'drawing_panel', None) is None:
-                return
-            path_id = item.data(Qt.UserRole)
-            if path_id is None:
-                return
-            # Ensure drawing panel is on the correct drawing for this path if possible
-            session = get_session()
-            from models.hvac import HVACPath
-            from models.hvac import HVACSegment
-            path = (
-                session.query(HVACPath)
-                .options(
-                    selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
-                    selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
-                )
-                .filter(HVACPath.id == path_id)
-                .first()
-            )
-            session.close()
-            if path and getattr(path, 'segments', None):
-                comp = None
-                first_seg = path.segments[0] if len(path.segments) > 0 else None
-                if first_seg is not None:
-                    if first_seg.from_component is not None:
-                        comp = first_seg.from_component
-                    elif first_seg.to_component is not None:
-                        comp = first_seg.to_component
-                if comp and getattr(comp, 'drawing_id', None):
-                    self.drawing_panel.load_drawing(comp.drawing_id)
-            # Focus the path
-            self.drawing_panel.focus_path(path_id, center=True, highlight=True, exclusive=True)
-        except Exception:
-            pass
+        """Handle HVAC path click - drawing panel removed."""
+        # Drawing panel removed - no action needed
+        pass
         
     def remove_drawing(self):
         """Remove the selected drawing"""
@@ -1111,18 +1162,46 @@ class ProjectDashboard(QMainWindow):
             # Import the dialog here to avoid circular imports
             from ui.dialogs.space_edit_dialog import SpaceEditDialog
             
+            # Create non-modal dialog
             dialog = SpaceEditDialog(self, space)
-            if dialog.exec() == QDialog.Accepted:
-                # Dialog already commits changes - no need to reload from database
-                # Just refresh the UI to show updated data
-                self.refresh_spaces()
-                self.refresh_all_data()
             
-            # Close session after dialog is done
+            # Connect signals for updates and cleanup
+            dialog.space_updated.connect(self.on_space_updated)
+            dialog.finished.connect(lambda: self.on_space_dialog_closed(dialog))
+            
+            # Store reference to prevent garbage collection
+            self.space_edit_dialogs.append(dialog)
+            
+            # Show as non-modal window
+            dialog.show()
+            
+            # Close session after dialog is shown
             session.close()
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to edit space:\n{str(e)}")
+    
+    def on_space_updated(self):
+        """Handle when a space is updated in the edit dialog"""
+        # Refresh the UI to show updated data
+        self.refresh_spaces()
+        self.refresh_all_data()
+    
+    def on_space_dialog_closed(self, dialog):
+        """Handle cleanup when a space edit dialog is closed"""
+        # Remove the dialog reference to allow garbage collection
+        if dialog in self.space_edit_dialogs:
+            self.space_edit_dialogs.remove(dialog)
+    
+    def on_component_library_updated(self):
+        """Handle when component library data is updated"""
+        # Refresh the library list to show changes
+        self.refresh_component_library()
+    
+    def on_component_library_closed(self):
+        """Handle cleanup when component library dialog is closed"""
+        # Remove the dialog reference to allow garbage collection
+        self.component_library_dialog = None
         
     def duplicate_space(self):
         """Duplicate the selected space"""
@@ -1442,22 +1521,6 @@ class ProjectDashboard(QMainWindow):
                 self.refresh_hvac_paths()
                 self.update_analysis_status()
                 self.update_space_hvac_paths_table()
-                # Re-focus the edited path in embedded panel
-                try:
-                    if getattr(self, 'drawing_panel', None) is not None:
-                        # Best-effort to switch drawing then focus
-                        comp = None
-                        first_seg = path.segments[0] if len(path.segments) > 0 else None
-                        if first_seg is not None:
-                            if first_seg.from_component is not None:
-                                comp = first_seg.from_component
-                            elif first_seg.to_component is not None:
-                                comp = first_seg.to_component
-                        if comp and getattr(comp, 'drawing_id', None):
-                            self.drawing_panel.load_drawing(comp.drawing_id)
-                        self.drawing_panel.focus_path(path_id, center=True, highlight=True, exclusive=True)
-                except Exception:
-                    pass
         except Exception as e:
             QMessageBox.critical(self, "Edit HVAC Path", f"Failed to open HVAC path:\n{str(e)}")
 

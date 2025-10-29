@@ -268,6 +268,10 @@ class HVACPathDialog(QDialog):
         # Analysis tab
         analysis_tab = self.create_analysis_tab()
         self.analysis_tab_index = self.tabs.addTab(analysis_tab, "Analysis")
+        
+        # Compare Paths tab
+        compare_tab = self.create_compare_paths_tab()
+        self.compare_tab_index = self.tabs.addTab(compare_tab, "Compare Paths")
 
         # Ensure tabs expand with window
         self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -345,6 +349,11 @@ class HVACPathDialog(QDialog):
         # Update ASCII diagram when target space changes
         self.space_combo.currentIndexChanged.connect(self.update_path_diagram)
         info_layout.addRow("Target Space:", self.space_combo)
+        
+        # Drawing set
+        self.drawing_set_combo = QComboBox()
+        self.load_drawing_sets()
+        info_layout.addRow("Drawing Set:", self.drawing_set_combo)
         
         # Description
         self.description_text = QTextEdit()
@@ -548,6 +557,61 @@ class HVACPathDialog(QDialog):
         layout.setStretch(1, 0)
         widget.setLayout(layout)
         return widget
+    
+    def create_compare_paths_tab(self):
+        """Create the Compare Paths tab for side-by-side path comparison"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Path selection
+        selection_group = QGroupBox("Select Path to Compare")
+        selection_layout = QHBoxLayout()
+        
+        self.compare_path_combo = QComboBox()
+        self.load_comparison_paths()
+        selection_layout.addWidget(QLabel("Compare with:"))
+        selection_layout.addWidget(self.compare_path_combo, 1)
+        
+        self.compare_btn = QPushButton("Load Comparison")
+        self.compare_btn.clicked.connect(self.load_comparison_data)
+        selection_layout.addWidget(self.compare_btn)
+        
+        selection_group.setLayout(selection_layout)
+        selection_group.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        layout.addWidget(selection_group)
+        
+        # Side-by-side comparison view
+        comparison_splitter = QSplitter(Qt.Horizontal)
+        
+        # Left panel: Current path
+        current_group = QGroupBox("Current Path")
+        current_layout = QVBoxLayout()
+        self.current_comparison_text = QTextEdit()
+        self.current_comparison_text.setReadOnly(True)
+        current_layout.addWidget(self.current_comparison_text)
+        current_group.setLayout(current_layout)
+        comparison_splitter.addWidget(current_group)
+        
+        # Right panel: Comparison path
+        compare_group = QGroupBox("Comparison Path")
+        compare_layout = QVBoxLayout()
+        self.compare_comparison_text = QTextEdit()
+        self.compare_comparison_text.setReadOnly(True)
+        self.compare_comparison_text.setHtml("<i>Select a path to compare and click 'Load Comparison'</i>")
+        compare_layout.addWidget(self.compare_comparison_text)
+        compare_group.setLayout(compare_layout)
+        comparison_splitter.addWidget(compare_group)
+        
+        comparison_splitter.setSizes([400, 400])
+        comparison_splitter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(comparison_splitter)
+        
+        # Give comparison view all available vertical space
+        layout.setStretch(0, 0)
+        layout.setStretch(1, 1)
+        
+        widget.setLayout(layout)
+        return widget
         
     def load_spaces(self):
         """Load spaces for target space selection"""
@@ -563,6 +627,63 @@ class HVACPathDialog(QDialog):
             
         except Exception as e:
             print(f"Error loading spaces: {e}")
+    
+    def load_drawing_sets(self):
+        """Load drawing sets for path association"""
+        try:
+            from models.drawing_sets import DrawingSet
+            session = get_session()
+            drawing_sets = session.query(DrawingSet).filter(
+                DrawingSet.project_id == self.project_id
+            ).order_by(DrawingSet.name).all()
+            
+            self.drawing_set_combo.addItem("None", None)
+            for ds in drawing_sets:
+                display_name = f"{ds.name} ({ds.phase_type})" if ds.phase_type else ds.name
+                self.drawing_set_combo.addItem(display_name, ds.id)
+            
+            session.close()
+            
+        except Exception as e:
+            print(f"Error loading drawing sets: {e}")
+    
+    def load_comparison_paths(self):
+        """Load available paths for comparison"""
+        try:
+            if not hasattr(self, 'compare_path_combo'):
+                return
+            
+            from models.drawing_sets import DrawingSet
+            from sqlalchemy.orm import selectinload
+            
+            session = get_session()
+            paths = (
+                session.query(HVACPath)
+                .options(selectinload(HVACPath.drawing_set))
+                .filter(HVACPath.project_id == self.project_id)
+                .order_by(HVACPath.name)
+                .all()
+            )
+            
+            self.compare_path_combo.clear()
+            self.compare_path_combo.addItem("-- Select a path --", None)
+            
+            for path in paths:
+                # Skip current path
+                if self.path_id and path.id == self.path_id:
+                    continue
+                
+                ds_info = ""
+                if hasattr(path, 'drawing_set') and path.drawing_set:
+                    ds_info = f" [{path.drawing_set.name}]"
+                
+                display_name = f"{path.name} ({path.path_type}){ds_info}"
+                self.compare_path_combo.addItem(display_name, path.id)
+            
+            session.close()
+            
+        except Exception as e:
+            print(f"Error loading comparison paths: {e}")
     
     def load_project_components(self):
         """Load existing components from project"""
@@ -702,6 +823,13 @@ class HVACPathDialog(QDialog):
             for i in range(self.space_combo.count()):
                 if self.space_combo.itemData(i) == self.path.target_space_id:
                     self.space_combo.setCurrentIndex(i)
+                    break
+        
+        # Set drawing set
+        if hasattr(self.path, 'drawing_set_id') and self.path.drawing_set_id:
+            for i in range(self.drawing_set_combo.count()):
+                if self.drawing_set_combo.itemData(i) == self.path.drawing_set_id:
+                    self.drawing_set_combo.setCurrentIndex(i)
                     break
         
         if self.path.description:
@@ -1734,6 +1862,115 @@ class HVACPathDialog(QDialog):
             # Keep UI resilient
             pass
     
+    def load_comparison_data(self):
+        """Load and display comparison data for selected path"""
+        try:
+            compare_path_id = self.compare_path_combo.currentData()
+            if not compare_path_id:
+                QMessageBox.information(self, "No Path Selected", "Please select a path to compare.")
+                return
+            
+            # Load current path analysis
+            current_html = self.generate_comparison_html(self.path_id, is_current=True)
+            self.current_comparison_text.setHtml(current_html)
+            
+            # Load comparison path analysis
+            compare_html = self.generate_comparison_html(compare_path_id, is_current=False)
+            self.compare_comparison_text.setHtml(compare_html)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Comparison Error", f"Failed to load comparison:\n{str(e)}")
+    
+    def generate_comparison_html(self, path_id, is_current=True):
+        """Generate HTML for path comparison display"""
+        try:
+            if not path_id:
+                return "<i>Path not saved yet. Save the path to enable comparison.</i>"
+            
+            session = get_session()
+            from sqlalchemy.orm import selectinload
+            from models.drawing_sets import DrawingSet
+            
+            path = (
+                session.query(HVACPath)
+                .options(
+                    selectinload(HVACPath.target_space),
+                    selectinload(HVACPath.drawing_set),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.fittings),
+                )
+                .filter(HVACPath.id == path_id)
+                .first()
+            )
+            
+            if not path:
+                session.close()
+                return f"<i>Path ID {path_id} not found</i>"
+            
+            # Calculate noise for this path
+            results = self.path_calculator.calculate_path_noise(int(path_id))
+            
+            html = "<h3>Path Information</h3>"
+            html += f"<p><b>Name:</b> {path.name}<br>"
+            html += f"<b>Type:</b> {path.path_type}<br>"
+            
+            # Drawing set info
+            if hasattr(path, 'drawing_set') and path.drawing_set:
+                ds_name = path.drawing_set.name
+                ds_phase = path.drawing_set.phase_type or ""
+                html += f"<b>Drawing Set:</b> {ds_name}"
+                if ds_phase:
+                    html += f" ({ds_phase})"
+                html += "<br>"
+            else:
+                html += "<b>Drawing Set:</b> None<br>"
+            
+            # Target space
+            if path.target_space:
+                html += f"<b>Target Space:</b> {path.target_space.name}<br>"
+            
+            html += f"<b>Components:</b> {len(path.segments) + 1 if path.segments else 0}<br>"
+            html += f"<b>Segments:</b> {len(path.segments)}</p>"
+            
+            # Analysis results
+            if results and results.calculation_valid:
+                html += "<h4>Noise Analysis</h4>"
+                html += f"<p><b>Source Noise:</b> {results.source_noise:.1f} dB(A)<br>"
+                html += f"<b>Terminal Noise:</b> {results.terminal_noise:.1f} dB(A)<br>"
+                total_att = results.total_attenuation or 0.0
+                html += f"<b>Total Attenuation:</b> {float(total_att):.1f} dB<br>"
+                html += f"<b>NC Rating:</b> NC-{results.nc_rating:.0f}</p>"
+                
+                # Segment breakdown
+                html += "<h4>Segment Breakdown</h4>"
+                html += "<table border='1' cellpadding='3' cellspacing='0' style='border-collapse: collapse;'>"
+                html += "<tr style='background-color: #333;'><th>Seg</th><th>Length (ft)</th><th>Before (dB)</th><th>After (dB)</th><th>Atten (dB)</th></tr>"
+                
+                seg_rows = [s for s in (results.segment_results or []) if (s.get('element_type') in {"duct", "elbow", "junction", "flex_duct"})]
+                for idx, seg_result in enumerate(seg_rows, start=1):
+                    length = seg_result.get('length', 0.0) or 0.0
+                    nb = float(seg_result.get('noise_before', 0.0) or 0.0)
+                    na = float(seg_result.get('noise_after', 0.0) or 0.0)
+                    att = seg_result.get('total_attenuation') or seg_result.get('attenuation_dba') or 0.0
+                    
+                    html += f"<tr><td>{idx}</td>"
+                    html += f"<td>{float(length):.1f}</td>"
+                    html += f"<td>{nb:.1f}</td>"
+                    html += f"<td>{na:.1f}</td>"
+                    html += f"<td>{float(att or 0.0):.1f}</td></tr>"
+                
+                html += "</table>"
+                
+            else:
+                html += "<p><i>No analysis results available. Click 'Calculate Noise' to analyze this path.</i></p>"
+            
+            session.close()
+            return html
+            
+        except Exception as e:
+            return f"<p style='color: red;'>Error generating comparison: {str(e)}</p>"
+    
     def save_path(self):
         """Save the HVAC path"""
         # Validate inputs
@@ -1786,6 +2023,9 @@ class HVACPathDialog(QDialog):
                         # Update target space
                         space_id = self.space_combo.currentData()
                         db_path.target_space_id = space_id
+                        # Update drawing set
+                        drawing_set_id = self.drawing_set_combo.currentData()
+                        db_path.drawing_set_id = drawing_set_id
                         session.commit()
                         # Assign updated object back for emit
                         self.path = db_path
@@ -1814,6 +2054,9 @@ class HVACPathDialog(QDialog):
                         # Update target space
                         space_id = self.space_combo.currentData()
                         db_path.target_space_id = space_id
+                        # Update drawing set
+                        drawing_set_id = self.drawing_set_combo.currentData()
+                        db_path.drawing_set_id = drawing_set_id
                         
                         # Persist current segment ordering and keep any edited geometry
                         try:
@@ -1849,13 +2092,15 @@ class HVACPathDialog(QDialog):
                     # Create new path using session context manager
                     with get_hvac_session() as session:
                         space_id = self.space_combo.currentData()
+                        drawing_set_id = self.drawing_set_combo.currentData()
                         
                         path = HVACPath(
                             project_id=self.project_id,
                             name=name,
                             path_type=self.type_combo.currentText(),
                             description=self.description_text.toPlainText(),
-                            target_space_id=space_id
+                            target_space_id=space_id,
+                            drawing_set_id=drawing_set_id
                         )
                         session.add(path)
                         session.flush()  # Get ID

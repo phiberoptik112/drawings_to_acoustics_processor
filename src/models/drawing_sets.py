@@ -34,6 +34,7 @@ class DrawingSet(Base):
         foreign_keys="DrawingComparison.compare_set_id",
         back_populates="compare_set",
     )
+    material_schedules = relationship("MaterialSchedule", back_populates="drawing_set", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<DrawingSet(id={self.id}, name='{self.name}', phase='{self.phase_type}')>"

@@ -283,7 +283,7 @@ class RT60PlotContainer(QWidget):
         
         # Status display
         self.status_display = QLabel("Ready")
-        self.status_display.setStyleSheet("color: #2c3e50;")
+        self.status_display.setStyleSheet("color: #e0e0e0;")
         controls_layout.addWidget(self.status_display)
         
         plot_layout.addLayout(controls_layout)

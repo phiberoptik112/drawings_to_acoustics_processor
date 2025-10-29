@@ -40,31 +40,44 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QComboBox,
     QGridLayout,
+    QCheckBox,
 )
 from PySide6.QtWidgets import QAbstractItemView
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QSizePolicy
+from PySide6.QtGui import QColor
 
 from models import get_session
 from models.mechanical import MechanicalUnit, NoiseSource
 from models.hvac import SilencerProduct
+from models.rt60_models import AcousticMaterial, SurfaceCategory, RoomSurfaceInstance
 from calculations.hvac_constants import is_valid_cfm_value
 
 
 class ComponentLibraryDialog(QDialog):
     """Project-level component library management dialog."""
+    
+    # Signal emitted when library data changes (so parent can refresh if needed)
+    library_updated = Signal()
 
     def __init__(self, parent=None, project_id: Optional[int] = None):
         super().__init__(parent)
         self.project_id = project_id
         self.setWindowTitle("Component Library")
+        # Make this a non-modal window so users can reference it while working
+        self.setModal(False)
+        # Set window flags to make it an independent window that can be arranged freely
+        self.setWindowFlags(Qt.Window)
         self.resize(900, 600)
         self.setMinimumSize(1200, 900)
-        self.setModal(True)
+
+        # Initialize state variables BEFORE building UI and refreshing
+        self.freq_dirty = False
+        self.acoustic_material_dirty = False
+        self.show_only_project_materials = False
 
         self._build_ui()
         self.refresh_lists()
-        self.freq_dirty = False
 
     # UI
     def _build_ui(self) -> None:
@@ -266,8 +279,12 @@ class ComponentLibraryDialog(QDialog):
         silencer_layout.addWidget(silencer_split)
         silencer_tab.setLayout(silencer_layout)
 
+        # Acoustic Treatment tab
+        acoustic_tab = self.create_acoustic_treatment_tab()
+        
         tabs.addTab(mech_tab, "Mechanical Units")
         tabs.addTab(silencer_tab, "Silencers")
+        tabs.addTab(acoustic_tab, "Acoustic Treatment")
 
         layout.addWidget(tabs, 1)
 
@@ -301,6 +318,160 @@ class ComponentLibraryDialog(QDialog):
         column_tools.addWidget(self.import_row_btn)
         right_v.addLayout(column_tools)
 
+    def create_acoustic_treatment_tab(self) -> QWidget:
+        """Create the Acoustic Treatment tab with materials and schedules side-by-side"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Main horizontal splitter: Materials (left) | Schedules (right)
+        main_splitter = QSplitter()
+        main_splitter.setOrientation(Qt.Horizontal)
+        
+        # ===== LEFT SECTION: Acoustic Materials =====
+        left_container = QWidget()
+        left_layout = QVBoxLayout(left_container)
+        
+        # Filter checkbox
+        filter_layout = QHBoxLayout()
+        self.materials_filter_checkbox = QCheckBox("Show only project materials")
+        self.materials_filter_checkbox.setChecked(False)
+        self.materials_filter_checkbox.stateChanged.connect(self._on_acoustic_material_filter_changed)
+        filter_layout.addWidget(self.materials_filter_checkbox)
+        filter_layout.addStretch()
+        left_layout.addLayout(filter_layout)
+        
+        # Materials list
+        left_layout.addWidget(QLabel("Acoustic Materials"))
+        self.acoustic_materials_list = QListWidget()
+        self.acoustic_materials_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.acoustic_materials_list.itemSelectionChanged.connect(self._on_acoustic_material_selected)
+        self.acoustic_materials_list.itemSelectionChanged.connect(self._toggle_acoustic_material_buttons)
+        left_layout.addWidget(self.acoustic_materials_list)
+        
+        # Absorption coefficients table
+        abs_group = QGroupBox("Absorption Coefficients (Sabine)")
+        abs_layout = QVBoxLayout()
+        self.acoustic_band_order = ["125", "250", "500", "1000", "2000", "4000"]
+        self.acoustic_absorption_table = QTableWidget(1, 7)  # 6 bands + NRC
+        headers = self.acoustic_band_order + ["NRC"]
+        self.acoustic_absorption_table.setHorizontalHeaderLabels(headers)
+        self.acoustic_absorption_table.setVerticalHeaderLabels(["Absorption"])
+        self.acoustic_absorption_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.acoustic_absorption_table.setMaximumHeight(100)
+        # Initialize cells
+        for c in range(7):
+            item = QTableWidgetItem("")
+            self.acoustic_absorption_table.setItem(0, c, item)
+            # Make NRC column (last) read-only with grey background
+            if c == 6:
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setBackground(QColor(240, 240, 240))
+        self.acoustic_absorption_table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked)
+        self.acoustic_absorption_table.cellChanged.connect(self._on_acoustic_material_cell_changed)
+        abs_layout.addWidget(self.acoustic_absorption_table)
+        abs_group.setLayout(abs_layout)
+        left_layout.addWidget(abs_group)
+        
+        # Material buttons
+        material_btns = QHBoxLayout()
+        self.manual_add_material_btn = QPushButton("Manual Treatment Add")
+        self.manual_add_material_btn.clicked.connect(self.manual_add_acoustic_material)
+        self.edit_material_btn = QPushButton("Edit")
+        self.edit_material_btn.setEnabled(False)
+        self.edit_material_btn.clicked.connect(self.edit_selected_acoustic_material)
+        self.delete_material_btn = QPushButton("Delete")
+        self.delete_material_btn.setEnabled(False)
+        self.delete_material_btn.clicked.connect(self.delete_selected_acoustic_material)
+        self.save_material_btn = QPushButton("Save Changes")
+        self.save_material_btn.setEnabled(False)
+        self.save_material_btn.clicked.connect(self.save_acoustic_material_changes)
+        material_btns.addWidget(self.manual_add_material_btn)
+        material_btns.addWidget(self.edit_material_btn)
+        material_btns.addWidget(self.delete_material_btn)
+        material_btns.addStretch()
+        material_btns.addWidget(self.save_material_btn)
+        left_layout.addLayout(material_btns)
+        
+        main_splitter.addWidget(left_container)
+        
+        # ===== RIGHT SECTION: Material Schedules =====
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        
+        # Create vertical splitter for resizable list and preview sections
+        right_splitter = QSplitter()
+        right_splitter.setOrientation(Qt.Vertical)
+        
+        # Top section: Material schedules list
+        schedules_list_container = QWidget()
+        schedules_list_layout = QVBoxLayout(schedules_list_container)
+        schedules_list_layout.setContentsMargins(0, 0, 0, 0)
+        schedules_list_layout.addWidget(QLabel("Material Schedules by Drawing Set"))
+        self.material_schedules_list = QListWidget()
+        self.material_schedules_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.material_schedules_list.itemSelectionChanged.connect(self.on_material_schedule_selected)
+        schedules_list_layout.addWidget(self.material_schedules_list)
+        right_splitter.addWidget(schedules_list_container)
+        
+        # Bottom section: PDF Preview
+        preview_group = QGroupBox("Material Schedule Preview")
+        preview_layout = QVBoxLayout()
+        
+        from drawing.pdf_viewer import PDFViewer
+        self.material_schedule_viewer = PDFViewer()
+        preview_layout.addWidget(self.material_schedule_viewer)
+        
+        # Load PDF button
+        load_pdf_row = QHBoxLayout()
+        load_pdf_row.addStretch()
+        self.load_material_pdf_btn = QPushButton("Load PDF…")
+        self.load_material_pdf_btn.clicked.connect(self.load_material_schedule_pdf)
+        load_pdf_row.addWidget(self.load_material_pdf_btn)
+        preview_layout.addLayout(load_pdf_row)
+        
+        preview_group.setLayout(preview_layout)
+        right_splitter.addWidget(preview_group)
+        
+        # Set initial splitter proportions (40% list, 60% preview)
+        right_splitter.setStretchFactor(0, 2)
+        right_splitter.setStretchFactor(1, 3)
+        
+        # Add splitter to main layout
+        right_layout.addWidget(right_splitter)
+        
+        # Schedule management buttons
+        schedule_btns = QHBoxLayout()
+        add_schedule_btn = QPushButton("Add Schedule")
+        add_schedule_btn.clicked.connect(self.add_material_schedule)
+        edit_schedule_btn = QPushButton("Edit")
+        edit_schedule_btn.clicked.connect(self.edit_material_schedule)
+        self.edit_material_schedule_btn = edit_schedule_btn
+        self.edit_material_schedule_btn.setEnabled(False)
+        delete_schedule_btn = QPushButton("Delete")
+        delete_schedule_btn.clicked.connect(self.delete_material_schedule)
+        self.delete_material_schedule_btn = delete_schedule_btn
+        self.delete_material_schedule_btn.setEnabled(False)
+        compare_btn = QPushButton("Compare Schedules")
+        compare_btn.setToolTip("Compare material schedules from different drawing sets side-by-side")
+        compare_btn.clicked.connect(self.compare_material_schedules)
+        schedule_btns.addWidget(add_schedule_btn)
+        schedule_btns.addWidget(edit_schedule_btn)
+        schedule_btns.addWidget(delete_schedule_btn)
+        schedule_btns.addStretch()
+        schedule_btns.addWidget(compare_btn)
+        right_layout.addLayout(schedule_btns)
+        
+        main_splitter.addWidget(right_container)
+        
+        # Set splitter proportions - equal split
+        main_splitter.setStretchFactor(0, 1)
+        main_splitter.setStretchFactor(1, 1)
+        
+        layout.addWidget(main_splitter)
+        widget.setLayout(layout)
+        
+        return widget
+    
     # Data
     def refresh_lists(self) -> None:
         try:
@@ -337,6 +508,12 @@ class ComponentLibraryDialog(QDialog):
                     pass
                 self.silencer_list.itemSelectionChanged.connect(self._on_silencer_selected)
             session.close()
+            
+            # Refresh acoustic materials
+            self.refresh_acoustic_materials()
+            
+            # Refresh material schedules
+            self.refresh_material_schedules()
         except Exception as e:
             QMessageBox.warning(self, "Load Error", f"Failed to load component library:\n{e}")
 
@@ -374,6 +551,7 @@ class ComponentLibraryDialog(QDialog):
         dlg = SilencerEditDialog(self)
         if dlg.exec() == QDialog.Accepted:
             self.refresh_lists()
+            self.library_updated.emit()
 
     def edit_selected_silencer(self) -> None:
         item = self.silencer_list.currentItem()
@@ -388,6 +566,7 @@ class ComponentLibraryDialog(QDialog):
         dlg = SilencerEditDialog(self, s)
         if dlg.exec() == QDialog.Accepted:
             self.refresh_lists()
+            self.library_updated.emit()
 
     def delete_selected_silencer(self) -> None:
         item = self.silencer_list.currentItem()
@@ -404,6 +583,7 @@ class ComponentLibraryDialog(QDialog):
                 session.commit()
             session.close()
             self.refresh_lists()
+            self.library_updated.emit()
         except Exception as e:
             QMessageBox.critical(self, "Delete Error", f"Failed to delete silencer:\n{e}")
 
@@ -434,6 +614,7 @@ class ComponentLibraryDialog(QDialog):
             s.insertion_loss_8000 = vals[7]
             session.commit(); session.close()
             self._toggle_silencer_save(False)
+            self.library_updated.emit()
             QMessageBox.information(self, "Silencer", "Insertion loss values saved.")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save insertion loss:\n{e}")
@@ -684,6 +865,7 @@ class ComponentLibraryDialog(QDialog):
             self._import_csv_into_mechanical_units(csv_path)
             QMessageBox.information(self, "Import Complete", "Mechanical schedule imported successfully.")
             self.refresh_lists()
+            self.library_updated.emit()
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import CSV into database:\n{e}")
 
@@ -744,6 +926,7 @@ class ComponentLibraryDialog(QDialog):
             session.commit()
             session.close()
             self.refresh_lists()
+            self.library_updated.emit()
             QMessageBox.information(self, "Import Complete", f"Imported {len(units)} mechanical units from PDF.")
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Failed to import PDF results into database:\n{e}")
@@ -823,6 +1006,7 @@ class ComponentLibraryDialog(QDialog):
             session.close()
             self.freq_dirty = False
             self.save_btn.setEnabled(False)
+            self.library_updated.emit()
             QMessageBox.information(self, "Saved", "Frequency values saved to database.")
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save changes:\n{e}")
@@ -1010,6 +1194,7 @@ class ComponentLibraryDialog(QDialog):
         dlg = MechanicalUnitEditDialog(self, unit)
         if dlg.exec() == QDialog.Accepted:
             self.refresh_lists()
+            self.library_updated.emit()
 
     def delete_selected_mechanical_unit(self) -> None:
         item = self.mechanical_list.currentItem()
@@ -1033,6 +1218,7 @@ class ComponentLibraryDialog(QDialog):
                 session.commit()
             session.close()
             self.refresh_lists()
+            self.library_updated.emit()
         except Exception as e:
             QMessageBox.critical(self, "Delete Error", f"Failed to delete entry:\n{e}")
 
@@ -1041,6 +1227,592 @@ class ComponentLibraryDialog(QDialog):
         dlg = ManualMechanicalUnitAddDialog(self, project_id=self.project_id)
         if dlg.exec() == QDialog.Accepted:
             self.refresh_lists()
+            self.library_updated.emit()
+    
+    # Acoustic Materials Management Methods
+    def refresh_acoustic_materials(self) -> None:
+        """Refresh the acoustic materials list with optional project filtering"""
+        if not hasattr(self, 'acoustic_materials_list'):
+            return
+        
+        try:
+            session = get_session()
+            
+            # Base query
+            query = session.query(AcousticMaterial)
+            
+            # Apply project filter if enabled
+            if self.show_only_project_materials and self.project_id:
+                # Get materials used in this project's spaces (check both systems)
+                from models.space import Space, SpaceSurfaceMaterial
+                from data.materials import STANDARD_MATERIALS
+                
+                project_space_ids = [s.id for s in session.query(Space).filter(Space.project_id == self.project_id).all()]
+                
+                if project_space_ids:
+                    material_ids_set = set()
+                    
+                    # Check NEW RT60 system: RoomSurfaceInstance with material_id FK
+                    room_surface_material_ids = session.query(RoomSurfaceInstance.material_id).filter(
+                        RoomSurfaceInstance.space_id.in_(project_space_ids),
+                        RoomSurfaceInstance.material_id.isnot(None)
+                    ).distinct().all()
+                    material_ids_set.update([mid[0] for mid in room_surface_material_ids])
+                    
+                    # Check LEGACY system: SpaceSurfaceMaterial with material_key strings
+                    space_material_keys = session.query(SpaceSurfaceMaterial.material_key).filter(
+                        SpaceSurfaceMaterial.space_id.in_(project_space_ids)
+                    ).distinct().all()
+                    
+                    # Match material keys to AcousticMaterial names
+                    for (mat_key,) in space_material_keys:
+                        # Get material name from STANDARD_MATERIALS
+                        if mat_key in STANDARD_MATERIALS:
+                            mat_name = STANDARD_MATERIALS[mat_key].get('name', mat_key)
+                        else:
+                            # Material key might BE the name already
+                            mat_name = mat_key
+                        
+                        # Find matching AcousticMaterial by name (case-insensitive partial match)
+                        matching_materials = session.query(AcousticMaterial).filter(
+                            AcousticMaterial.name.ilike(f'%{mat_name}%')
+                        ).all()
+                        material_ids_set.update([m.id for m in matching_materials])
+                    
+                    if material_ids_set:
+                        query = query.filter(AcousticMaterial.id.in_(material_ids_set))
+                    else:
+                        # No materials in project yet
+                        query = query.filter(AcousticMaterial.id == -1)  # Return empty
+            
+            materials = query.order_by(AcousticMaterial.name).all()
+            
+            self.acoustic_materials_list.clear()
+            
+            for mat in materials:
+                nrc_text = f"{mat.nrc:.2f}" if mat.nrc is not None else "—"
+                text = f"{mat.name} - NRC: {nrc_text}"
+                item = QListWidgetItem(text)
+                item.setData(Qt.UserRole, mat.id)
+                
+                # Build tooltip
+                tooltip_parts = [f"Name: {mat.name}"]
+                if mat.category:
+                    tooltip_parts.append(f"Category: {mat.category.name}")
+                if mat.manufacturer:
+                    tooltip_parts.append(f"Manufacturer: {mat.manufacturer}")
+                if mat.mounting_type:
+                    tooltip_parts.append(f"Mounting: {mat.mounting_type}")
+                if mat.thickness:
+                    tooltip_parts.append(f"Thickness: {mat.thickness}")
+                item.setToolTip("\n".join(tooltip_parts))
+                
+                self.acoustic_materials_list.addItem(item)
+            
+            if self.acoustic_materials_list.count() == 0:
+                placeholder = QListWidgetItem(
+                    "No materials found. Click 'Manual Treatment Add' to create one." if not self.show_only_project_materials
+                    else "No materials used in this project yet."
+                )
+                placeholder.setFlags(Qt.ItemIsEnabled)
+                placeholder.setForeground(QColor(120, 120, 120))
+                self.acoustic_materials_list.addItem(placeholder)
+            
+            session.close()
+            
+            # Clear selection and preview
+            self._clear_acoustic_material_preview()
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", f"Failed to load acoustic materials:\n{e}")
+    
+    def _clear_acoustic_material_preview(self) -> None:
+        """Clear the absorption table"""
+        if hasattr(self, 'acoustic_absorption_table') and self.acoustic_absorption_table is not None:
+            for c in range(self.acoustic_absorption_table.columnCount()):
+                item = self.acoustic_absorption_table.item(0, c)
+                if item:
+                    item.setText("")
+        self.acoustic_material_dirty = False
+        if hasattr(self, 'save_material_btn'):
+            self.save_material_btn.setEnabled(False)
+    
+    def _on_acoustic_material_selected(self) -> None:
+        """Handle acoustic material selection change"""
+        current = self.acoustic_materials_list.currentItem()
+        if not current or current.data(Qt.UserRole) is None:
+            self._clear_acoustic_material_preview()
+            return
+        
+        material_id = current.data(Qt.UserRole)
+        
+        try:
+            session = get_session()
+            material = session.query(AcousticMaterial).filter(AcousticMaterial.id == material_id).first()
+            session.close()
+            
+            if not material:
+                self._clear_acoustic_material_preview()
+                return
+            
+            # Disconnect signal temporarily to avoid triggering dirty state
+            try:
+                self.acoustic_absorption_table.cellChanged.disconnect()
+            except Exception:
+                pass
+            
+            # Fill absorption coefficients
+            coefficients = [
+                material.absorption_125,
+                material.absorption_250,
+                material.absorption_500,
+                material.absorption_1000,
+                material.absorption_2000,
+                material.absorption_4000
+            ]
+            
+            for c, coeff in enumerate(coefficients):
+                val_text = f"{coeff:.2f}" if coeff is not None else ""
+                self.acoustic_absorption_table.item(0, c).setText(val_text)
+            
+            # Fill NRC (last column)
+            nrc_text = f"{material.nrc:.2f}" if material.nrc is not None else ""
+            self.acoustic_absorption_table.item(0, 6).setText(nrc_text)
+            
+            # Reconnect signal
+            self.acoustic_absorption_table.cellChanged.connect(self._on_acoustic_material_cell_changed)
+            
+            # Reset dirty state
+            self.acoustic_material_dirty = False
+            if hasattr(self, 'save_material_btn'):
+                self.save_material_btn.setEnabled(False)
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", f"Failed to load material:\n{e}")
+            self._clear_acoustic_material_preview()
+    
+    def _toggle_acoustic_material_buttons(self) -> None:
+        """Enable/disable edit and delete buttons based on selection"""
+        has_sel = self.acoustic_materials_list.currentItem() is not None
+        valid_sel = has_sel and self.acoustic_materials_list.currentItem().data(Qt.UserRole) is not None
+        if hasattr(self, 'edit_material_btn'):
+            self.edit_material_btn.setEnabled(valid_sel)
+        if hasattr(self, 'delete_material_btn'):
+            self.delete_material_btn.setEnabled(valid_sel)
+    
+    def _on_acoustic_material_filter_changed(self, _state: int) -> None:
+        """Handle filter checkbox state change"""
+        self.show_only_project_materials = self.materials_filter_checkbox.isChecked()
+        self.refresh_acoustic_materials()
+    
+    def _on_acoustic_material_cell_changed(self, row: int, col: int) -> None:
+        """Mark table dirty when user edits absorption coefficients"""
+        if col < 6:  # Only for editable columns (not NRC)
+            self.acoustic_material_dirty = True
+            if hasattr(self, 'save_material_btn'):
+                self.save_material_btn.setEnabled(True)
+            
+            # Auto-calculate NRC from 250, 500, 1000, 2000 Hz (indices 1,2,3,4)
+            try:
+                coeffs = []
+                for idx in [1, 2, 3, 4]:  # 250, 500, 1000, 2000
+                    text = self.acoustic_absorption_table.item(0, idx).text().strip()
+                    if text:
+                        coeffs.append(float(text))
+                
+                if len(coeffs) == 4:
+                    nrc = sum(coeffs) / 4.0
+                    # Update NRC cell without triggering cellChanged
+                    try:
+                        self.acoustic_absorption_table.cellChanged.disconnect()
+                    except Exception:
+                        pass
+                    self.acoustic_absorption_table.item(0, 6).setText(f"{nrc:.2f}")
+                    self.acoustic_absorption_table.cellChanged.connect(self._on_acoustic_material_cell_changed)
+            except Exception:
+                pass
+    
+    def save_acoustic_material_changes(self) -> None:
+        """Save direct table edits to database"""
+        if not self.acoustic_material_dirty:
+            return
+        
+        current = self.acoustic_materials_list.currentItem()
+        if not current or current.data(Qt.UserRole) is None:
+            QMessageBox.information(self, "Save", "Select an acoustic material first.")
+            return
+        
+        material_id = current.data(Qt.UserRole)
+        
+        try:
+            session = get_session()
+            material = session.query(AcousticMaterial).filter(AcousticMaterial.id == material_id).first()
+            
+            if not material:
+                session.close()
+                QMessageBox.warning(self, "Save", "Selected material not found in database.")
+                return
+            
+            # Read values from table
+            def as_float(txt: str):
+                try:
+                    return float(txt.strip())
+                except Exception:
+                    return None
+            
+            material.absorption_125 = as_float(self.acoustic_absorption_table.item(0, 0).text())
+            material.absorption_250 = as_float(self.acoustic_absorption_table.item(0, 1).text())
+            material.absorption_500 = as_float(self.acoustic_absorption_table.item(0, 2).text())
+            material.absorption_1000 = as_float(self.acoustic_absorption_table.item(0, 3).text())
+            material.absorption_2000 = as_float(self.acoustic_absorption_table.item(0, 4).text())
+            material.absorption_4000 = as_float(self.acoustic_absorption_table.item(0, 5).text())
+            
+            # Recalculate NRC
+            material.calculate_nrc()
+            
+            session.commit()
+            session.close()
+            
+            self.acoustic_material_dirty = False
+            self.save_material_btn.setEnabled(False)
+            self.library_updated.emit()
+            
+            # Refresh list to show updated NRC
+            self.refresh_acoustic_materials()
+            
+            QMessageBox.information(self, "Saved", "Absorption coefficients saved to database.")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save changes:\n{e}")
+    
+    def manual_add_acoustic_material(self) -> None:
+        """Open dialog to manually add a new acoustic material"""
+        dlg = ManualAcousticMaterialAddDialog(self)
+        if dlg.exec() == QDialog.Accepted:
+            self.refresh_acoustic_materials()
+            self.library_updated.emit()
+    
+    def edit_selected_acoustic_material(self) -> None:
+        """Edit the selected acoustic material"""
+        current = self.acoustic_materials_list.currentItem()
+        if not current or current.data(Qt.UserRole) is None:
+            return
+        
+        material_id = current.data(Qt.UserRole)
+        
+        try:
+            session = get_session()
+            material = session.query(AcousticMaterial).filter(AcousticMaterial.id == material_id).first()
+            session.close()
+            
+            if not material:
+                return
+            
+            dlg = AcousticMaterialEditDialog(self, material)
+            if dlg.exec() == QDialog.Accepted:
+                self.refresh_acoustic_materials()
+                self.library_updated.emit()
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Edit Error", f"Failed to open edit dialog:\n{e}")
+    
+    def delete_selected_acoustic_material(self) -> None:
+        """Delete the selected acoustic material"""
+        current = self.acoustic_materials_list.currentItem()
+        if not current or current.data(Qt.UserRole) is None:
+            return
+        
+        material_id = current.data(Qt.UserRole)
+        
+        try:
+            session = get_session()
+            material = session.query(AcousticMaterial).filter(AcousticMaterial.id == material_id).first()
+            
+            if not material:
+                session.close()
+                QMessageBox.warning(self, "Delete", "Selected material not found.")
+                return
+            
+            # Check if material is used in any project
+            usage_count = session.query(RoomSurfaceInstance).filter(
+                RoomSurfaceInstance.material_id == material_id
+            ).count()
+            
+            warning_msg = f"Delete acoustic material '{material.name}'?"
+            if usage_count > 0:
+                warning_msg += f"\n\nWarning: This material is currently used in {usage_count} surface instance(s)."
+            
+            reply = QMessageBox.question(
+                self,
+                "Confirm Delete",
+                warning_msg,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply != QMessageBox.Yes:
+                session.close()
+                return
+            
+            # Delete the material
+            session.delete(material)
+            session.commit()
+            session.close()
+            
+            self.refresh_acoustic_materials()
+            self.library_updated.emit()
+            QMessageBox.information(self, "Deleted", "Acoustic material deleted.")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Delete Error", f"Failed to delete material:\n{e}")
+    
+    # Material Schedule Management Methods
+    def refresh_material_schedules(self) -> None:
+        """Refresh the material schedules list"""
+        if not hasattr(self, 'material_schedules_list'):
+            return
+        
+        try:
+            from models import MaterialSchedule
+            from models.drawing_sets import DrawingSet
+            
+            session = get_session()
+            
+            # Load all drawing sets with their material schedules
+            drawing_sets = (
+                session.query(DrawingSet)
+                .filter(DrawingSet.project_id == self.project_id)
+                .order_by(DrawingSet.created_date)
+                .all()
+            )
+            
+            self.material_schedules_list.clear()
+            
+            phase_icons = {'DD': '🟦', 'SD': '🟨', 'CD': '🟥', 'Final': '🟩', 'Legacy': '⚫'}
+            
+            for ds in drawing_sets:
+                # Get schedules for this drawing set
+                schedules = (
+                    session.query(MaterialSchedule)
+                    .filter(MaterialSchedule.drawing_set_id == ds.id)
+                    .order_by(MaterialSchedule.name)
+                    .all()
+                )
+                
+                if schedules:
+                    # Add drawing set header
+                    icon = phase_icons.get(ds.phase_type, '⚪')
+                    header_text = f"═══ {icon} {ds.name} ({ds.phase_type}) ═══"
+                    header_item = QListWidgetItem(header_text)
+                    header_item.setFlags(Qt.ItemIsEnabled)  # Not selectable
+                    header_item.setForeground(QColor(180, 180, 180))
+                    self.material_schedules_list.addItem(header_item)
+                    
+                    # Add schedules
+                    for ms in schedules:
+                        schedule_text = f"  📄 {ms.name} ({ms.schedule_type})"
+                        item = QListWidgetItem(schedule_text)
+                        item.setData(Qt.UserRole, ms.id)
+                        self.material_schedules_list.addItem(item)
+            
+            if self.material_schedules_list.count() == 0:
+                placeholder = QListWidgetItem("No material schedules. Click 'Add Schedule' to create one.")
+                placeholder.setFlags(Qt.ItemIsEnabled)
+                placeholder.setForeground(QColor(120, 120, 120))
+                self.material_schedules_list.addItem(placeholder)
+            
+            session.close()
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", f"Failed to load material schedules:\n{e}")
+    
+    def on_material_schedule_selected(self) -> None:
+        """Handle material schedule selection change"""
+        if not hasattr(self, 'material_schedules_list'):
+            return
+        
+        current = self.material_schedules_list.currentItem()
+        
+        # Enable/disable buttons based on selection
+        has_selection = current is not None and current.data(Qt.UserRole) is not None
+        if hasattr(self, 'edit_material_schedule_btn'):
+            self.edit_material_schedule_btn.setEnabled(has_selection)
+        if hasattr(self, 'delete_material_schedule_btn'):
+            self.delete_material_schedule_btn.setEnabled(has_selection)
+        
+        if not has_selection:
+            return
+        
+        schedule_id = current.data(Qt.UserRole)
+        
+        try:
+            from models import MaterialSchedule
+            
+            session = get_session()
+            schedule = session.query(MaterialSchedule).filter(
+                MaterialSchedule.id == schedule_id
+            ).first()
+            session.close()
+            
+            if not schedule:
+                return
+            
+            # Load PDF in viewer
+            file_path = schedule.get_display_path()
+            if file_path and hasattr(self, 'material_schedule_viewer'):
+                import os
+                if os.path.exists(file_path):
+                    self.material_schedule_viewer.load_pdf(file_path)
+                else:
+                    QMessageBox.warning(self, "File Not Found", 
+                                      f"PDF file not found:\n{file_path}")
+        
+        except Exception as e:
+            QMessageBox.warning(self, "Load Error", f"Failed to load schedule:\n{e}")
+    
+    def add_material_schedule(self) -> None:
+        """Open dialog to add a new material schedule"""
+        try:
+            from ui.dialogs.material_schedule_dialog import MaterialScheduleDialog
+            from models import Project
+            
+            # Get project location
+            session = get_session()
+            project = session.query(Project).filter(Project.id == self.project_id).first()
+            session.close()
+            
+            if not project:
+                QMessageBox.warning(self, "Add Schedule", "Project not found.")
+                return
+            
+            dialog = MaterialScheduleDialog(
+                self, 
+                project_id=self.project_id,
+                project_location=project.location
+            )
+            
+            if dialog.exec() == QDialog.Accepted:
+                self.refresh_material_schedules()
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Add Schedule", f"Failed to add material schedule:\n{e}")
+    
+    def edit_material_schedule(self) -> None:
+        """Edit the selected material schedule"""
+        if not hasattr(self, 'material_schedules_list'):
+            return
+        
+        current = self.material_schedules_list.currentItem()
+        if not current or current.data(Qt.UserRole) is None:
+            QMessageBox.information(self, "Edit Schedule", "Select a material schedule to edit.")
+            return
+        
+        schedule_id = current.data(Qt.UserRole)
+        
+        try:
+            from ui.dialogs.material_schedule_dialog import MaterialScheduleDialog
+            from models import MaterialSchedule, Project
+            
+            session = get_session()
+            schedule = session.query(MaterialSchedule).filter(
+                MaterialSchedule.id == schedule_id
+            ).first()
+            project = session.query(Project).filter(Project.id == self.project_id).first()
+            session.close()
+            
+            if not schedule:
+                QMessageBox.warning(self, "Edit Schedule", "Selected schedule not found.")
+                return
+            
+            dialog = MaterialScheduleDialog(
+                self,
+                project_id=self.project_id,
+                project_location=project.location if project else None,
+                material_schedule=schedule
+            )
+            
+            if dialog.exec() == QDialog.Accepted:
+                self.refresh_material_schedules()
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Edit Schedule", f"Failed to edit material schedule:\n{e}")
+    
+    def delete_material_schedule(self) -> None:
+        """Delete the selected material schedule"""
+        if not hasattr(self, 'material_schedules_list'):
+            return
+        
+        current = self.material_schedules_list.currentItem()
+        if not current or current.data(Qt.UserRole) is None:
+            QMessageBox.information(self, "Delete Schedule", "Select a material schedule to delete.")
+            return
+        
+        schedule_id = current.data(Qt.UserRole)
+        
+        try:
+            from models import MaterialSchedule
+            
+            session = get_session()
+            schedule = session.query(MaterialSchedule).filter(
+                MaterialSchedule.id == schedule_id
+            ).first()
+            
+            if not schedule:
+                session.close()
+                QMessageBox.warning(self, "Delete Schedule", "Selected schedule not found.")
+                return
+            
+            # Confirm deletion
+            reply = QMessageBox.question(
+                self,
+                "Confirm Delete",
+                f"Delete material schedule '{schedule.name}'?\n\n"
+                "Note: The PDF file itself will not be deleted from disk.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply != QMessageBox.Yes:
+                session.close()
+                return
+            
+            # Delete the schedule record (files remain on disk)
+            session.delete(schedule)
+            session.commit()
+            session.close()
+            
+            self.refresh_material_schedules()
+            QMessageBox.information(self, "Deleted", "Material schedule deleted.")
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Delete Error", f"Failed to delete schedule:\n{e}")
+    
+    def load_material_schedule_pdf(self) -> None:
+        """Load a PDF directly into the material schedule viewer"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select PDF to Preview",
+            "",
+            "PDF Files (*.pdf);;All Files (*)"
+        )
+        
+        if file_path and hasattr(self, 'material_schedule_viewer'):
+            try:
+                self.material_schedule_viewer.load_pdf(file_path)
+            except Exception as e:
+                QMessageBox.critical(self, "Preview Error", f"Failed to load PDF:\n{e}")
+    
+    def compare_material_schedules(self) -> None:
+        """Open the material schedule comparison dialog"""
+        try:
+            from ui.dialogs.material_schedule_comparison_dialog import MaterialScheduleComparisonDialog
+            
+            dialog = MaterialScheduleComparisonDialog(self, project_id=self.project_id)
+            dialog.exec()
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Comparison Error", 
+                               f"Failed to open comparison dialog:\n{e}")
 
 
 class MechanicalUnitEditDialog(QDialog):
@@ -1569,3 +2341,327 @@ class ManualMechanicalUnitAddDialog(QDialog):
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save component:\n{e}")
+
+
+class ManualAcousticMaterialAddDialog(QDialog):
+    """Dialog to manually add an acoustic material with absorption coefficients"""
+    
+    def __init__(self, parent: Optional[QWidget]):
+        super().__init__(parent)
+        self.setWindowTitle("Manual Treatment Add")
+        self.resize(600, 650)
+        self.setModal(True)
+        
+        layout = QVBoxLayout(self)
+        
+        # Basic information form
+        form = QFormLayout()
+        
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("e.g., Acoustic Ceiling Tile")
+        form.addRow("Name*:", self.name_edit)
+        
+        # Category dropdown
+        self.category_combo = QComboBox()
+        self.category_combo.addItem("(No Category)", None)
+        try:
+            session = get_session()
+            categories = session.query(SurfaceCategory).order_by(SurfaceCategory.name).all()
+            for cat in categories:
+                self.category_combo.addItem(cat.name, cat.id)
+            session.close()
+        except Exception:
+            pass
+        form.addRow("Category:", self.category_combo)
+        
+        self.manufacturer_edit = QLineEdit()
+        form.addRow("Manufacturer:", self.manufacturer_edit)
+        
+        self.product_code_edit = QLineEdit()
+        form.addRow("Product Code:", self.product_code_edit)
+        
+        self.mounting_combo = QComboBox()
+        self.mounting_combo.addItems(["", "direct", "suspended", "spaced"])
+        form.addRow("Mounting Type:", self.mounting_combo)
+        
+        self.thickness_edit = QLineEdit()
+        self.thickness_edit.setPlaceholderText("e.g., 1 inch, 25mm")
+        form.addRow("Thickness:", self.thickness_edit)
+        
+        layout.addLayout(form)
+        
+        # Description
+        layout.addWidget(QLabel("Description:"))
+        self.description_edit = QTextEdit()
+        self.description_edit.setMaximumHeight(80)
+        layout.addWidget(self.description_edit)
+        
+        # Absorption coefficients
+        coeff_group = QGroupBox("Absorption Coefficients (0.00 - 1.00)")
+        coeff_layout = QGridLayout()
+        
+        self.band_labels = ["125 Hz", "250 Hz", "500 Hz", "1000 Hz", "2000 Hz", "4000 Hz"]
+        self.coeff_spinboxes = []
+        
+        for i, label in enumerate(self.band_labels):
+            coeff_layout.addWidget(QLabel(label), i, 0)
+            spinbox = QDoubleSpinBox()
+            spinbox.setRange(0.0, 1.0)
+            spinbox.setDecimals(2)
+            spinbox.setSingleStep(0.01)
+            spinbox.setValue(0.0)
+            spinbox.valueChanged.connect(self._update_nrc)
+            self.coeff_spinboxes.append(spinbox)
+            coeff_layout.addWidget(spinbox, i, 1)
+        
+        coeff_group.setLayout(coeff_layout)
+        layout.addWidget(coeff_group)
+        
+        # NRC display
+        nrc_layout = QHBoxLayout()
+        nrc_layout.addWidget(QLabel("Calculated NRC:"))
+        self.nrc_display = QLineEdit()
+        self.nrc_display.setReadOnly(True)
+        self.nrc_display.setText("0.00")
+        self.nrc_display.setMaximumWidth(100)
+        nrc_layout.addWidget(self.nrc_display)
+        nrc_layout.addStretch()
+        layout.addLayout(nrc_layout)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self._save)
+        button_layout.addStretch()
+        button_layout.addWidget(cancel_btn)
+        button_layout.addWidget(save_btn)
+        layout.addLayout(button_layout)
+    
+    def _update_nrc(self):
+        """Auto-calculate NRC from 250, 500, 1000, 2000 Hz"""
+        try:
+            # Indices 1, 2, 3, 4 correspond to 250, 500, 1000, 2000 Hz
+            nrc_bands = [self.coeff_spinboxes[i].value() for i in [1, 2, 3, 4]]
+            nrc = sum(nrc_bands) / 4.0
+            self.nrc_display.setText(f"{nrc:.2f}")
+        except Exception:
+            self.nrc_display.setText("0.00")
+    
+    def _save(self):
+        """Validate and save the new material"""
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.information(self, "Manual Treatment Add", "Please enter a material name.")
+            return
+        
+        # Check if at least one coefficient is > 0
+        coeffs = [sb.value() for sb in self.coeff_spinboxes]
+        if all(c == 0.0 for c in coeffs):
+            QMessageBox.information(self, "Manual Treatment Add", 
+                                  "Please enter at least one absorption coefficient greater than 0.")
+            return
+        
+        try:
+            session = get_session()
+            
+            material = AcousticMaterial(
+                name=name,
+                category_id=self.category_combo.currentData(),
+                manufacturer=self.manufacturer_edit.text().strip() or None,
+                product_code=self.product_code_edit.text().strip() or None,
+                mounting_type=self.mounting_combo.currentText().strip() or None,
+                thickness=self.thickness_edit.text().strip() or None,
+                description=self.description_edit.toPlainText().strip() or None,
+                absorption_125=coeffs[0],
+                absorption_250=coeffs[1],
+                absorption_500=coeffs[2],
+                absorption_1000=coeffs[3],
+                absorption_2000=coeffs[4],
+                absorption_4000=coeffs[5]
+            )
+            
+            # Calculate NRC
+            material.calculate_nrc()
+            
+            session.add(material)
+            session.commit()
+            session.close()
+            
+            self.accept()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save acoustic material:\n{e}")
+
+
+class AcousticMaterialEditDialog(QDialog):
+    """Dialog to edit an existing acoustic material"""
+    
+    def __init__(self, parent: Optional[QWidget], material: AcousticMaterial):
+        super().__init__(parent)
+        self.material = material
+        self.setWindowTitle(f"Edit Acoustic Material: {material.name}")
+        self.resize(600, 650)
+        self.setModal(True)
+        
+        layout = QVBoxLayout(self)
+        
+        # Basic information form
+        form = QFormLayout()
+        
+        self.name_edit = QLineEdit(material.name or "")
+        form.addRow("Name*:", self.name_edit)
+        
+        # Category dropdown
+        self.category_combo = QComboBox()
+        self.category_combo.addItem("(No Category)", None)
+        try:
+            session = get_session()
+            categories = session.query(SurfaceCategory).order_by(SurfaceCategory.name).all()
+            for cat in categories:
+                self.category_combo.addItem(cat.name, cat.id)
+                if material.category_id == cat.id:
+                    self.category_combo.setCurrentIndex(self.category_combo.count() - 1)
+            session.close()
+        except Exception:
+            pass
+        form.addRow("Category:", self.category_combo)
+        
+        self.manufacturer_edit = QLineEdit(material.manufacturer or "")
+        form.addRow("Manufacturer:", self.manufacturer_edit)
+        
+        self.product_code_edit = QLineEdit(material.product_code or "")
+        form.addRow("Product Code:", self.product_code_edit)
+        
+        self.mounting_combo = QComboBox()
+        self.mounting_combo.addItems(["", "direct", "suspended", "spaced"])
+        if material.mounting_type:
+            idx = self.mounting_combo.findText(material.mounting_type)
+            if idx >= 0:
+                self.mounting_combo.setCurrentIndex(idx)
+        form.addRow("Mounting Type:", self.mounting_combo)
+        
+        self.thickness_edit = QLineEdit(material.thickness or "")
+        form.addRow("Thickness:", self.thickness_edit)
+        
+        layout.addLayout(form)
+        
+        # Description
+        layout.addWidget(QLabel("Description:"))
+        self.description_edit = QTextEdit()
+        self.description_edit.setMaximumHeight(80)
+        self.description_edit.setPlainText(material.description or "")
+        layout.addWidget(self.description_edit)
+        
+        # Absorption coefficients
+        coeff_group = QGroupBox("Absorption Coefficients (0.00 - 1.00)")
+        coeff_layout = QGridLayout()
+        
+        self.band_labels = ["125 Hz", "250 Hz", "500 Hz", "1000 Hz", "2000 Hz", "4000 Hz"]
+        self.coeff_spinboxes = []
+        coefficients = [
+            material.absorption_125 or 0.0,
+            material.absorption_250 or 0.0,
+            material.absorption_500 or 0.0,
+            material.absorption_1000 or 0.0,
+            material.absorption_2000 or 0.0,
+            material.absorption_4000 or 0.0
+        ]
+        
+        for i, (label, value) in enumerate(zip(self.band_labels, coefficients)):
+            coeff_layout.addWidget(QLabel(label), i, 0)
+            spinbox = QDoubleSpinBox()
+            spinbox.setRange(0.0, 1.0)
+            spinbox.setDecimals(2)
+            spinbox.setSingleStep(0.01)
+            spinbox.setValue(value)
+            spinbox.valueChanged.connect(self._update_nrc)
+            self.coeff_spinboxes.append(spinbox)
+            coeff_layout.addWidget(spinbox, i, 1)
+        
+        coeff_group.setLayout(coeff_layout)
+        layout.addWidget(coeff_group)
+        
+        # NRC display
+        nrc_layout = QHBoxLayout()
+        nrc_layout.addWidget(QLabel("Calculated NRC:"))
+        self.nrc_display = QLineEdit()
+        self.nrc_display.setReadOnly(True)
+        self.nrc_display.setText(f"{material.nrc:.2f}" if material.nrc is not None else "0.00")
+        self.nrc_display.setMaximumWidth(100)
+        nrc_layout.addWidget(self.nrc_display)
+        nrc_layout.addStretch()
+        layout.addLayout(nrc_layout)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self._save)
+        button_layout.addStretch()
+        button_layout.addWidget(cancel_btn)
+        button_layout.addWidget(save_btn)
+        layout.addLayout(button_layout)
+    
+    def _update_nrc(self):
+        """Auto-calculate NRC from 250, 500, 1000, 2000 Hz"""
+        try:
+            # Indices 1, 2, 3, 4 correspond to 250, 500, 1000, 2000 Hz
+            nrc_bands = [self.coeff_spinboxes[i].value() for i in [1, 2, 3, 4]]
+            nrc = sum(nrc_bands) / 4.0
+            self.nrc_display.setText(f"{nrc:.2f}")
+        except Exception:
+            self.nrc_display.setText("0.00")
+    
+    def _save(self):
+        """Validate and save changes to the material"""
+        name = self.name_edit.text().strip()
+        if not name:
+            QMessageBox.information(self, "Edit Material", "Please enter a material name.")
+            return
+        
+        # Check if at least one coefficient is > 0
+        coeffs = [sb.value() for sb in self.coeff_spinboxes]
+        if all(c == 0.0 for c in coeffs):
+            QMessageBox.information(self, "Edit Material", 
+                                  "Please enter at least one absorption coefficient greater than 0.")
+            return
+        
+        try:
+            session = get_session()
+            db_material = session.query(AcousticMaterial).filter(
+                AcousticMaterial.id == self.material.id
+            ).first()
+            
+            if not db_material:
+                session.close()
+                QMessageBox.critical(self, "Edit Error", "Material not found in database.")
+                return
+            
+            # Update fields
+            db_material.name = name
+            db_material.category_id = self.category_combo.currentData()
+            db_material.manufacturer = self.manufacturer_edit.text().strip() or None
+            db_material.product_code = self.product_code_edit.text().strip() or None
+            db_material.mounting_type = self.mounting_combo.currentText().strip() or None
+            db_material.thickness = self.thickness_edit.text().strip() or None
+            db_material.description = self.description_edit.toPlainText().strip() or None
+            db_material.absorption_125 = coeffs[0]
+            db_material.absorption_250 = coeffs[1]
+            db_material.absorption_500 = coeffs[2]
+            db_material.absorption_1000 = coeffs[3]
+            db_material.absorption_2000 = coeffs[4]
+            db_material.absorption_4000 = coeffs[5]
+            
+            # Recalculate NRC
+            db_material.calculate_nrc()
+            
+            session.commit()
+            session.close()
+            
+            self.accept()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save changes:\n{e}")

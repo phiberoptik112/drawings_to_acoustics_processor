@@ -447,6 +447,9 @@ class MaterialListWidget(QWidget):
 class SpaceEditDialog(QDialog):
     """Dialog for editing existing space properties"""
     
+    # Signal emitted when changes are saved (so parent can refresh)
+    space_updated = Signal()
+    
     def __init__(self, parent=None, space=None):
         super().__init__(parent)
         self.space = space
@@ -465,7 +468,10 @@ class SpaceEditDialog(QDialog):
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle(f"Edit Space: {self.space.name if self.space else 'Unknown'}")
-        self.setModal(True)
+        # Make this a non-modal window so users can reference other documents
+        self.setModal(False)
+        # Set window flags to make it an independent window that can be arranged freely
+        self.setWindowFlags(Qt.Window)
         self.resize(1400, 1000)  # Initial size, now resizable
         self.setMinimumSize(800, 600)  # Set minimum size to prevent too small window
         
@@ -881,7 +887,7 @@ class SpaceEditDialog(QDialog):
             if self.space.drawing.scale_string:
                 drawing_text += f" (Scale: {self.space.drawing.scale_string})"
             self.drawing_label.setText(drawing_text)
-            self.drawing_label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+            self.drawing_label.setStyleSheet("color: #e0e0e0; font-weight: bold;")
         else:
             self.drawing_label.setText("No drawing assigned")
             self.drawing_label.setStyleSheet("color: #e74c3c; font-style: italic;")
@@ -1167,6 +1173,9 @@ class SpaceEditDialog(QDialog):
             
             # Update calculations preview to reflect saved changes
             self.update_calculations_preview()
+            
+            # Emit signal to notify parent that space was updated
+            self.space_updated.emit()
             
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save changes:\n{str(e)}")

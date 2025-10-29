@@ -15,6 +15,7 @@ from .rt60_models import (SurfaceCategory, SurfaceType, AcousticMaterial,
                          RoomSurfaceInstance, RT60CalculationResult)
 from .mechanical import MechanicalUnit, NoiseSource
 from .drawing_sets import DrawingSet, DrawingComparison, ChangeItem
+from .material_schedule import MaterialSchedule
 
 __all__ = [
 	'Base',
@@ -41,5 +42,6 @@ __all__ = [
 	'RT60CalculationResult',
 	'DrawingSet',
 	'DrawingComparison',
-	'ChangeItem'
+	'ChangeItem',
+	'MaterialSchedule'
 ]
