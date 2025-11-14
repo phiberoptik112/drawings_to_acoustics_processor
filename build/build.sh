@@ -30,10 +30,17 @@ fi
 PYTHON_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
 echo "Using Python: $PYTHON_VERSION"
 
+# Check for production flag
+PRODUCTION_FLAG=""
+if [ "$1" == "--production" ]; then
+    PRODUCTION_FLAG="--production"
+    echo "Production build mode: Database required"
+fi
+
 # Run the build script
 echo ""
 echo "Running build.py..."
-python3 build/build.py
+python3 build/build.py $PRODUCTION_FLAG
 
 # Check if build was successful
 if [ $? -eq 0 ]; then
