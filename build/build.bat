@@ -42,10 +42,17 @@ if errorlevel 1 (
     echo.
 )
 
+REM Check for production flag
+set PRODUCTION_FLAG=
+if "%1"=="--production" (
+    set PRODUCTION_FLAG=--production
+    echo Production build mode: Database required
+)
+
 REM Run the Python build script
 echo Starting Python build process...
 echo.
-python "%BUILD_DIR%build.py"
+python "%BUILD_DIR%build.py" %PRODUCTION_FLAG%
 
 if errorlevel 1 (
     echo.

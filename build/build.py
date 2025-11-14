@@ -36,6 +36,31 @@ class AcousticAnalysisBuilder:
         # Build information
         self.build_info = {}
         
+        # Production build flag (require database)
+        self.production_build = False
+        
+    def check_database_exists(self):
+        """Check if materials database exists and return status"""
+        db_path = self.project_root / "materials" / "acoustic_materials.db"
+        exists = db_path.exists()
+        
+        if exists:
+            size_mb = db_path.stat().st_size / (1024 * 1024)
+            print(f"✓ Materials database found: {size_mb:.2f} MB")
+            return True, size_mb
+        else:
+            print(f"⚠ Warning: Materials database not found at {db_path}")
+            if self.production_build:
+                raise FileNotFoundError(
+                    "Materials database required for production build. "
+                    f"Please ensure {db_path} exists on the build machine."
+                )
+            else:
+                print("⚠ Warning: Building without proprietary materials database")
+                print("  Development build will use fallback materials")
+                print("  For production build, use --production flag")
+            return False, 0
+        
     def get_git_info(self):
         """Get git commit information"""
         try:
@@ -328,16 +353,34 @@ VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
         """Run complete build process"""
         print("=" * 60)
         print(f"Building Acoustic Analysis Tool for {self.platform}")
+        if self.production_build:
+            print("Production Build Mode: Database required")
         print("=" * 60)
         
         try:
+            # Check database first (before any build steps)
+            db_exists, db_size = self.check_database_exists()
+            
             self.install_build_requirements()
             self.clean_build_directories()
             self.generate_version_file()
             self.create_version_info_file()
+            
+            # Only proceed with PyInstaller if database check passed
+            if self.production_build and not db_exists:
+                raise FileNotFoundError(
+                    "Production build requires materials database. Build aborted."
+                )
+            
             self.run_pyinstaller()
             self.create_deployment_package()
             self.validate_build()
+            
+            # Final database validation
+            if db_exists:
+                print("\n✓ Materials database successfully bundled")
+            else:
+                print("\n⚠ Built without proprietary materials database (dev build)")
             
             print("\n" + "=" * 60)
             print("BUILD COMPLETED SUCCESSFULLY!")
@@ -375,14 +418,21 @@ def main():
     """Main entry point"""
     if len(sys.argv) > 1 and sys.argv[1] == '--help':
         print("Acoustic Analysis Tool Build Script")
-        print("Usage: python build.py")
-        print("\nBuilds Windows executable with:")
+        print("Usage: python build.py [--production]")
+        print("\nBuilds executable with:")
         print("- Git-based versioning")
         print("- Bundled databases")
         print("- Professional installer")
+        print("\nOptions:")
+        print("  --production    Require materials database (fail if missing)")
+        print("  --help          Show this help message")
         return
         
+    # Check for production flag
+    production = '--production' in sys.argv
+    
     builder = AcousticAnalysisBuilder()
+    builder.production_build = production
     success = builder.build()
     sys.exit(0 if success else 1)
 

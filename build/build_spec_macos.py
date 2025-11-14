@@ -22,13 +22,26 @@ icon_path = str(project_root / "resources" / "icon.icns") if (project_root / "re
 
 # Collect data files
 datas = [
-    # Bundle the acoustic materials database
-    (str(materials_path / "acoustic_materials.db"), "materials"),
-    # Bundle any CSV files in materials directory
-    (str(materials_path / "*.csv"), "materials"),
     # Bundle version info (will be generated during build)
     (str(project_root / "src" / "version.py"), "."),
 ]
+
+# Bundle the acoustic materials database (if it exists)
+# For "Build Machine Only" workflow: database may not exist on dev machines
+db_path = materials_path / "acoustic_materials.db"
+if db_path.exists():
+    datas.append((str(db_path), "materials"))
+    print(f"✓ Including materials database in bundle: {db_path}")
+else:
+    print(f"⚠ Warning: Materials database not found at {db_path}")
+    print("  Building without proprietary materials database (dev build)")
+
+# Bundle any CSV files in materials directory (if they exist)
+csv_files = list(materials_path.glob("*.csv"))
+if csv_files:
+    for csv_file in csv_files:
+        datas.append((str(csv_file), "materials"))
+        print(f"✓ Including CSV file: {csv_file}")
 
 # Add any resource files if they exist
 resources_path = project_root / "resources"
