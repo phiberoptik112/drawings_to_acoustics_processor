@@ -360,7 +360,17 @@ class HVACPathDialog(QDialog):
         self.description_text.setMaximumHeight(100)
         self.description_text.setPlaceholderText("Description of this HVAC path...")
         info_layout.addRow("Description:", self.description_text)
-        
+
+        # Location bookmarks
+        self.location_label = QLabel("No location bookmarks")
+        self.location_label.setStyleSheet("color: #666; font-style: italic;")
+        self.location_label.setWordWrap(True)
+        info_layout.addRow("Locations:", self.location_label)
+
+        self.view_locations_btn = QPushButton("📍 View All Locations")
+        self.view_locations_btn.clicked.connect(self.show_all_locations)
+        info_layout.addRow("", self.view_locations_btn)
+
         info_group.setLayout(info_layout)
         layout.addWidget(info_group)
         
@@ -908,7 +918,8 @@ class HVACPathDialog(QDialog):
         self.update_component_list()
         self.update_segment_list()
         self.update_summary()
-    
+        self.update_location_display()
+
     def update_component_list(self):
         """Update the component list display"""
         self.component_list.set_components(self.components)
@@ -1075,6 +1086,85 @@ class HVACPathDialog(QDialog):
         self.summary_label.setText(summary)
         # Keep diagram in sync with summary updates
         self.update_path_diagram()
+
+    def update_location_display(self):
+        """Update the location label with current location bookmarks"""
+        if not self.path:
+            return
+
+        try:
+            locations = self.path.get_drawing_locations()
+
+            if not locations:
+                # Fallback to legacy drawing set field
+                location_text = self.path.get_primary_location_label()
+                self.location_label.setText(location_text)
+                self.location_label.setStyleSheet("color: #999; font-style: italic;")
+            else:
+                # Show first location with count indicator
+                first_loc = locations[0]
+                location_text = first_loc.get_location_label()
+                if len(locations) > 1:
+                    location_text += f" (+{len(locations) - 1} more)"
+                self.location_label.setText(location_text)
+                self.location_label.setStyleSheet("color: #A5D6A7; font-weight: bold;")  # Light green
+        except Exception as e:
+            print(f"Error updating location display: {e}")
+
+    def show_all_locations(self):
+        """Show detailed information about all location bookmarks"""
+        if not self.path:
+            QMessageBox.information(
+                self,
+                "No Path",
+                "No HVAC path is currently loaded."
+            )
+            return
+
+        try:
+            locations = self.path.get_drawing_locations()
+
+            if not locations:
+                # Show fallback info
+                location_info = self.path.get_primary_location_label()
+                QMessageBox.information(
+                    self,
+                    "No Location Bookmarks",
+                    f"This HVAC path has no location bookmarks.\n\n"
+                    f"Legacy location info: {location_info}\n\n"
+                    f"Location bookmarks can be created automatically from the drawing components "
+                    f"using the 'Sync All Locations' feature in the Locations tab of the project dashboard."
+                )
+                return
+
+            # Build detailed message
+            msg = f"<h3>{self.path.name}</h3>"
+            msg += f"<p><b>Found {len(locations)} location bookmark{'s' if len(locations) != 1 else ''}:</b></p>"
+            msg += "<ul>"
+
+            for i, loc in enumerate(locations, 1):
+                drawing_name = loc.drawing.name if loc.drawing else f"Drawing ID {loc.drawing_id}"
+                set_name = ""
+                if loc.drawing_set:
+                    set_name = f" ({loc.drawing_set.name})"
+
+                msg += f"<li><b>Location {i}:</b> {drawing_name}{set_name}, Page {loc.page_number}"
+
+                if loc.has_bbox:
+                    msg += f"<br>&nbsp;&nbsp;&nbsp;&nbsp;Position: ({loc.center_x:.1f}, {loc.center_y:.1f})"
+
+                msg += "</li>"
+
+            msg += "</ul>"
+
+            QMessageBox.information(self, "Location Bookmarks", msg)
+
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "Error",
+                f"Failed to retrieve location bookmarks:\n{e}"
+            )
 
     def _ordered_components_from_segments(self):
         """Return components ordered by connectivity traversal if possible.

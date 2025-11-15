@@ -91,9 +91,49 @@ class HVACPath(Base):
     drawing_set = relationship("DrawingSet")
     segments = relationship("HVACSegment", back_populates="hvac_path", cascade="all, delete-orphan", order_by="HVACSegment.segment_order")
     placement_analyses = relationship("SilencerPlacementAnalysis", back_populates="hvac_path", cascade="all, delete-orphan")
-    
+
     def __repr__(self):
         return f"<HVACPath(id={self.id}, name='{self.name}', type='{self.path_type}')>"
+
+    def get_drawing_locations(self):
+        """Get all drawing locations where this HVAC path appears"""
+        from models import get_session
+        from models.drawing_location import DrawingLocation, LocationType
+
+        session = get_session()
+        try:
+            locations = (
+                session.query(DrawingLocation)
+                .filter(
+                    DrawingLocation.location_type == LocationType.HVAC_PATH,
+                    DrawingLocation.element_id == self.id
+                )
+                .all()
+            )
+            return locations
+        finally:
+            session.close()
+
+    def get_primary_location_label(self):
+        """Get a summary of where this HVAC path is located"""
+        locations = self.get_drawing_locations()
+
+        if not locations:
+            # Try to derive from segments
+            if self.segments:
+                first_seg = self.segments[0]
+                if hasattr(first_seg, 'from_component') and first_seg.from_component:
+                    comp = first_seg.from_component
+                    if hasattr(comp, 'drawing') and comp.drawing:
+                        return f"Dwg: {comp.drawing.name}"
+
+            if self.drawing_set:
+                return f"Set: {self.drawing_set.name}" if hasattr(self.drawing_set, 'name') else "In drawing set"
+
+            return "No location"
+
+        # Return first location's label
+        return locations[0].get_location_label()
 
 
 class HVACSegment(Base):
