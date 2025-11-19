@@ -131,10 +131,16 @@ class LocationBrowserWidget(QWidget):
                 set_key = loc.drawing_set_id or 'no_set'
                 if set_key not in grouped:
                     set_name = "No Drawing Set"
-                    if loc.drawing_set and hasattr(loc.drawing_set, 'name'):
-                        set_name = loc.drawing_set.name
-                        if hasattr(loc.drawing_set, 'phase_type') and loc.drawing_set.phase_type:
-                            set_name += f" ({loc.drawing_set.phase_type})"
+                    try:
+                        if loc.drawing_set and hasattr(loc.drawing_set, 'name'):
+                            set_name = loc.drawing_set.name
+                            if hasattr(loc.drawing_set, 'phase_type') and loc.drawing_set.phase_type:
+                                set_name += f" ({loc.drawing_set.phase_type})"
+                    except:
+                        # If lazy load fails, use safer method
+                        set_name_str = loc.get_drawing_set_name()
+                        if set_name_str:
+                            set_name = set_name_str
 
                     grouped[set_key] = {
                         'name': set_name,
@@ -145,9 +151,7 @@ class LocationBrowserWidget(QWidget):
                 # Group by drawing
                 drawing_key = loc.drawing_id
                 if drawing_key not in grouped[set_key]['drawings']:
-                    drawing_name = "Unknown Drawing"
-                    if loc.drawing and hasattr(loc.drawing, 'name'):
-                        drawing_name = loc.drawing.name
+                    drawing_name = loc.get_drawing_name()
 
                     grouped[set_key]['drawings'][drawing_key] = {
                         'name': drawing_name,

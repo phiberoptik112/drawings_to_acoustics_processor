@@ -1143,10 +1143,9 @@ class HVACPathDialog(QDialog):
             msg += "<ul>"
 
             for i, loc in enumerate(locations, 1):
-                drawing_name = loc.drawing.name if loc.drawing else f"Drawing ID {loc.drawing_id}"
-                set_name = ""
-                if loc.drawing_set:
-                    set_name = f" ({loc.drawing_set.name})"
+                drawing_name = loc.get_drawing_name()
+                set_name_str = loc.get_drawing_set_name()
+                set_name = f" ({set_name_str})" if set_name_str else ""
 
                 msg += f"<li><b>Location {i}:</b> {drawing_name}{set_name}, Page {loc.page_number}"
 

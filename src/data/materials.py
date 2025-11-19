@@ -9,69 +9,120 @@ def get_database_path():
     """Get the path to the acoustic materials database
     
     Handles both development and bundled deployment scenarios
+    
+    Returns:
+        str: Absolute path to the materials database file
     """
     try:
         # Try to use the deployment-aware utility
         from utils import get_materials_database_path
-        return get_materials_database_path()
+        db_path = get_materials_database_path()
+        return db_path
     except ImportError:
         # Fallback for development or if utils not available
-        current_dir = os.path.dirname(__file__)
-        project_root = os.path.dirname(os.path.dirname(current_dir))
-        return os.path.join(project_root, 'materials', 'acoustic_materials.db')
+        try:
+            from utils.general_utils import get_materials_database_path
+            db_path = get_materials_database_path()
+            return db_path
+        except ImportError:
+            # Final fallback: construct path manually
+            current_dir = os.path.dirname(__file__)
+            project_root = os.path.dirname(os.path.dirname(current_dir))
+            db_path = os.path.join(project_root, 'materials', 'acoustic_materials.db')
+            return db_path
 
 def load_materials_from_database() -> Dict[str, Dict]:
-    """Load materials from the acoustic_materials.db database"""
+    """Load materials from the acoustic_materials.db database
+    
+    Returns:
+        Dict[str, Dict]: Dictionary of materials keyed by material key
+        
+    Note:
+        Falls back to get_fallback_materials() if database is not found or error occurs
+    """
     db_path = get_database_path()
     materials = {}
     
     try:
         if not os.path.exists(db_path):
-            print(f"Warning: Materials database not found at {db_path}, using fallback materials")
+            print(f"Warning: Materials database not found at {db_path}")
+            print(f"  Expected location: {os.path.abspath(db_path)}")
+            print(f"  Using fallback materials ({len(get_fallback_materials())} materials)")
+            return get_fallback_materials()
+        
+        # Check if file is readable
+        if not os.access(db_path, os.R_OK):
+            print(f"Warning: Materials database exists but is not readable: {db_path}")
+            print(f"  Using fallback materials")
             return get_fallback_materials()
             
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         
-        cursor.execute("""
-            SELECT name, coeff_125, coeff_250, coeff_500, coeff_1000, coeff_2000, coeff_4000, nrc
-            FROM acoustic_materials
-            ORDER BY name
-        """)
-        
-        rows = cursor.fetchall()
-        conn.close()
-        
-        for row in rows:
-            name, coeff_125, coeff_250, coeff_500, coeff_1000, coeff_2000, coeff_4000, nrc = row
+        try:
+            # Check if table exists
+            cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='acoustic_materials'
+            """)
+            if not cursor.fetchone():
+                print(f"Warning: Materials database exists but 'acoustic_materials' table not found")
+                print(f"  Using fallback materials")
+                return get_fallback_materials()
             
-            # Create a clean key from the material name
-            key = name.lower().replace(' ', '_').replace(',', '').replace('(', '').replace(')', '').replace('&', 'and')
+            cursor.execute("""
+                SELECT name, coeff_125, coeff_250, coeff_500, coeff_1000, coeff_2000, coeff_4000, nrc
+                FROM acoustic_materials
+                ORDER BY name
+            """)
             
-            # Categorize materials based on their names
-            category = categorize_material(name)
+            rows = cursor.fetchall()
             
-            materials[key] = {
-                'name': name,
-                'absorption_coeff': nrc or coeff_1000,  # Use NRC or 1000Hz coefficient
-                'coefficients': {
-                    '125': coeff_125,
-                    '250': coeff_250,
-                    '500': coeff_500,
-                    '1000': coeff_1000,
-                    '2000': coeff_2000,
-                    '4000': coeff_4000
-                },
-                'nrc': nrc,
-                'description': f"{name} - NRC: {nrc:.2f}" if nrc else name,
-                'category': category
-            }
+            for row in rows:
+                name, coeff_125, coeff_250, coeff_500, coeff_1000, coeff_2000, coeff_4000, nrc = row
+                
+                # Skip rows with None or empty names
+                if not name or not name.strip():
+                    continue
+                
+                # Create a clean key from the material name
+                key = name.lower().replace(' ', '_').replace(',', '').replace('(', '').replace(')', '').replace('&', 'and')
+                
+                # Categorize materials based on their names
+                category = categorize_material(name)
+                
+                materials[key] = {
+                    'name': name,
+                    'absorption_coeff': nrc or coeff_1000 or 0.0,  # Use NRC or 1000Hz coefficient
+                    'coefficients': {
+                        '125': coeff_125 or 0.0,
+                        '250': coeff_250 or 0.0,
+                        '500': coeff_500 or 0.0,
+                        '1000': coeff_1000 or 0.0,
+                        '2000': coeff_2000 or 0.0,
+                        '4000': coeff_4000 or 0.0
+                    },
+                    'nrc': nrc,
+                    'description': f"{name} - NRC: {nrc:.2f}" if nrc else name,
+                    'category': category,
+                    'source': 'sqlite_database'  # Mark as from SQLite database
+                }
+                
+            print(f"Loaded {len(materials)} materials from database: {db_path}")
+            return materials
             
-        print(f"Loaded {len(materials)} materials from database")
-        return materials
+        except sqlite3.Error as e:
+            print(f"SQLite error loading materials from database: {e}")
+            print(f"  Database path: {db_path}")
+            return get_fallback_materials()
+        finally:
+            conn.close()
         
     except Exception as e:
         print(f"Error loading materials from database: {e}")
+        print(f"  Database path: {db_path}")
+        import traceback
+        traceback.print_exc()
         return get_fallback_materials()
 
 def categorize_material(name: str) -> str:

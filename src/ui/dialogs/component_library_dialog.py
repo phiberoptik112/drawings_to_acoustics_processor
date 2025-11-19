@@ -389,6 +389,11 @@ class ComponentLibraryDialog(QDialog):
         material_btns.addWidget(self.edit_material_btn)
         material_btns.addWidget(self.delete_material_btn)
         material_btns.addStretch()
+        # Add database setup button
+        self.db_setup_btn = QPushButton("Database Setup...")
+        self.db_setup_btn.setToolTip("View and configure materials database sources")
+        self.db_setup_btn.clicked.connect(self.open_materials_database_setup)
+        material_btns.addWidget(self.db_setup_btn)
         material_btns.addWidget(self.save_material_btn)
         left_layout.addLayout(material_btns)
         
@@ -1813,6 +1818,20 @@ class ComponentLibraryDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "Comparison Error", 
                                f"Failed to open comparison dialog:\n{e}")
+    
+    def open_materials_database_setup(self) -> None:
+        """Open the Materials Database Setup dialog"""
+        try:
+            from ui.dialogs.materials_database_setup_dialog import MaterialsDatabaseSetupDialog
+            
+            dialog = MaterialsDatabaseSetupDialog(self)
+            dialog.exec()
+            # Refresh materials list after dialog closes in case user made changes
+            self.refresh_acoustic_materials()
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Database Setup Error", 
+                               f"Failed to open database setup dialog:\n{e}")
 
 
 class MechanicalUnitEditDialog(QDialog):

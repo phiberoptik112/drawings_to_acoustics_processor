@@ -50,6 +50,25 @@ class DrawingLocation(Base):
     def __repr__(self):
         return f"<DrawingLocation(type={self.location_type.value}, element_id={self.element_id}, drawing_id={self.drawing_id}, page={self.page_number})>"
 
+    @property
+    def has_bbox(self):
+        """Check if this location has bounding box coordinates"""
+        return all([self.bbox_x1, self.bbox_y1, self.bbox_x2, self.bbox_y2])
+
+    def get_drawing_name(self):
+        """Safely get drawing name without triggering lazy load"""
+        try:
+            return self.drawing.name if self.drawing else f"Drawing ID {self.drawing_id}"
+        except:
+            return f"Drawing ID {self.drawing_id}"
+
+    def get_drawing_set_name(self):
+        """Safely get drawing set name without triggering lazy load"""
+        try:
+            return self.drawing_set.name if self.drawing_set else None
+        except:
+            return None
+
     def to_dict(self):
         """Convert to dictionary for easy display"""
         return {
@@ -62,7 +81,7 @@ class DrawingLocation(Base):
             'page_number': self.page_number,
             'center_x': self.center_x,
             'center_y': self.center_y,
-            'has_bbox': all([self.bbox_x1, self.bbox_y1, self.bbox_x2, self.bbox_y2])
+            'has_bbox': self.has_bbox
         }
 
     def get_location_label(self):
