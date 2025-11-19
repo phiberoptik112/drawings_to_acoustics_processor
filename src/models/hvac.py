@@ -99,11 +99,16 @@ class HVACPath(Base):
         """Get all drawing locations where this HVAC path appears"""
         from models import get_session
         from models.drawing_location import DrawingLocation, LocationType
+        from sqlalchemy.orm import joinedload
 
         session = get_session()
         try:
             locations = (
                 session.query(DrawingLocation)
+                .options(
+                    joinedload(DrawingLocation.drawing_set),
+                    joinedload(DrawingLocation.drawing)
+                )
                 .filter(
                     DrawingLocation.location_type == LocationType.HVAC_PATH,
                     DrawingLocation.element_id == self.id
