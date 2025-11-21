@@ -14,9 +14,10 @@ from contextlib import contextmanager
 try:
     from utils import ensure_user_data_directory, is_bundled_executable, log_environment_info
 except ImportError:
-    # Fallback if utils not available
+    # Fallback if utils not available - use correct user data directory
     def ensure_user_data_directory():
-        user_dir = os.path.expanduser("~/Documents/drawings_to_acoustics_processor/debug_data")
+        # Always use the correct user data directory, not debug_data
+        user_dir = os.path.expanduser("~/Documents/AcousticAnalysis")
         os.makedirs(user_dir, exist_ok=True)
         return user_dir
     
@@ -53,6 +54,14 @@ def initialize_database(db_path=None):
 		user_dir = ensure_user_data_directory()
 		db_path = os.path.join(user_dir, "acoustic_analysis.db")
 		
+		# Ensure we're using the correct path - never use debug_data
+		# If somehow we got the wrong path, correct it
+		if "debug_data" in db_path:
+			user_dir = os.path.expanduser("~/Documents/AcousticAnalysis")
+			os.makedirs(user_dir, exist_ok=True)
+			db_path = os.path.join(user_dir, "acoustic_analysis.db")
+			print(f"WARNING: Corrected database path from debug_data to: {db_path}")
+		
 		# Create a README for users on first run
 		readme_path = os.path.join(user_dir, "README.txt")
 		if not os.path.exists(readme_path):
@@ -70,6 +79,18 @@ def initialize_database(db_path=None):
 		print(f"Initializing database for bundled deployment: {db_path}")
 	else:
 		print(f"Initializing database for development: {db_path}")
+	
+	# If engine already exists and is using the same path, don't reinitialize
+	# This prevents reinitialization with wrong paths
+	if engine is not None:
+		current_url = str(engine.url)
+		new_url = f'sqlite:///{db_path}'
+		if current_url == new_url:
+			print(f"Database already initialized with correct path: {db_path}")
+			return db_path
+		else:
+			print(f"WARNING: Database path changed from {current_url} to {new_url}")
+			print(f"Reinitializing with correct path: {db_path}")
 	
 	# Create engine
 	engine = create_engine(f'sqlite:///{db_path}', echo=False)

@@ -38,6 +38,15 @@ class SplashScreen(QWidget):
         """Initialize the database connection"""
         try:
             self.db_path = initialize_database()
+            print(f"DEBUG: Splash screen initialized database at: {self.db_path}")
+            
+            # Verify we're using the correct path (not debug_data)
+            if "debug_data" in self.db_path:
+                print(f"ERROR: Database path contains 'debug_data'! This should not happen.")
+                # Force reinitialize with correct path
+                correct_path = os.path.expanduser("~/Documents/AcousticAnalysis/acoustic_analysis.db")
+                self.db_path = initialize_database(correct_path)
+                print(f"DEBUG: Reinitialized with correct path: {self.db_path}")
             
             # Populate silencer database if it's empty
             try:
@@ -164,19 +173,41 @@ class SplashScreen(QWidget):
     def load_recent_projects(self):
         """Load recent projects from database"""
         try:
+            print(f"DEBUG: Loading recent projects from database: {self.db_path}")
             session = get_session()
-            projects = session.query(Project).order_by(Project.modified_date.desc()).limit(10).all()
+            # Order by modified_date, handling NULL values by putting them last
+            # Use coalesce to fall back to created_date if modified_date is NULL
+            from sqlalchemy import func, desc
+            projects = session.query(Project).order_by(
+                desc(func.coalesce(Project.modified_date, Project.created_date))
+            ).limit(10).all()
+            
+            print(f"DEBUG: Found {len(projects)} projects in database")
             
             self.recent_projects_list.clear()
             for project in projects:
-                item_text = f"{project.name}\n{project.description or 'No description'}\nModified: {project.modified_date.strftime('%Y-%m-%d %H:%M')}"
+                # Handle None modified_date gracefully - use created_date as fallback
+                date_to_show = project.modified_date or project.created_date
+                if date_to_show:
+                    modified_str = date_to_show.strftime('%Y-%m-%d %H:%M')
+                else:
+                    modified_str = "Unknown"
+                
+                item_text = f"{project.name}\n{project.description or 'No description'}\nModified: {modified_str}"
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, project.id)
                 self.recent_projects_list.addItem(item)
-                
+                print(f"DEBUG: Added project to list: {project.name} (ID: {project.id})")
+            
+            if len(projects) == 0:
+                print("DEBUG: No projects found in database. Database may be empty or using wrong path.")
+            
             session.close()
             
         except Exception as e:
+            import traceback
+            error_msg = f"Could not load recent projects:\n{str(e)}\n\n{traceback.format_exc()}"
+            print(f"Error loading recent projects: {error_msg}")  # Debug output
             QMessageBox.warning(self, "Warning", f"Could not load recent projects:\n{str(e)}")
             
     def create_new_project(self):
