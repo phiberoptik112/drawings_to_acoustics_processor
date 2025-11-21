@@ -1353,10 +1353,32 @@ class SpaceEditDialog(QDialog):
             
             # Update plot with RT60 data
             rt60_by_freq = results.get('rt60_by_frequency', {})
+            
+            # Debug output
+            print(f"DEBUG: RT60 frequency response calculation:")
+            print(f"  Volume: {volume:,.0f} cf")
+            print(f"  Ceiling materials: {len(ceiling_materials_data)}")
+            print(f"  Wall materials: {len(wall_materials_data)}")
+            print(f"  Floor materials: {len(floor_materials_data)}")
+            print(f"  RT60 by frequency: {rt60_by_freq}")
+            
+            if not rt60_by_freq or all(v == 0 or v >= 999 for v in rt60_by_freq.values()):
+                print(f"  WARNING: RT60 values are invalid (0 or infinity). Check material lookup.")
+                # Try to debug material lookup
+                for mat_data in ceiling_materials_data + wall_materials_data + floor_materials_data:
+                    mat_key = mat_data.get('material_key')
+                    if mat_key:
+                        # Check if material is in calculator's database
+                        if hasattr(self.rt60_calculator, 'materials_db'):
+                            in_db = mat_key in self.rt60_calculator.materials_db
+                            print(f"    Material '{mat_key}' in calculator DB: {in_db}")
+            
             self.plot_container.update_rt60_data(rt60_by_freq)
             
         except Exception as e:
+            import traceback
             print(f"Error updating RT60 plot: {e}")
+            print(traceback.format_exc())
             self.plot_container.clear_rt60_data()
         
                 

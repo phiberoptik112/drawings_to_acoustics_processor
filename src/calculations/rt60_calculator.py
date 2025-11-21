@@ -23,8 +23,44 @@ class RT60Calculator:
     """Calculator for reverberation time (RT60) using acoustic absorption"""
     
     def __init__(self):
-        self.materials_db = STANDARD_MATERIALS
+        # Use get_all_materials() to ensure we have the latest materials from all sources
+        self.refresh_materials_db()
+    
+    def refresh_materials_db(self):
+        """Refresh the materials database to get latest materials"""
+        try:
+            from ..data.materials_database import get_all_materials
+            self.materials_db = get_all_materials()
+        except ImportError:
+            try:
+                from data.materials_database import get_all_materials
+                self.materials_db = get_all_materials()
+            except ImportError:
+                # Fallback to STANDARD_MATERIALS
+                self.materials_db = STANDARD_MATERIALS
         
+    def _find_material_by_key_or_name(self, material_key):
+        """Find material by key or by name if key doesn't match"""
+        if not material_key:
+            return None
+        
+        # First try exact key match
+        if material_key in self.materials_db:
+            return material_key
+        
+        # Try to find by name (case-insensitive)
+        material_key_lower = material_key.lower()
+        for key, material in self.materials_db.items():
+            if material.get('name', '').lower() == material_key_lower:
+                return key
+        
+        # Try partial name match
+        for key, material in self.materials_db.items():
+            if material_key_lower in material.get('name', '').lower():
+                return key
+        
+        return None
+    
     def calculate_surface_absorption(self, area, material_key, frequency=None, absorption_coefficients=None):
         """
         Calculate absorption for a surface
@@ -50,9 +86,13 @@ class RT60Calculator:
             
             return area * absorption_coeff
         
-        # Standard material lookup
-        if material_key not in self.materials_db:
+        # Standard material lookup with fallback to name matching
+        actual_key = self._find_material_by_key_or_name(material_key)
+        if not actual_key:
+            print(f"WARNING: Material '{material_key}' not found in materials database")
             return 0.0
+        
+        material_key = actual_key  # Use the found key
             
         material = self.materials_db[material_key]
         
@@ -184,6 +224,9 @@ class RT60Calculator:
         Returns:
             dict: Calculation results
         """
+        # Refresh materials database to ensure we have latest materials
+        self.refresh_materials_db()
+        
         # Extract space properties
         volume = space_data.get('volume', 0)
         floor_area = space_data.get('floor_area', 0)
@@ -236,9 +279,14 @@ class RT60Calculator:
                 material_key = material_data.get('material_key')
                 area = material_data.get('square_footage', 0)
                 if material_key and area > 0:
+                    # Find material by key or name
+                    actual_key = self._find_material_by_key_or_name(material_key)
+                    if not actual_key:
+                        print(f"WARNING: Material '{material_key}' not found in materials database for ceiling surface")
+                        continue
                     surfaces.append({
                         'area': area,
-                        'material_key': material_key,
+                        'material_key': actual_key,
                         'type': f'ceiling_{i+1}' if len(ceiling_materials_data) > 1 else 'ceiling'
                     })
         elif ceiling_area > 0 and ceiling_materials:
@@ -246,9 +294,14 @@ class RT60Calculator:
             area_per_material = ceiling_area / len(ceiling_materials)
             for i, material_key in enumerate(ceiling_materials):
                 if material_key:  # Skip None/empty materials
+                    # Find material by key or name
+                    actual_key = self._find_material_by_key_or_name(material_key)
+                    if not actual_key:
+                        print(f"WARNING: Material '{material_key}' not found in materials database for ceiling surface")
+                        continue
                     surfaces.append({
                         'area': area_per_material,
-                        'material_key': material_key,
+                        'material_key': actual_key,
                         'type': f'ceiling_{i+1}' if len(ceiling_materials) > 1 else 'ceiling'
                     })
             
@@ -258,9 +311,14 @@ class RT60Calculator:
                 material_key = material_data.get('material_key')
                 area = material_data.get('square_footage', 0)
                 if material_key and area > 0:
+                    # Find material by key or name
+                    actual_key = self._find_material_by_key_or_name(material_key)
+                    if not actual_key:
+                        print(f"WARNING: Material '{material_key}' not found in materials database for wall surface")
+                        continue
                     surfaces.append({
                         'area': area, 
-                        'material_key': material_key,
+                        'material_key': actual_key,
                         'type': f'wall_{i+1}' if len(wall_materials_data) > 1 else 'wall'
                     })
         elif effective_wall_area > 0 and wall_materials:
@@ -268,9 +326,14 @@ class RT60Calculator:
             area_per_material = effective_wall_area / len(wall_materials)
             for i, material_key in enumerate(wall_materials):
                 if material_key:  # Skip None/empty materials
+                    # Find material by key or name
+                    actual_key = self._find_material_by_key_or_name(material_key)
+                    if not actual_key:
+                        print(f"WARNING: Material '{material_key}' not found in materials database for wall surface")
+                        continue
                     surfaces.append({
                         'area': area_per_material,
-                        'material_key': material_key,
+                        'material_key': actual_key,
                         'type': f'wall_{i+1}' if len(wall_materials) > 1 else 'wall'
                     })
             
@@ -280,9 +343,14 @@ class RT60Calculator:
                 material_key = material_data.get('material_key')
                 area = material_data.get('square_footage', 0)
                 if material_key and area > 0:
+                    # Find material by key or name
+                    actual_key = self._find_material_by_key_or_name(material_key)
+                    if not actual_key:
+                        print(f"WARNING: Material '{material_key}' not found in materials database for floor surface")
+                        continue
                     surfaces.append({
                         'area': area,
-                        'material_key': material_key,
+                        'material_key': actual_key,
                         'type': f'floor_{i+1}' if len(floor_materials_data) > 1 else 'floor'
                     })
         elif floor_area > 0 and floor_materials:
@@ -290,9 +358,14 @@ class RT60Calculator:
             area_per_material = floor_area / len(floor_materials)
             for i, material_key in enumerate(floor_materials):
                 if material_key:  # Skip None/empty materials
+                    # Find material by key or name
+                    actual_key = self._find_material_by_key_or_name(material_key)
+                    if not actual_key:
+                        print(f"WARNING: Material '{material_key}' not found in materials database for floor surface")
+                        continue
                     surfaces.append({
                         'area': area_per_material,
-                        'material_key': material_key,
+                        'material_key': actual_key,
                         'type': f'floor_{i+1}' if len(floor_materials) > 1 else 'floor'
                     })
         
@@ -315,10 +388,16 @@ class RT60Calculator:
                     })
             
         if not surfaces:
+            print(f"ERROR: No valid surfaces found for RT60 calculation")
+            print(f"  Ceiling materials data: {ceiling_materials_data}")
+            print(f"  Wall materials data: {wall_materials_data}")
+            print(f"  Floor materials data: {floor_materials_data}")
+            print(f"  Materials DB size: {len(self.materials_db)}")
             return {
-                'rt60': 0,
+                'rt60': 999.9,
                 'method': method,
-                'error': 'No valid surfaces defined'
+                'error': 'No valid surfaces defined',
+                'rt60_by_frequency': {f: 999.9 for f in [125, 250, 500, 1000, 2000, 4000]}
             }
             
         # Calculate RT60
