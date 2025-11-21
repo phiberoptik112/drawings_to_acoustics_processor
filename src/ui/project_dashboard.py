@@ -144,6 +144,10 @@ class ProjectDashboard(QMainWindow):
         reports_menu.addAction('Project Summary', self.show_project_summary)
         reports_menu.addAction('Export to Excel', self.export_to_excel)
         
+        # Settings menu
+        settings_menu = menubar.addMenu('Settings')
+        settings_menu.addAction('Database Settings...', self.open_database_settings)
+        
         # Help menu
         help_menu = menubar.addMenu('Help')
         help_menu.addAction('About', self.show_about)
@@ -1671,6 +1675,30 @@ class ProjectDashboard(QMainWindow):
             QMessageBox.warning(self, "Options Error", f"Error getting export options:\n{str(e)}")
             return ExportOptions()  # Default options
         
+    def open_database_settings(self):
+        """Open the database settings dialog"""
+        try:
+            from ui.dialogs.database_settings_dialog import DatabaseSettingsDialog
+            from models.database import engine
+            
+            # Get current database path
+            current_db_path = None
+            if engine:
+                db_url = str(engine.url)
+                if db_url.startswith('sqlite:///'):
+                    current_db_path = db_url[10:]  # Remove 'sqlite:///'
+            
+            dialog = DatabaseSettingsDialog(self, current_db_path)
+            if dialog.exec() == dialog.accepted:
+                QMessageBox.information(
+                    self,
+                    "Settings Updated",
+                    "Database settings have been updated.\n"
+                    "Please restart the application for the changes to take effect."
+                )
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open database settings:\n{str(e)}")
+    
     def show_about(self):
         """Show about dialog"""
         QMessageBox.about(self, "About", "Acoustic Analysis Tool v1.0\nfor LEED Acoustic Certification")

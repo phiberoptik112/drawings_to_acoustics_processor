@@ -49,10 +49,23 @@ def initialize_database(db_path=None):
 		log_environment_info()
 	
 	if db_path is None:
-		# Always use user's Documents directory for project database
-		# This ensures user data persists and is accessible even after app updates
-		user_dir = ensure_user_data_directory()
-		db_path = os.path.join(user_dir, "acoustic_analysis.db")
+		# Check for custom database path from settings
+		try:
+			from utils.settings_manager import get_settings_manager
+			settings_manager = get_settings_manager()
+			custom_path = settings_manager.get_database_path()
+			if custom_path:
+				db_path = custom_path
+				print(f"Using custom database path from settings: {db_path}")
+		except Exception as e:
+			print(f"Warning: Could not load custom database path from settings: {e}")
+		
+		# If no custom path, use default
+		if db_path is None:
+			# Always use user's Documents directory for project database
+			# This ensures user data persists and is accessible even after app updates
+			user_dir = ensure_user_data_directory()
+			db_path = os.path.join(user_dir, "acoustic_analysis.db")
 		
 		# Ensure we're using the correct path - never use debug_data
 		# If somehow we got the wrong path, correct it

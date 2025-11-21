@@ -154,16 +154,24 @@ class SplashScreen(QWidget):
         self.import_project_btn = QPushButton("Import Project")
         self.import_project_btn.clicked.connect(self.import_project)
         
+        self.settings_btn = QPushButton("Settings")
+        self.settings_btn.clicked.connect(self.open_database_settings)
+        
         button_layout.addWidget(self.new_project_btn)
         button_layout.addWidget(self.open_project_btn)
         button_layout.addWidget(self.import_project_btn)
+        button_layout.addWidget(self.settings_btn)
         
         main_layout.addLayout(button_layout)
         
-        # Status bar
+        # Status bar - make clickable to open database settings
         self.status_label = QLabel(f"Database: {os.path.basename(self.db_path)}")
         self.status_label.setStyleSheet("color: #7f8c8d; font-size: 10px; margin-top: 10px;")
         self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setCursor(Qt.PointingHandCursor)
+        self.status_label.mousePressEvent = lambda e: self.open_database_settings()
+        # Add tooltip with full path
+        self.status_label.setToolTip(f"Click to change database location\nCurrent: {self.db_path}")
         main_layout.addWidget(self.status_label)
         
         # Give this widget an object name so stylesheet scoping works
@@ -261,6 +269,28 @@ class SplashScreen(QWidget):
     def import_project(self):
         """Import project from another database"""
         QMessageBox.information(self, "Import Project", "Import functionality will be implemented in a future version.")
+    
+    def open_database_settings(self):
+        """Open the database settings dialog"""
+        try:
+            from ui.dialogs.database_settings_dialog import DatabaseSettingsDialog
+            
+            dialog = DatabaseSettingsDialog(self, self.db_path)
+            if dialog.exec() == dialog.accepted:
+                # Database path may have changed, refresh
+                # Reinitialize database to pick up new path
+                from models import initialize_database
+                self.db_path = initialize_database()
+                
+                # Update status label
+                self.status_label.setText(f"Database: {os.path.basename(self.db_path)}")
+                self.status_label.setToolTip(f"Click to change database location\nCurrent: {self.db_path}")
+                
+                # Reload projects list
+                self.load_recent_projects()
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open database settings:\n{str(e)}")
         
     def open_selected_project(self, item):
         """Open the selected project from the list"""
