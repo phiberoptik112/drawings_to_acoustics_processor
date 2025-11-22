@@ -223,8 +223,9 @@ class HVACPathDialog(QDialog):
     def find_component_by_data(self, comp_data):
         """Find component by drawing data"""
         for comp in self.components:
-            if (comp.x_position == comp_data.get('x', 0) and 
-                comp.y_position == comp_data.get('y', 0) and
+            # Use small tolerance for float position comparison
+            if (abs(comp.x_position - comp_data.get('x', 0)) < 1.0 and 
+                abs(comp.y_position - comp_data.get('y', 0)) < 1.0 and
                 comp.component_type == comp_data.get('component_type', 'unknown')):
                 return comp
         return None
@@ -801,7 +802,7 @@ class HVACPathDialog(QDialog):
     def show_debug_dialog(self):
         """Show the HVAC debug dialog"""
         try:
-            from src.ui.dialogs.hvac_debug_dialog import HVACDebugDialog
+            from .hvac_debug_dialog import HVACDebugDialog
             
             path_id = getattr(self, 'path_id', None) or (self.path.id if hasattr(self, 'path') and self.path else None)
             
