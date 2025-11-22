@@ -1210,32 +1210,38 @@ class DrawingInterface(QMainWindow):
                 print(f"DEBUG: Segment {i} filter include={include}")
             print(f"DEBUG: path_segments after filter: {len(path_segments)}")
             
-            drawing_data = {
-                'components': components,
-                'segments': path_segments
-            }
+            # Open HVAC path dialog with drawing data
+            from ui.dialogs.hvac_path_dialog import HVACPathDialog
+            dialog = HVACPathDialog(self, self.project_id)
             
-            # Create HVAC path in database
-            hvac_path_result = self.hvac_path_calculator.create_hvac_path_from_drawing(
-                self.project_id, drawing_data
-            )
+            # Connect to path_saved signal to handle registration
+            def on_path_saved(saved_path):
+                """Handle newly saved path by registering elements with drawing overlay"""
+                try:
+                    if self.drawing_overlay and saved_path:
+                        # Temporarily disable clearing to prevent race conditions
+                        self.drawing_overlay.disable_clearing_temporarily()
+                        
+                        print(f"DEBUG: Registering saved path {saved_path.id} with drawing overlay")
+                        
+                        # Use the robust registration method
+                        self.register_existing_path_elements(saved_path)
+                        
+                        # Ensure the path is visible
+                        self.drawing_overlay.set_visible_paths([saved_path.id])
+                        self.drawing_overlay.update()
+                        
+                        self.drawing_overlay.enable_clearing()
+                except Exception as e:
+                    print(f"ERROR: Failed to register saved path with overlay: {e}")
+                    if hasattr(self, 'drawing_overlay') and self.drawing_overlay:
+                        self.drawing_overlay.enable_clearing()
             
-            if hvac_path_result.success:
-                hvac_path = hvac_path_result.data
-                # Register path elements in drawing overlay for show/hide functionality
-                # Get the actual overlay elements instead of using the dialog data
-                if self.drawing_overlay:
-                    overlay_data = self.drawing_overlay.get_elements_data()
-                    overlay_components = overlay_data.get('components', [])
-                    overlay_segments = overlay_data.get('segments', [])
-                    
-                    print(f"DEBUG: Before registration - overlay has {len(overlay_components)} components and {len(overlay_segments)} segments")
-                    
-                    # Register the actual overlay elements - the enhanced register_path_elements
-                    # method will find matching elements by position and type
-                    self.drawing_overlay.register_path_elements(hvac_path.id, overlay_components, overlay_segments)
-                    
-                    print(f"DEBUG: Registered path {hvac_path.id} - elements should now be protected from clearing")
+            dialog.path_saved.connect(on_path_saved)
+            dialog.set_drawing_data(components, path_segments, self.drawing.id)
+            
+            if dialog.exec() == QDialog.Accepted:
+                hvac_path = dialog.path
                 
                 # Ask user if they want to clear used elements from drawing
                 path_info = f"Successfully created HVAC path: {hvac_path.name}\n\n"
@@ -1272,9 +1278,6 @@ class DrawingInterface(QMainWindow):
                     self.paths_updated.emit()
                 except Exception:
                     pass
-            else:
-                error_msg = getattr(hvac_path_result, 'error_message', 'Unknown error occurred')
-                QMessageBox.warning(self, "Creation Failed", f"Failed to create HVAC path from drawing elements.\n\nError: {error_msg}")
                 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")

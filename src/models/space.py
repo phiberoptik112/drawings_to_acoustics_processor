@@ -84,9 +84,47 @@ class Space(Base):
     
     # New surface materials relationship
     surface_materials = relationship("SpaceSurfaceMaterial", back_populates="space", cascade="all, delete-orphan", order_by="SpaceSurfaceMaterial.order_index")
-    
+
     def __repr__(self):
         return f"<Space(id={self.id}, name='{self.name}', project_id={self.project_id})>"
+
+    def get_drawing_locations(self):
+        """Get all drawing locations where this space appears"""
+        from models import get_session
+        from models.drawing_location import DrawingLocation, LocationType
+        from sqlalchemy.orm import joinedload
+
+        session = get_session()
+        try:
+            locations = (
+                session.query(DrawingLocation)
+                .options(
+                    joinedload(DrawingLocation.drawing_set),
+                    joinedload(DrawingLocation.drawing)
+                )
+                .filter(
+                    DrawingLocation.location_type == LocationType.SPACE,
+                    DrawingLocation.element_id == self.id
+                )
+                .all()
+            )
+            return locations
+        finally:
+            session.close()
+
+    def get_primary_location_label(self):
+        """Get a summary of where this space is located"""
+        locations = self.get_drawing_locations()
+
+        if not locations:
+            if self.drawing_set:
+                return f"Set: {self.drawing_set.name}" if hasattr(self.drawing_set, 'name') else "In drawing set"
+            elif self.drawing:
+                return f"Dwg: {self.drawing.name}" if hasattr(self.drawing, 'name') else "In drawing"
+            return "No location"
+
+        # Return first location's label
+        return locations[0].get_location_label()
     
     def get_ceiling_area(self):
         """Get ceiling area, defaulting to floor area if not explicitly set"""

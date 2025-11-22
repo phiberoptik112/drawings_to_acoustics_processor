@@ -144,6 +144,10 @@ class ProjectDashboard(QMainWindow):
         reports_menu.addAction('Project Summary', self.show_project_summary)
         reports_menu.addAction('Export to Excel', self.export_to_excel)
         
+        # Settings menu
+        settings_menu = menubar.addMenu('Settings')
+        settings_menu.addAction('Database Settings...', self.open_database_settings)
+        
         # Help menu
         help_menu = menubar.addMenu('Help')
         help_menu.addAction('About', self.show_about)
@@ -248,11 +252,41 @@ class ProjectDashboard(QMainWindow):
         self.results_widget = ResultsWidget(self.project_id)
         self.results_widget.export_requested.connect(self.export_to_excel)
         tabs.addTab(self.results_widget, "📊 Results & Analysis")
-        
+
+        # Locations tab
+        locations_tab = self.create_locations_tab()
+        tabs.addTab(locations_tab, "📍 Locations")
+
         left_layout.addWidget(tabs)
         left_widget.setLayout(left_layout)
-        
+
         return left_widget
+
+    def create_locations_tab(self):
+        """Create the locations browser tab"""
+        from ui.widgets.location_browser_widget import LocationBrowserWidget
+
+        widget = QWidget()
+        layout = QVBoxLayout()
+
+        # Location browser
+        self.location_browser = LocationBrowserWidget(self.project_id, self)
+        self.location_browser.location_selected.connect(self.on_location_selected)
+        layout.addWidget(self.location_browser)
+
+        # Auto-sync button
+        button_layout = QHBoxLayout()
+
+        sync_all_btn = QPushButton("🔄 Sync All Locations")
+        sync_all_btn.setToolTip("Automatically create location bookmarks for all spaces and HVAC paths")
+        sync_all_btn.clicked.connect(self.auto_sync_all_locations)
+        button_layout.addWidget(sync_all_btn)
+
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
+
+        widget.setLayout(layout)
+        return widget
         
     def create_drawing_sets_tab(self):
         """Create the drawing sets management tab"""
@@ -1641,6 +1675,30 @@ class ProjectDashboard(QMainWindow):
             QMessageBox.warning(self, "Options Error", f"Error getting export options:\n{str(e)}")
             return ExportOptions()  # Default options
         
+    def open_database_settings(self):
+        """Open the database settings dialog"""
+        try:
+            from ui.dialogs.database_settings_dialog import DatabaseSettingsDialog
+            from models.database import engine
+            
+            # Get current database path
+            current_db_path = None
+            if engine:
+                db_url = str(engine.url)
+                if db_url.startswith('sqlite:///'):
+                    current_db_path = db_url[10:]  # Remove 'sqlite:///'
+            
+            dialog = DatabaseSettingsDialog(self, current_db_path)
+            if dialog.exec() == dialog.accepted:
+                QMessageBox.information(
+                    self,
+                    "Settings Updated",
+                    "Database settings have been updated.\n"
+                    "Please restart the application for the changes to take effect."
+                )
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open database settings:\n{str(e)}")
+    
     def show_about(self):
         """Show about dialog"""
         QMessageBox.about(self, "About", "Acoustic Analysis Tool v1.0\nfor LEED Acoustic Certification")
@@ -1716,3 +1774,132 @@ class ProjectDashboard(QMainWindow):
                 self.refresh_drawings()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open drawing sets management:\n{str(e)}")
+
+    def on_location_selected(self, location_data):
+        """Handle location selection from location browser"""
+        try:
+            element_type = location_data.get('location_type')
+            element_id = location_data.get('element_id')
+
+            if element_type == 'space':
+                # Open space edit dialog
+                self.open_space_by_id(element_id)
+            elif element_type == 'hvac_path':
+                # Open HVAC path dialog
+                self.open_hvac_path_by_id(element_id)
+
+        except Exception as e:
+            QMessageBox.warning(self, "Navigation Error", f"Could not navigate to location:\n{e}")
+
+    def open_space_by_id(self, space_id):
+        """Open space edit dialog for a specific space ID"""
+        try:
+            session = get_session()
+            space = session.query(Space).filter(Space.id == space_id).first()
+            session.close()
+
+            if not space:
+                QMessageBox.warning(self, "Not Found", f"Space with ID {space_id} not found.")
+                return
+
+            # Import and open space edit dialog
+            from ui.dialogs.space_edit_dialog import SpaceEditDialog
+
+            dialog = SpaceEditDialog(self, space)
+            dialog.space_updated.connect(self.on_space_updated)
+            dialog.finished.connect(lambda: self.on_space_dialog_closed(dialog))
+
+            self.space_edit_dialogs.append(dialog)
+            dialog.show()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open space:\n{e}")
+
+    def open_hvac_path_by_id(self, path_id):
+        """Open HVAC path dialog for a specific path ID"""
+        try:
+            session = get_session()
+            path = (
+                session.query(HVACPath)
+                .options(
+                    selectinload(HVACPath.target_space),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
+                    selectinload(HVACPath.segments).selectinload(HVACSegment.fittings),
+                )
+                .filter(HVACPath.id == path_id)
+                .first()
+            )
+            session.close()
+
+            if not path:
+                QMessageBox.warning(self, "Not Found", f"HVAC path with ID {path_id} not found.")
+                return
+
+            dialog = HVACPathDialog(self, project_id=self.project_id, path=path)
+            if dialog.exec() == QDialog.Accepted:
+                self.refresh_hvac_paths()
+                self.update_analysis_status()
+                self.update_space_hvac_paths_table()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open HVAC path:\n{e}")
+
+    def auto_sync_all_locations(self):
+        """Auto-sync location bookmarks for all spaces and HVAC paths"""
+        try:
+            from utils.location_manager import LocationManager
+            from PySide6.QtWidgets import QProgressDialog
+
+            # Get all spaces and paths
+            session = get_session()
+            spaces = session.query(Space).filter(Space.project_id == self.project_id).all()
+            paths = session.query(HVACPath).filter(HVACPath.project_id == self.project_id).all()
+            session.close()
+
+            total = len(spaces) + len(paths)
+
+            # Progress dialog
+            progress = QProgressDialog("Syncing location bookmarks...", "Cancel", 0, total, self)
+            progress.setWindowTitle("Auto-Sync Locations")
+            progress.setModal(True)
+            progress.show()
+
+            synced_count = 0
+
+            # Sync spaces
+            for i, space in enumerate(spaces):
+                if progress.wasCanceled():
+                    break
+
+                progress.setValue(i)
+                progress.setLabelText(f"Syncing space: {space.name}...")
+
+                LocationManager.auto_sync_space_locations(space.id)
+                synced_count += 1
+
+            # Sync HVAC paths
+            for i, path in enumerate(paths):
+                if progress.wasCanceled():
+                    break
+
+                progress.setValue(len(spaces) + i)
+                progress.setLabelText(f"Syncing HVAC path: {path.name}...")
+
+                LocationManager.auto_sync_path_locations(path.id)
+                synced_count += 1
+
+            progress.setValue(total)
+
+            # Refresh location browser
+            if hasattr(self, 'location_browser'):
+                self.location_browser.load_locations()
+
+            QMessageBox.information(
+                self,
+                "Sync Complete",
+                f"Successfully synced {synced_count} location bookmarks."
+            )
+
+        except Exception as e:
+            QMessageBox.critical(self, "Sync Error", f"Failed to sync locations:\n{e}")

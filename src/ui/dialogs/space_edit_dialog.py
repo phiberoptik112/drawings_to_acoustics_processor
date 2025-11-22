@@ -565,6 +565,18 @@ class SpaceEditDialog(QDialog):
         self.drawing_label = QLabel("No drawing assigned")
         self.drawing_label.setStyleSheet("color: #666; font-style: italic;")
         basic_layout.addRow("Associated Drawing:", self.drawing_label)
+
+        # Show location bookmarks
+        self.location_label = QLabel("No location bookmarks")
+        self.location_label.setStyleSheet("color: #666; font-style: italic;")
+        self.location_label.setWordWrap(True)
+        basic_layout.addRow("Locations:", self.location_label)
+
+        # Button to view all locations
+        self.view_locations_btn = QPushButton("📍 View All Locations")
+        self.view_locations_btn.setMaximumWidth(150)
+        self.view_locations_btn.clicked.connect(self.show_all_locations)
+        basic_layout.addRow("", self.view_locations_btn)
         
         self.description_edit = QTextEdit()
         self.description_edit.setMaximumHeight(60)
@@ -891,6 +903,9 @@ class SpaceEditDialog(QDialog):
         else:
             self.drawing_label.setText("No drawing assigned")
             self.drawing_label.setStyleSheet("color: #e74c3c; font-style: italic;")
+
+        # Load location information
+        self.update_location_display()
         
         # Load geometry
         if self.space.floor_area:
@@ -1338,10 +1353,32 @@ class SpaceEditDialog(QDialog):
             
             # Update plot with RT60 data
             rt60_by_freq = results.get('rt60_by_frequency', {})
+            
+            # Debug output
+            print(f"DEBUG: RT60 frequency response calculation:")
+            print(f"  Volume: {volume:,.0f} cf")
+            print(f"  Ceiling materials: {len(ceiling_materials_data)}")
+            print(f"  Wall materials: {len(wall_materials_data)}")
+            print(f"  Floor materials: {len(floor_materials_data)}")
+            print(f"  RT60 by frequency: {rt60_by_freq}")
+            
+            if not rt60_by_freq or all(v == 0 or v >= 999 for v in rt60_by_freq.values()):
+                print(f"  WARNING: RT60 values are invalid (0 or infinity). Check material lookup.")
+                # Try to debug material lookup
+                for mat_data in ceiling_materials_data + wall_materials_data + floor_materials_data:
+                    mat_key = mat_data.get('material_key')
+                    if mat_key:
+                        # Check if material is in calculator's database
+                        if hasattr(self.rt60_calculator, 'materials_db'):
+                            in_db = mat_key in self.rt60_calculator.materials_db
+                            print(f"    Material '{mat_key}' in calculator DB: {in_db}")
+            
             self.plot_container.update_rt60_data(rt60_by_freq)
             
         except Exception as e:
+            import traceback
             print(f"Error updating RT60 plot: {e}")
+            print(traceback.format_exc())
             self.plot_container.clear_rt60_data()
         
                 
@@ -1397,20 +1434,20 @@ class SpaceEditDialog(QDialog):
         floor_area = self.area_spin.value()
         height = self.ceiling_height_spin.value()
         volume = floor_area * height
-        
+
         # Calculate wall area
         wall_area = self.wall_area_spin.value()
-        
+
         # Get current materials data
         ceiling_materials_data = self.ceiling_materials.get_materials_data()
         wall_materials_data = self.wall_materials.get_materials_data()
         floor_materials_data = self.floor_materials.get_materials_data()
-        
+
         # Extract material keys for backward compatibility
         ceiling_materials = [m['material_key'] for m in ceiling_materials_data]
         wall_materials = [m['material_key'] for m in wall_materials_data]
         floor_materials = [m['material_key'] for m in floor_materials_data]
-        
+
         return {
             'name': self.name_edit.text().strip(),
             'description': self.description_edit.toPlainText().strip(),
@@ -1426,3 +1463,71 @@ class SpaceEditDialog(QDialog):
             'wall_materials_data': wall_materials_data,
             'floor_materials_data': floor_materials_data
         }
+
+    def update_location_display(self):
+        """Update the location label with current location bookmarks"""
+        if not self.space:
+            return
+
+        try:
+            locations = self.space.get_drawing_locations()
+
+            if not locations:
+                # Try to get from legacy fields
+                location_text = self.space.get_primary_location_label()
+                self.location_label.setText(location_text)
+                self.location_label.setStyleSheet("color: #999; font-style: italic;")
+            else:
+                # Show first location and count
+                first_loc = locations[0]
+                location_text = first_loc.get_location_label()
+
+                if len(locations) > 1:
+                    location_text += f" (+{len(locations) - 1} more)"
+
+                self.location_label.setText(location_text)
+                self.location_label.setStyleSheet("color: #90CAF9; font-weight: bold;")
+
+        except Exception as e:
+            print(f"Error updating location display: {e}")
+            self.location_label.setText("Error loading locations")
+            self.location_label.setStyleSheet("color: #e74c3c; font-style: italic;")
+
+    def show_all_locations(self):
+        """Show all location bookmarks for this space"""
+        if not self.space:
+            return
+
+        try:
+            locations = self.space.get_drawing_locations()
+
+            if not locations:
+                QMessageBox.information(
+                    self,
+                    "No Locations",
+                    f"No location bookmarks found for '{self.space.name}'.\n\n"
+                    "Location bookmarks are created automatically when:\n"
+                    "• Drawing room boundaries\n"
+                    "• Syncing locations from the Locations tab"
+                )
+                return
+
+            # Build message
+            msg = f"<h3>Locations for '{self.space.name}'</h3>"
+            msg += f"<p>Found {len(locations)} location bookmark(s):</p>"
+            msg += "<ul>"
+
+            for loc in locations:
+                msg += f"<li><b>{loc.get_location_label()}</b><br>"
+                if loc.page_number and loc.page_number > 1:
+                    msg += f"Page {loc.page_number}, "
+                if loc.center_x and loc.center_y:
+                    msg += f"Position: ({loc.center_x:.1f}, {loc.center_y:.1f})"
+                msg += "</li>"
+
+            msg += "</ul>"
+
+            QMessageBox.information(self, "Space Locations", msg)
+
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to load locations:\n{e}")

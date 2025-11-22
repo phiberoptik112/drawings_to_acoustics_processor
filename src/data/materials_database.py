@@ -6,16 +6,16 @@ from typing import Dict, List, Optional, Tuple, Union
 import os
 
 try:
-    from .materials import STANDARD_MATERIALS, load_materials_from_database, get_materials_by_category
+    from .materials import STANDARD_MATERIALS, load_materials_from_database, get_materials_by_category, categorize_material
     from .enhanced_materials import ENHANCED_MATERIALS
 except ImportError:
     try:
-        from materials import STANDARD_MATERIALS, load_materials_from_database, get_materials_by_category
+        from materials import STANDARD_MATERIALS, load_materials_from_database, get_materials_by_category, categorize_material
         from enhanced_materials import ENHANCED_MATERIALS
     except ImportError:
         import sys
         sys.path.append(os.path.dirname(__file__))
-        from materials import STANDARD_MATERIALS, load_materials_from_database, get_materials_by_category
+        from materials import STANDARD_MATERIALS, load_materials_from_database, get_materials_by_category, categorize_material
         from enhanced_materials import ENHANCED_MATERIALS
 
 
@@ -27,19 +27,104 @@ class MaterialsDatabase:
         self.standard_materials = STANDARD_MATERIALS
         self.enhanced_materials = ENHANCED_MATERIALS
         self.frequencies = [125, 250, 500, 1000, 2000, 4000]
+        self._sqlalchemy_materials_cache = None
+        
+    def load_materials_from_sqlalchemy(self) -> Dict[str, Dict]:
+        """Load materials from SQLAlchemy AcousticMaterial model (Component Library)
+        
+        Returns:
+            Dictionary of materials in standard format, keyed by material key
+        """
+        materials = {}
+        
+        try:
+            from models import get_session
+            from models.rt60_models import AcousticMaterial
+            
+            session = get_session()
+            try:
+                acoustic_materials = session.query(AcousticMaterial).all()
+                
+                for mat in acoustic_materials:
+                    # Generate key from material name (same format as SQLite loader)
+                    key = mat.name.lower().replace(' ', '_').replace(',', '').replace('(', '').replace(')', '').replace('&', 'and')
+                    
+                    # Determine category
+                    if mat.category:
+                        # Map SurfaceCategory name to standard category
+                        cat_name = mat.category.name.lower()
+                        if 'ceiling' in cat_name or 'ceiling' in mat.name.lower():
+                            category = 'ceiling'
+                        elif 'floor' in cat_name or any(term in mat.name.lower() for term in ['carpet', 'floor', 'vinyl', 'concrete', 'wood', 'rubber', 'ceramic']):
+                            category = 'floor'
+                        else:
+                            category = 'wall'
+                    else:
+                        # Fallback to name-based categorization
+                        category = categorize_material(mat.name)
+                    
+                    # Build description
+                    desc_parts = [mat.name]
+                    if mat.nrc is not None:
+                        desc_parts.append(f"NRC: {mat.nrc:.2f}")
+                    if mat.manufacturer:
+                        desc_parts.append(f"Mfr: {mat.manufacturer}")
+                    description = " - ".join(desc_parts)
+                    
+                    # Convert to standard format
+                    materials[key] = {
+                        'name': mat.name,
+                        'absorption_coeff': mat.nrc or (mat.absorption_1000 if mat.absorption_1000 is not None else 0.0),
+                        'coefficients': {
+                            '125': mat.absorption_125 or 0.0,
+                            '250': mat.absorption_250 or 0.0,
+                            '500': mat.absorption_500 or 0.0,
+                            '1000': mat.absorption_1000 or 0.0,
+                            '2000': mat.absorption_2000 or 0.0,
+                            '4000': mat.absorption_4000 or 0.0
+                        },
+                        'nrc': mat.nrc,
+                        'description': description,
+                        'category': category,
+                        'manufacturer': mat.manufacturer,
+                        'mounting_type': mat.mounting_type,
+                        'thickness': mat.thickness,
+                        'source': 'component_library'  # Mark as from Component Library
+                    }
+                
+            finally:
+                session.close()
+                
+        except Exception as e:
+            # Silently fail if SQLAlchemy models aren't available or database isn't initialized
+            # This allows the system to work even if Component Library isn't set up
+            pass
+        
+        return materials
         
     def get_all_materials(self) -> Dict[str, Dict]:
-        """Get all materials from both standard and enhanced databases"""
+        """Get all materials from SQLite database, SQLAlchemy Component Library, and enhanced materials
+        
+        Merges all sources with priority:
+        1. SQLAlchemy Component Library materials (highest priority - can override)
+        2. Enhanced materials
+        3. Standard SQLite materials (lowest priority)
+        """
         all_materials = {}
         
-        # Add standard materials
+        # Start with standard SQLite materials (lowest priority)
         all_materials.update(self.standard_materials)
         
-        # Add enhanced materials (these may override some standard materials)
+        # Add enhanced materials (medium priority - can override standard)
         for key, material in self.enhanced_materials.items():
             # Convert enhanced material format to standard format
             standardized = self._standardize_enhanced_material(key, material)
             all_materials[key] = standardized
+        
+        # Add SQLAlchemy Component Library materials (highest priority - can override both)
+        sqlalchemy_materials = self.load_materials_from_sqlalchemy()
+        for key, material in sqlalchemy_materials.items():
+            all_materials[key] = material
             
         return all_materials
         

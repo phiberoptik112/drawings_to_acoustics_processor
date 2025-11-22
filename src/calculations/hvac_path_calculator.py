@@ -320,7 +320,7 @@ class HVACPathCalculator:
         Returns:
             PathAnalysisResult with calculation details
         """
-        from src.calculations.hvac_validation import HVACValidationFramework
+        from .hvac_validation import HVACValidationFramework
         # Delineated banner for calculator start
         try:
             if getattr(self, 'debug_export_enabled', False):
@@ -599,7 +599,7 @@ class HVACPathCalculator:
                         print(f"DEBUG_PDB: Using stored segment order; connectivity ordering failed: {_e}")
                 # Validation framework for range checks
                 try:
-                    from src.calculations.hvac_validation import HVACValidationFramework
+                    from .hvac_validation import HVACValidationFramework
                     validation_framework = HVACValidationFramework(self.project_id)
                 except Exception:
                     validation_framework = None
@@ -1767,8 +1767,8 @@ class HVACPathCalculator:
         }
         
         try:
-            from src.models.database import get_hvac_session
-            from src.calculations.hvac_validation import HVACValidationFramework
+            from models.database import get_hvac_session
+            from .hvac_validation import HVACValidationFramework
             
             with get_hvac_session() as session:
                 path = session.query(HVACPath).filter(HVACPath.id == path_id).first()
