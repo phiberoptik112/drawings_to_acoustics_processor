@@ -57,6 +57,11 @@ class DrawingInterface(QMainWindow):
         # Path visibility tracking
         self.visible_paths = set()  # Set of path IDs that are currently visible
         
+        # Path editing mode tracking
+        # None = creating new path, int = editing existing path with that ID
+        self.editing_path_id = None
+        self.editing_path_name = None  # Cache the name for display
+        
         # Initialize base scale ratio for zoom adjustments
         self._base_scale_ratio = 1.0
         
@@ -284,9 +289,14 @@ class DrawingInterface(QMainWindow):
         summary_group.setLayout(summary_layout)
         layout.addWidget(summary_group)
         
-        # Element list
-        elements_group = QGroupBox("Element List")
+        # Path Element list
+        elements_group = QGroupBox("Path Element List")
         elements_layout = QVBoxLayout()
+        
+        # Mode indicator label
+        self.path_mode_label = QLabel("Mode: Creating New Path")
+        self.path_mode_label.setStyleSheet("font-weight: bold; color: #2196F3; padding: 2px;")
+        elements_layout.addWidget(self.path_mode_label)
         
         self.elements_list = QListWidget()
         self.elements_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -358,24 +368,16 @@ class DrawingInterface(QMainWindow):
         path_actions_layout.addWidget(self.show_all_paths_btn)
         path_actions_layout.addWidget(self.hide_all_paths_btn)
         
-        # Advanced path actions
+        # New Path button - clears selection and enters new path creation mode
         path_actions_layout2 = QHBoxLayout()
         
-        self.register_all_btn = QPushButton("🔗 Register All to Path 1")
-        self.register_all_btn.clicked.connect(lambda: self.register_all_elements_to_path(1))
-        self.register_all_btn.setToolTip("Register all drawing elements to Path 1 for complete hide/show control")
+        self.new_path_btn = QPushButton("➕ New Path")
+        self.new_path_btn.clicked.connect(self.enter_new_path_mode)
+        self.new_path_btn.setToolTip("Start creating a new HVAC path (clears current selection)")
+        self.new_path_btn.setStyleSheet("font-weight: bold;")
         
-        self.force_show_btn = QPushButton("👁️ Force Show Path 1")
-        self.force_show_btn.clicked.connect(lambda: self.force_show_path(1))
-        self.force_show_btn.setToolTip("Force show Path 1 (debug button)")
-        
-        # Debug checkbox test
-        self.debug_checkbox = QCheckBox("Debug Test Toggle")
-        self.debug_checkbox.stateChanged.connect(lambda state: print(f"DEBUG: Debug checkbox state: {state} (checked={state == Qt.Checked})"))
-        
-        path_actions_layout2.addWidget(self.register_all_btn)
-        path_actions_layout2.addWidget(self.force_show_btn)
-        path_actions_layout2.addWidget(self.debug_checkbox)
+        path_actions_layout2.addWidget(self.new_path_btn)
+        path_actions_layout2.addStretch()
         
         paths_layout.addLayout(path_actions_layout)
         paths_layout.addLayout(path_actions_layout2)
@@ -434,7 +436,8 @@ class DrawingInterface(QMainWindow):
         
         # Element list selection
         self.elements_list.itemSelectionChanged.connect(self.element_selected)
-        # Saved paths list double-click to edit path
+        # Saved paths list - single click to select path for editing, double-click to open editor
+        self.paths_list.itemClicked.connect(self.on_path_selected)
         self.paths_list.itemDoubleClicked.connect(self.open_path_editor_from_item)
         
     def load_pdf(self):
@@ -575,14 +578,43 @@ class DrawingInterface(QMainWindow):
         self.update_elements_display()
         self.update_status_bar()
         
-        # Add to elements list with data storage
+        element_type = element_data.get('type', 'unknown')
+        
+        # Check if we're in edit mode for an existing path and this is a path-related element
+        if self.editing_path_id is not None and element_type in ['component', 'segment']:
+            # Prompt user to add to existing path or start new path
+            reply = QMessageBox.question(
+                self,
+                "Add to Existing Path?",
+                f"You are currently editing '{self.editing_path_name}'.\n\n"
+                f"Would you like to add this {element_type} to '{self.editing_path_name}'?\n\n"
+                f"Click 'Yes' to add to the existing path.\n"
+                f"Click 'No' to start creating a new path.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            
+            if reply == QMessageBox.Yes:
+                # Add element to the existing path
+                self._add_element_to_existing_path(element_data)
+                return
+            else:
+                # Enter new path mode with this element
+                self._start_new_path_with_element(element_data)
+                return
+        
+        # Standard behavior for new path mode - add to elements list
+        self._add_element_to_list(element_data)
+    
+    def _add_element_to_list(self, element_data):
+        """Add an element to the Path Element List"""
         element_type = element_data.get('type', 'unknown')
         item = None
         
         if element_type == 'rectangle':
             area_text = element_data.get('area_formatted', '')
             item = QListWidgetItem(f"🔲 Rectangle - {area_text}")
-            item.setData(Qt.UserRole, element_data)  # Store element data
+            item.setData(Qt.UserRole, element_data)
         elif element_type == 'polygon':
             area_text = element_data.get('area_formatted', '')
             item = QListWidgetItem(f"🔷 Polygon - {area_text}")
@@ -602,6 +634,47 @@ class DrawingInterface(QMainWindow):
             
         if item:
             self.elements_list.addItem(item)
+    
+    def _add_element_to_existing_path(self, element_data):
+        """Add a new element to the currently selected existing path"""
+        try:
+            element_type = element_data.get('type', 'unknown')
+            
+            # For now, add to the list and show message
+            # Full database integration would require creating HVACComponent/Segment records
+            self._add_element_to_list(element_data)
+            
+            self.status_bar.showMessage(
+                f"Added {element_type} to '{self.editing_path_name}'. "
+                f"Open the path editor to save changes.", 5000
+            )
+            
+            print(f"DEBUG: Added {element_type} to existing path {self.editing_path_id}")
+            
+        except Exception as e:
+            print(f"ERROR: _add_element_to_existing_path failed: {e}")
+            QMessageBox.warning(self, "Error", f"Failed to add element to path:\n{str(e)}")
+    
+    def _start_new_path_with_element(self, element_data):
+        """Start a new path with the given element"""
+        # Reset to new path mode
+        self.editing_path_id = None
+        self.editing_path_name = None
+        
+        # Update mode indicator
+        self.path_mode_label.setText("Mode: Creating New Path")
+        self.path_mode_label.setStyleSheet("font-weight: bold; color: #2196F3; padding: 2px;")
+        
+        # Clear path selection
+        self.paths_list.clearSelection()
+        
+        # Clear the element list and add just this element
+        self.elements_list.clear()
+        self._add_element_to_list(element_data)
+        
+        self.status_bar.showMessage("Started new path - continue adding components and segments", 3000)
+        
+        print(f"DEBUG: Started new path with {element_data.get('type', 'unknown')}")
             
     def measurement_taken(self, length_real, length_formatted):
         """Handle measurement taken"""
@@ -2886,6 +2959,148 @@ class DrawingInterface(QMainWindow):
         except Exception as e:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Registration Error", f"Failed to register elements:\n{str(e)}")
+    
+    def on_path_selected(self, item: QListWidgetItem):
+        """Handle path selection in the Saved Paths list - enters edit mode for that path"""
+        try:
+            hvac_path = item.data(Qt.UserRole)
+            if not hvac_path:
+                return
+            
+            # Set editing mode
+            self.editing_path_id = hvac_path.id
+            self.editing_path_name = hvac_path.name
+            
+            # Update mode indicator
+            self.path_mode_label.setText(f"Editing: {hvac_path.name}")
+            self.path_mode_label.setStyleSheet("font-weight: bold; color: #4CAF50; padding: 2px;")
+            
+            # Populate the Path Element List with this path's elements
+            self.populate_path_element_list(hvac_path)
+            
+            # Also make sure the path is visible on drawing
+            self.show_path_on_drawing(hvac_path.id)
+            
+            print(f"DEBUG: Selected path {hvac_path.id} ({hvac_path.name}) for editing")
+            
+        except Exception as e:
+            print(f"ERROR: on_path_selected failed: {e}")
+    
+    def enter_new_path_mode(self):
+        """Enter new path creation mode - clears selection and resets element list"""
+        # Reset editing state
+        self.editing_path_id = None
+        self.editing_path_name = None
+        
+        # Update mode indicator
+        self.path_mode_label.setText("Mode: Creating New Path")
+        self.path_mode_label.setStyleSheet("font-weight: bold; color: #2196F3; padding: 2px;")
+        
+        # Clear path selection in the Saved Paths list
+        self.paths_list.clearSelection()
+        
+        # Clear the Path Element List
+        self.elements_list.clear()
+        
+        # Clear the drawing overlay of any temporary elements (but keep path-registered elements)
+        if self.drawing_overlay:
+            self.drawing_overlay.clear_unsaved_elements()
+        
+        # Update the elements display summary
+        self.update_elements_display()
+        
+        # Update status bar
+        self.status_bar.showMessage("Entered new path creation mode - draw components and segments", 3000)
+        
+        print("DEBUG: Entered new path creation mode")
+    
+    def populate_path_element_list(self, hvac_path):
+        """Populate the Path Element List with a path's components and segments"""
+        try:
+            # Clear the current list
+            self.elements_list.clear()
+            
+            if not hvac_path or not hvac_path.segments:
+                self.summary_label.setText("No elements in path")
+                return
+            
+            # Track unique components (segments reference from/to components)
+            seen_component_ids = set()
+            component_count = 0
+            segment_count = 0
+            
+            # Process each segment to extract components
+            for segment in hvac_path.segments:
+                # Add from_component if not already added
+                if segment.from_component and segment.from_component.id not in seen_component_ids:
+                    seen_component_ids.add(segment.from_component.id)
+                    comp = segment.from_component
+                    comp_type = comp.component_type or 'unknown'
+                    comp_name = comp.name or comp_type.upper()
+                    
+                    item = QListWidgetItem(f"🔧 {comp_name} ({comp_type})")
+                    item.setData(Qt.UserRole, {
+                        'type': 'component',
+                        'component_type': comp_type,
+                        'x': comp.x_position,
+                        'y': comp.y_position,
+                        'db_component_id': comp.id,
+                        'db_path_id': hvac_path.id
+                    })
+                    self.elements_list.addItem(item)
+                    component_count += 1
+                
+                # Add to_component if not already added
+                if segment.to_component and segment.to_component.id not in seen_component_ids:
+                    seen_component_ids.add(segment.to_component.id)
+                    comp = segment.to_component
+                    comp_type = comp.component_type or 'unknown'
+                    comp_name = comp.name or comp_type.upper()
+                    
+                    item = QListWidgetItem(f"🔧 {comp_name} ({comp_type})")
+                    item.setData(Qt.UserRole, {
+                        'type': 'component',
+                        'component_type': comp_type,
+                        'x': comp.x_position,
+                        'y': comp.y_position,
+                        'db_component_id': comp.id,
+                        'db_path_id': hvac_path.id
+                    })
+                    self.elements_list.addItem(item)
+                    component_count += 1
+                
+                # Add the segment itself
+                length = segment.length or 0
+                length_formatted = self.scale_manager.format_distance(length) if self.scale_manager else f"{length:.1f} ft"
+                
+                from_name = segment.from_component.name if segment.from_component else "?"
+                to_name = segment.to_component.name if segment.to_component else "?"
+                
+                item = QListWidgetItem(f"━ Segment: {from_name} → {to_name} ({length_formatted})")
+                item.setData(Qt.UserRole, {
+                    'type': 'segment',
+                    'length_real': length,
+                    'length_formatted': length_formatted,
+                    'db_segment_id': segment.id,
+                    'db_path_id': hvac_path.id
+                })
+                self.elements_list.addItem(item)
+                segment_count += 1
+            
+            # Update summary
+            summary_text = f"Components: {component_count}\nSegments: {segment_count}"
+            if hvac_path.calculated_noise:
+                summary_text += f"\nNoise: {hvac_path.calculated_noise:.1f} dB(A)"
+            if hvac_path.calculated_nc:
+                summary_text += f"\nNC Rating: NC-{hvac_path.calculated_nc:.0f}"
+            
+            self.summary_label.setText(summary_text)
+            
+            print(f"DEBUG: Populated path element list with {component_count} components and {segment_count} segments")
+            
+        except Exception as e:
+            print(f"ERROR: populate_path_element_list failed: {e}")
+            self.summary_label.setText("Error loading path elements")
     
     def toggle_path_visibility(self, path_id: int, visible: bool, button: QPushButton):
         """Toggle a path's visibility using the eye button"""
