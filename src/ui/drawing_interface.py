@@ -2864,7 +2864,8 @@ class DrawingInterface(QMainWindow):
     def register_existing_path_elements(self, hvac_path):
         """Register existing path elements in the drawing overlay for show/hide functionality.
         
-        This method first attempts to load linked drawing elements from the database.
+        This method first attempts to load linked drawing elements from the database,
+        filtered to only include elements on the current drawing and page.
         If linked elements exist, they are added to the overlay and registered.
         If no linked elements are found, it falls back to position-based matching.
         """
@@ -2876,10 +2877,19 @@ class DrawingInterface(QMainWindow):
             path_components = []
             path_segments = []
             
+            # Get current drawing context for filtering
+            current_drawing_id = self.drawing.id if self.drawing else None
+            current_page = self.current_page_number
+            
             # First, try to load linked elements from the database
+            # Filter to only elements on the current drawing/page
             linked_elements_loaded = False
             try:
-                linked_data = self.element_manager.load_elements_for_path(path_id)
+                linked_data = self.element_manager.load_elements_for_path(
+                    path_id,
+                    drawing_id=current_drawing_id,
+                    page_number=current_page
+                )
                 db_components = linked_data.get('components', [])
                 db_segments = linked_data.get('segments', [])
                 
@@ -3051,6 +3061,8 @@ class DrawingInterface(QMainWindow):
         position-based matching fails. It creates new overlay elements from the
         HVACComponent and HVACSegment positions stored in the database.
         
+        Only reconstructs elements for components on the current drawing.
+        
         Args:
             hvac_path: HVACPath object with segments and components
             
@@ -3061,11 +3073,18 @@ class DrawingInterface(QMainWindow):
         path_segments = []
         seen_comp_ids = set()
         
+        # Get current drawing context
+        current_drawing_id = self.drawing.id if self.drawing else None
+        
         try:
             for segment in hvac_path.segments:
-                # Reconstruct component visuals
+                # Reconstruct component visuals - only for components on this drawing
                 for db_comp in [segment.from_component, segment.to_component]:
                     if db_comp and db_comp.id not in seen_comp_ids:
+                        # Skip components that are not on the current drawing
+                        if current_drawing_id and db_comp.drawing_id != current_drawing_id:
+                            continue
+                            
                         comp_visual = {
                             'type': 'component',
                             'x': db_comp.x_position,
@@ -3080,10 +3099,15 @@ class DrawingInterface(QMainWindow):
                         self.drawing_overlay.components.append(comp_visual)
                         seen_comp_ids.add(db_comp.id)
                 
-                # Reconstruct segment visual
+                # Reconstruct segment visual - only if BOTH endpoints are on this drawing
                 if segment.from_component and segment.to_component:
                     from_comp = segment.from_component
                     to_comp = segment.to_component
+                    
+                    # Skip segments where either endpoint is not on the current drawing
+                    if current_drawing_id:
+                        if from_comp.drawing_id != current_drawing_id or to_comp.drawing_id != current_drawing_id:
+                            continue
                     
                     seg_visual = {
                         'type': 'segment',

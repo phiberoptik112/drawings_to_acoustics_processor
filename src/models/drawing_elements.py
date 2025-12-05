@@ -361,11 +361,13 @@ class DrawingElementManager:
 			session.close()
 			raise e
 	
-	def load_elements_for_path(self, hvac_path_id):
+	def load_elements_for_path(self, hvac_path_id, drawing_id=None, page_number=None):
 		"""Load drawing elements linked to a specific HVAC path.
 		
 		Args:
 			hvac_path_id: ID of the HVACPath to load elements for
+			drawing_id: Optional - filter to only elements on this drawing
+			page_number: Optional - filter to only elements on this page
 			
 		Returns:
 			Dict with 'components' and 'segments' lists for overlay reconstruction
@@ -373,9 +375,20 @@ class DrawingElementManager:
 		try:
 			session = self.get_session()
 			
-			elements = session.query(DrawingElement).filter(
+			# Build query with required filter
+			query = session.query(DrawingElement).filter(
 				DrawingElement.hvac_path_id == hvac_path_id
-			).order_by(DrawingElement.created_date).all()
+			)
+			
+			# Add optional drawing filter
+			if drawing_id is not None:
+				query = query.filter(DrawingElement.drawing_id == drawing_id)
+			
+			# Add optional page filter
+			if page_number is not None:
+				query = query.filter(DrawingElement.page_number == page_number)
+			
+			elements = query.order_by(DrawingElement.created_date).all()
 			
 			# Group elements by type
 			result = {
@@ -514,5 +527,75 @@ class DrawingElementManager:
 				
 		except Exception as e:
 			session.rollback()
+			session.close()
+			raise e
+	
+	def get_path_drawings(self, hvac_path_id):
+		"""Get list of drawings that contain elements for a specific HVAC path.
+		
+		This is useful for showing which drawings a path appears on, especially
+		for paths that may span multiple drawings.
+		
+		Args:
+			hvac_path_id: ID of the HVACPath to find drawings for
+			
+		Returns:
+			List of tuples (drawing_id, page_number, element_count) for each
+			drawing/page combination that has elements for this path
+		"""
+		try:
+			session = self.get_session()
+			
+			from sqlalchemy import func
+			
+			# Query distinct drawing_id/page_number combinations with counts
+			results = session.query(
+				DrawingElement.drawing_id,
+				DrawingElement.page_number,
+				func.count(DrawingElement.id).label('element_count')
+			).filter(
+				DrawingElement.hvac_path_id == hvac_path_id
+			).group_by(
+				DrawingElement.drawing_id,
+				DrawingElement.page_number
+			).all()
+			
+			session.close()
+			
+			# Convert to list of tuples
+			return [(r.drawing_id, r.page_number, r.element_count) for r in results]
+			
+		except Exception as e:
+			session.close()
+			raise e
+	
+	def path_has_elements_on_drawing(self, hvac_path_id, drawing_id, page_number=None):
+		"""Check if a path has any elements on a specific drawing/page.
+		
+		Args:
+			hvac_path_id: ID of the HVACPath to check
+			drawing_id: ID of the Drawing to check
+			page_number: Optional page number to check (if None, checks all pages)
+			
+		Returns:
+			True if path has elements on this drawing/page, False otherwise
+		"""
+		try:
+			session = self.get_session()
+			
+			query = session.query(DrawingElement).filter(
+				DrawingElement.hvac_path_id == hvac_path_id,
+				DrawingElement.drawing_id == drawing_id
+			)
+			
+			if page_number is not None:
+				query = query.filter(DrawingElement.page_number == page_number)
+			
+			exists = query.first() is not None
+			
+			session.close()
+			return exists
+			
+		except Exception as e:
 			session.close()
 			raise e
