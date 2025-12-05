@@ -21,6 +21,11 @@ class DrawingElement(Base):
 	element_name = Column(String(255))  # Optional name/label
 	page_number = Column(Integer, default=1)  # PDF page number where element exists
 	
+	# HVAC Path linkage - allows direct association of visual elements with paths
+	hvac_path_id = Column(Integer, ForeignKey('hvac_paths.id'), nullable=True)
+	hvac_segment_id = Column(Integer, ForeignKey('hvac_segments.id'), nullable=True)
+	hvac_component_id = Column(Integer, ForeignKey('hvac_components.id'), nullable=True)
+	
 	# Position and geometry (in pixels)
 	x_position = Column(Float)
 	y_position = Column(Float)
@@ -46,6 +51,9 @@ class DrawingElement(Base):
 	# Relationships
 	drawing = relationship("Drawing", backref="drawing_elements")
 	project = relationship("Project", backref="drawing_elements")
+	hvac_path = relationship("HVACPath", backref="drawing_elements")
+	hvac_segment = relationship("HVACSegment", backref="drawing_elements")
+	hvac_component = relationship("HVACComponent", backref="drawing_elements")
 	
 	def __repr__(self):
 		return f"<DrawingElement(id={self.id}, type='{self.element_type}', drawing_id={self.drawing_id})>"
@@ -67,7 +75,14 @@ class DrawingElement(Base):
 			'length_real': self.length_real,
 			'volume_real': self.volume_real,
 			'created_date': self.created_date.isoformat() if self.created_date else None,
-			'modified_date': self.modified_date.isoformat() if self.modified_date else None
+			'modified_date': self.modified_date.isoformat() if self.modified_date else None,
+			# HVAC linkage fields
+			'hvac_path_id': self.hvac_path_id,
+			'hvac_segment_id': self.hvac_segment_id,
+			'hvac_component_id': self.hvac_component_id,
+			'db_path_id': self.hvac_path_id,  # Alias for overlay compatibility
+			'db_segment_id': self.hvac_segment_id,  # Alias for overlay compatibility
+			'db_component_id': self.hvac_component_id,  # Alias for overlay compatibility
 		}
 		
 		# Add properties if they exist
@@ -77,9 +92,25 @@ class DrawingElement(Base):
 		return data
 	
 	@classmethod
-	def from_overlay_data(cls, drawing_id, project_id, element_data, page_number=1):
-		"""Create DrawingElement from overlay element data"""
+	def from_overlay_data(cls, drawing_id, project_id, element_data, page_number=1,
+						  hvac_path_id=None, hvac_segment_id=None, hvac_component_id=None):
+		"""Create DrawingElement from overlay element data
+		
+		Args:
+			drawing_id: ID of the drawing this element belongs to
+			project_id: ID of the project
+			element_data: Dict with overlay element properties
+			page_number: PDF page number
+			hvac_path_id: Optional ID of linked HVACPath
+			hvac_segment_id: Optional ID of linked HVACSegment
+			hvac_component_id: Optional ID of linked HVACComponent
+		"""
 		element_type = element_data.get('type', 'unknown')
+		
+		# Check for HVAC IDs in element_data as fallback (overlay may pass them here)
+		hvac_path_id = hvac_path_id or element_data.get('hvac_path_id') or element_data.get('db_path_id')
+		hvac_segment_id = hvac_segment_id or element_data.get('hvac_segment_id') or element_data.get('db_segment_id')
+		hvac_component_id = hvac_component_id or element_data.get('hvac_component_id') or element_data.get('db_component_id')
 		
 		# Extract common properties
 		element = cls(
@@ -92,7 +123,10 @@ class DrawingElement(Base):
 			width=element_data.get('width'),
 			height=element_data.get('height'),
 			area_real=element_data.get('area_real'),
-			length_real=element_data.get('length_real')
+			length_real=element_data.get('length_real'),
+			hvac_path_id=hvac_path_id,
+			hvac_segment_id=hvac_segment_id,
+			hvac_component_id=hvac_component_id
 		)
 		
 		# Type-specific properties
@@ -324,5 +358,161 @@ class DrawingElementManager:
 			}
 			
 		except Exception as e:
+			session.close()
+			raise e
+	
+	def load_elements_for_path(self, hvac_path_id):
+		"""Load drawing elements linked to a specific HVAC path.
+		
+		Args:
+			hvac_path_id: ID of the HVACPath to load elements for
+			
+		Returns:
+			Dict with 'components' and 'segments' lists for overlay reconstruction
+		"""
+		try:
+			session = self.get_session()
+			
+			elements = session.query(DrawingElement).filter(
+				DrawingElement.hvac_path_id == hvac_path_id
+			).order_by(DrawingElement.created_date).all()
+			
+			# Group elements by type
+			result = {
+				'components': [],
+				'segments': []
+			}
+			
+			for element in elements:
+				element_dict = element.to_dict()
+				
+				if element.element_type == 'component':
+					result['components'].append(element_dict)
+				elif element.element_type == 'segment':
+					result['segments'].append(element_dict)
+					
+			session.close()
+			return result
+			
+		except Exception as e:
+			session.close()
+			raise e
+	
+	def save_path_elements(self, drawing_id, project_id, hvac_path_id, components, segments, page_number=1):
+		"""Save drawing elements linked to an HVAC path.
+		
+		This method saves component and segment overlay elements and links them
+		to the specified HVAC path for later retrieval.
+		
+		Args:
+			drawing_id: ID of the drawing
+			project_id: ID of the project
+			hvac_path_id: ID of the HVACPath to link elements to
+			components: List of component element dicts from overlay
+			segments: List of segment element dicts from overlay
+			page_number: PDF page number
+			
+		Returns:
+			Number of elements saved
+		"""
+		try:
+			session = self.get_session()
+			
+			elements_saved = 0
+			
+			# Save components
+			for comp_data in (components or []):
+				# Ensure type is set
+				comp_data['type'] = 'component'
+				
+				element = DrawingElement.from_overlay_data(
+					drawing_id, project_id, comp_data, page_number,
+					hvac_path_id=hvac_path_id,
+					hvac_component_id=comp_data.get('db_component_id') or comp_data.get('hvac_component_id')
+				)
+				session.add(element)
+				elements_saved += 1
+			
+			# Save segments
+			for seg_data in (segments or []):
+				# Ensure type is set
+				seg_data['type'] = 'segment'
+				
+				element = DrawingElement.from_overlay_data(
+					drawing_id, project_id, seg_data, page_number,
+					hvac_path_id=hvac_path_id,
+					hvac_segment_id=seg_data.get('db_segment_id') or seg_data.get('hvac_segment_id')
+				)
+				session.add(element)
+				elements_saved += 1
+			
+			session.commit()
+			session.close()
+			
+			return elements_saved
+			
+		except Exception as e:
+			session.rollback()
+			session.close()
+			raise e
+	
+	def delete_path_elements(self, hvac_path_id):
+		"""Delete all drawing elements linked to a specific HVAC path.
+		
+		Args:
+			hvac_path_id: ID of the HVACPath whose elements to delete
+			
+		Returns:
+			Number of elements deleted
+		"""
+		try:
+			session = self.get_session()
+			
+			deleted = session.query(DrawingElement).filter(
+				DrawingElement.hvac_path_id == hvac_path_id
+			).delete()
+			
+			session.commit()
+			session.close()
+			
+			return deleted
+			
+		except Exception as e:
+			session.rollback()
+			session.close()
+			raise e
+	
+	def update_element_path_link(self, element_id, hvac_path_id=None, hvac_segment_id=None, hvac_component_id=None):
+		"""Update HVAC linkage for an existing drawing element.
+		
+		Args:
+			element_id: ID of the DrawingElement to update
+			hvac_path_id: New HVACPath ID (or None to clear)
+			hvac_segment_id: New HVACSegment ID (or None to clear)
+			hvac_component_id: New HVACComponent ID (or None to clear)
+			
+		Returns:
+			True if updated, False if element not found
+		"""
+		try:
+			session = self.get_session()
+			
+			element = session.query(DrawingElement).filter(
+				DrawingElement.id == element_id
+			).first()
+			
+			if element:
+				element.hvac_path_id = hvac_path_id
+				element.hvac_segment_id = hvac_segment_id
+				element.hvac_component_id = hvac_component_id
+				session.commit()
+				session.close()
+				return True
+			else:
+				session.close()
+				return False
+				
+		except Exception as e:
+			session.rollback()
 			session.close()
 			raise e

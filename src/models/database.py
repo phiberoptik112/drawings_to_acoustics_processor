@@ -169,6 +169,13 @@ def initialize_database(db_path=None):
 	except Exception as e:
 		print(f"Warning: Space polygon schema migration failed: {e}")
 	
+	# New: drawing element HVAC linkage columns
+	try:
+		from .migrate_drawing_element_hvac import ensure_drawing_element_hvac_schema
+		ensure_drawing_element_hvac_schema()
+	except Exception as e:
+		print(f"Warning: Drawing element HVAC schema migration failed: {e}")
+	
 	return db_path
 
 

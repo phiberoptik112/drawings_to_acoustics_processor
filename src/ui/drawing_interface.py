@@ -441,16 +441,77 @@ class DrawingInterface(QMainWindow):
         self.paths_list.itemDoubleClicked.connect(self.open_path_editor_from_item)
         
     def load_pdf(self):
-        """Load the PDF file"""
-        if self.drawing and self.drawing.file_path:
-            if os.path.exists(self.drawing.file_path):
-                success = self.pdf_viewer.load_pdf(self.drawing.file_path)
+        """Load the PDF file with path resolution for portability"""
+        if not self.drawing or not self.drawing.file_path:
+            return
+        
+        # Use the path resolution method for portability
+        abs_path = self.drawing.get_absolute_file_path()
+        
+        if abs_path and os.path.exists(abs_path):
+            success = self.pdf_viewer.load_pdf(abs_path)
+            if success:
+                self.update_overlay_size()
+                self.load_scale_from_drawing()
+                self.load_saved_elements()
+        else:
+            # Try to locate the file in common locations
+            found_path, found = self.drawing.try_locate_file()
+            
+            if found and found_path:
+                # Ask user if they want to update the path
+                from PySide6.QtWidgets import QMessageBox
+                reply = QMessageBox.question(
+                    self, 
+                    "PDF Located",
+                    f"PDF file was found at a different location:\n{found_path}\n\n"
+                    f"Update the stored path to this location?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                
+                if reply == QMessageBox.Yes:
+                    # Update the path in the database
+                    self.drawing.update_file_path(found_path, make_relative=True)
+                    self.save_drawing_to_db()
+                
+                # Load the PDF
+                success = self.pdf_viewer.load_pdf(found_path)
                 if success:
                     self.update_overlay_size()
                     self.load_scale_from_drawing()
                     self.load_saved_elements()
             else:
-                QMessageBox.warning(self, "Warning", f"PDF file not found:\n{self.drawing.file_path}")
+                # Offer to browse for the file
+                from PySide6.QtWidgets import QMessageBox, QFileDialog
+                reply = QMessageBox.question(
+                    self,
+                    "PDF Not Found",
+                    f"PDF file not found:\n{self.drawing.file_path}\n\n"
+                    f"Would you like to browse for the file?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                
+                if reply == QMessageBox.Yes:
+                    file_path, _ = QFileDialog.getOpenFileName(
+                        self,
+                        "Locate PDF File",
+                        os.path.expanduser("~/Documents"),
+                        "PDF Files (*.pdf)"
+                    )
+                    
+                    if file_path and os.path.exists(file_path):
+                        # Update the path in the database
+                        self.drawing.update_file_path(file_path, make_relative=True)
+                        self.save_drawing_to_db()
+                        
+                        # Load the PDF
+                        success = self.pdf_viewer.load_pdf(file_path)
+                        if success:
+                            self.update_overlay_size()
+                            self.load_scale_from_drawing()
+                            self.load_saved_elements()
                 
     def update_overlay_size(self):
         """Update overlay size to match PDF display"""
@@ -729,8 +790,8 @@ class DrawingInterface(QMainWindow):
         if file_path:
             success = self.pdf_viewer.load_pdf(file_path)
             if success:
-                # Update drawing record
-                self.drawing.file_path = file_path
+                # Update drawing record with relative path for portability
+                self.drawing.update_file_path(file_path, make_relative=True)
                 self.save_drawing_to_db()
                 self.update_overlay_size()
                 
@@ -1289,13 +1350,23 @@ class DrawingInterface(QMainWindow):
             
             # Connect to path_saved signal to handle registration
             def on_path_saved(saved_path):
-                """Handle newly saved path by registering elements with drawing overlay"""
+                """Handle newly saved path by registering elements with drawing overlay and persisting them"""
                 try:
                     if self.drawing_overlay and saved_path:
                         # Temporarily disable clearing to prevent race conditions
                         self.drawing_overlay.disable_clearing_temporarily()
                         
                         print(f"DEBUG: Registering saved path {saved_path.id} with drawing overlay")
+                        
+                        # Save drawing elements linked to the path for persistent storage
+                        try:
+                            self.save_path_drawing_elements(
+                                saved_path.id,
+                                dialog.drawing_components or [],
+                                dialog.drawing_segments or []
+                            )
+                        except Exception as save_e:
+                            print(f"DEBUG: Could not save path drawing elements: {save_e}")
                         
                         # Use the robust registration method
                         self.register_existing_path_elements(saved_path)
@@ -2791,115 +2862,320 @@ class DrawingInterface(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to calculate path noise:\n{str(e)}")
     
     def register_existing_path_elements(self, hvac_path):
-        """Register existing path elements in the drawing overlay for show/hide functionality"""
+        """Register existing path elements in the drawing overlay for show/hide functionality.
+        
+        This method first attempts to load linked drawing elements from the database.
+        If linked elements exist, they are added to the overlay and registered.
+        If no linked elements are found, it falls back to position-based matching.
+        """
         if not self.drawing_overlay:
             return
             
         try:
+            path_id = hvac_path.id
             path_components = []
             path_segments = []
             
-            # Find drawing elements that match the path's components and segments
-            overlay_data = self.drawing_overlay.get_elements_data()
-            drawing_components = overlay_data.get('components', [])
-            drawing_segments = overlay_data.get('segments', [])
-            
-            # print(f"DEBUG: Registering path {hvac_path.id} with {len(hvac_path.segments)} database segments")
-            # print(f"DEBUG: Available drawing elements: {len(drawing_components)} components, {len(drawing_segments)} segments")
-            
-            # Match path components to drawing components
-            for i, segment in enumerate(hvac_path.segments):
-                print(f"DEBUG: Processing segment {i}")
+            # First, try to load linked elements from the database
+            linked_elements_loaded = False
+            try:
+                linked_data = self.element_manager.load_elements_for_path(path_id)
+                db_components = linked_data.get('components', [])
+                db_segments = linked_data.get('segments', [])
                 
-                if segment.from_component:
-                    db_comp = segment.from_component
-                    print(f"DEBUG: Looking for from_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                if db_components or db_segments:
+                    print(f"DEBUG: Found {len(db_components)} linked components and {len(db_segments)} linked segments for path {path_id}")
                     
-                    # Look for matching component in drawing elements
-                    found = False
-                    for comp in drawing_components:
-                        if (comp.get('x') == db_comp.x_position and
-                            comp.get('y') == db_comp.y_position and
-                            comp.get('component_type') == db_comp.component_type):
-                            if comp not in path_components:
-                                path_components.append(comp)
-                                # Attach DB id for edit lookups
-                                comp['db_component_id'] = db_comp.id
-                                print(f"DEBUG: Found matching from_component: {comp}")
-                            found = True
-                            break
-                    if not found:
-                        print(f"DEBUG: No match found for from_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
-                
-                if segment.to_component:
-                    db_comp = segment.to_component
-                    print(f"DEBUG: Looking for to_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                    # Add linked elements to overlay if not already present
+                    for comp in db_components:
+                        # Ensure component has required fields for overlay rendering
+                        if 'x' not in comp and 'x_position' in comp:
+                            comp['x'] = comp['x_position']
+                        if 'y' not in comp and 'y_position' in comp:
+                            comp['y'] = comp['y_position']
+                        if 'component_type' not in comp and comp.get('properties'):
+                            comp['component_type'] = comp['properties'].get('component_type', 'unknown')
+                        
+                        # Add to overlay components if not already there
+                        existing = False
+                        for existing_comp in self.drawing_overlay.components:
+                            if (existing_comp.get('x') == comp.get('x') and 
+                                existing_comp.get('y') == comp.get('y') and
+                                existing_comp.get('component_type') == comp.get('component_type')):
+                                # Already exists, use the existing one
+                                path_components.append(existing_comp)
+                                existing = True
+                                break
+                        
+                        if not existing:
+                            # Add to overlay
+                            self.drawing_overlay.components.append(comp)
+                            path_components.append(comp)
                     
-                    # Look for matching component in drawing elements
-                    found = False
-                    for comp in drawing_components:
-                        if (comp.get('x') == db_comp.x_position and
-                            comp.get('y') == db_comp.y_position and
-                            comp.get('component_type') == db_comp.component_type):
-                            if comp not in path_components:
-                                path_components.append(comp)
-                                # Attach DB id for edit lookups
-                                comp['db_component_id'] = db_comp.id
-                                print(f"DEBUG: Found matching to_component: {comp}")
-                            found = True
-                            break
-                    if not found:
-                        print(f"DEBUG: No match found for to_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                    for seg in db_segments:
+                        # Ensure segment has required fields for overlay rendering
+                        if seg.get('properties'):
+                            props = seg['properties']
+                            if 'start_x' not in seg:
+                                seg['start_x'] = props.get('start_x')
+                            if 'start_y' not in seg:
+                                seg['start_y'] = props.get('start_y')
+                            if 'end_x' not in seg:
+                                seg['end_x'] = props.get('end_x')
+                            if 'end_y' not in seg:
+                                seg['end_y'] = props.get('end_y')
+                            if 'from_component' not in seg:
+                                seg['from_component'] = props.get('from_component')
+                            if 'to_component' not in seg:
+                                seg['to_component'] = props.get('to_component')
+                        
+                        # Add to overlay segments if not already there
+                        existing = False
+                        for existing_seg in self.drawing_overlay.segments:
+                            if (abs(existing_seg.get('start_x', 0) - seg.get('start_x', 0)) < 5 and
+                                abs(existing_seg.get('start_y', 0) - seg.get('start_y', 0)) < 5 and
+                                abs(existing_seg.get('end_x', 0) - seg.get('end_x', 0)) < 5 and
+                                abs(existing_seg.get('end_y', 0) - seg.get('end_y', 0)) < 5):
+                                # Already exists, use the existing one
+                                path_segments.append(existing_seg)
+                                existing = True
+                                break
+                        
+                        if not existing:
+                            # Add to overlay
+                            self.drawing_overlay.segments.append(seg)
+                            path_segments.append(seg)
+                    
+                    if path_components or path_segments:
+                        linked_elements_loaded = True
+                        print(f"DEBUG: Loaded {len(path_components)} components and {len(path_segments)} segments from database for path {path_id}")
+                        
+            except Exception as load_e:
+                print(f"DEBUG: Could not load linked elements for path {path_id}: {load_e}")
+            
+            # Fall back to position-based matching if no linked elements found
+            if not linked_elements_loaded:
+                print(f"DEBUG: No linked elements found, using position-based matching for path {path_id}")
                 
-                # Match segments (robust: allow small pixel tolerance on endpoints)
-                if segment.from_component and segment.to_component:
-                    print(f"DEBUG: Looking for segment from {segment.from_component.component_type} to {segment.to_component.component_type}")
-                    found = False
-                    tol = 12.0  # pixels
-                    fx = float(segment.from_component.x_position or 0.0)
-                    fy = float(segment.from_component.y_position or 0.0)
-                    tx = float(segment.to_component.x_position or 0.0)
-                    ty = float(segment.to_component.y_position or 0.0)
-                    for seg in drawing_segments:
-                        # Check if this segment connects the same components (within tolerance)
-                        from_comp = seg.get('from_component')
-                        to_comp = seg.get('to_component')
-                        if not (from_comp and to_comp):
-                            continue
-                        d1 = abs(float(from_comp.get('x') or 0) - fx) + abs(float(from_comp.get('y') or 0) - fy)
-                        d2 = abs(float(to_comp.get('x') or 0) - tx) + abs(float(to_comp.get('y') or 0) - ty)
-                        if d1 <= tol and d2 <= tol:
-                            if seg not in path_segments:
-                                path_segments.append(seg)
-                                # Attach DB ids for edit lookups
-                                seg['db_segment_id'] = segment.id
-                                seg['db_path_id'] = hvac_path.id
-                                # Also synchronize overlay label length with DB value
-                                try:
-                                    seg['length_real'] = float(getattr(segment, 'length', 0) or 0)
-                                    fmtr = self.drawing_overlay.scale_manager.format_distance
-                                    seg['length_formatted'] = fmtr(seg['length_real'])
-                                except Exception:
-                                    pass
-                                print(f"DEBUG: Found matching segment (tol {tol}px): {from_comp.get('component_type')} -> {to_comp.get('component_type')}")
-                            found = True
-                            break
-                    if not found:
-                        print(f"DEBUG: No matching segment found (with tolerance) for {segment.from_component.component_type} -> {segment.to_component.component_type}")
+                # Find drawing elements that match the path's components and segments
+                overlay_data = self.drawing_overlay.get_elements_data()
+                drawing_components = overlay_data.get('components', [])
+                drawing_segments = overlay_data.get('segments', [])
+                
+                # Match path components to drawing components
+                for i, segment in enumerate(hvac_path.segments):
+                    if segment.from_component:
+                        db_comp = segment.from_component
+                        
+                        # Look for matching component in drawing elements
+                        found = False
+                        for comp in drawing_components:
+                            if (comp.get('x') == db_comp.x_position and
+                                comp.get('y') == db_comp.y_position and
+                                comp.get('component_type') == db_comp.component_type):
+                                if comp not in path_components:
+                                    path_components.append(comp)
+                                    # Attach DB id for edit lookups
+                                    comp['db_component_id'] = db_comp.id
+                                found = True
+                                break
+                    
+                    if segment.to_component:
+                        db_comp = segment.to_component
+                        
+                        # Look for matching component in drawing elements
+                        found = False
+                        for comp in drawing_components:
+                            if (comp.get('x') == db_comp.x_position and
+                                comp.get('y') == db_comp.y_position and
+                                comp.get('component_type') == db_comp.component_type):
+                                if comp not in path_components:
+                                    path_components.append(comp)
+                                    # Attach DB id for edit lookups
+                                    comp['db_component_id'] = db_comp.id
+                                found = True
+                                break
+                    
+                    # Match segments (robust: allow small pixel tolerance on endpoints)
+                    if segment.from_component and segment.to_component:
+                        found = False
+                        tol = 12.0  # pixels
+                        fx = float(segment.from_component.x_position or 0.0)
+                        fy = float(segment.from_component.y_position or 0.0)
+                        tx = float(segment.to_component.x_position or 0.0)
+                        ty = float(segment.to_component.y_position or 0.0)
+                        for seg in drawing_segments:
+                            # Check if this segment connects the same components (within tolerance)
+                            from_comp = seg.get('from_component')
+                            to_comp = seg.get('to_component')
+                            if not (from_comp and to_comp):
+                                continue
+                            d1 = abs(float(from_comp.get('x') or 0) - fx) + abs(float(from_comp.get('y') or 0) - fy)
+                            d2 = abs(float(to_comp.get('x') or 0) - tx) + abs(float(to_comp.get('y') or 0) - ty)
+                            if d1 <= tol and d2 <= tol:
+                                if seg not in path_segments:
+                                    path_segments.append(seg)
+                                    # Attach DB ids for edit lookups
+                                    seg['db_segment_id'] = segment.id
+                                    seg['db_path_id'] = hvac_path.id
+                                    # Also synchronize overlay label length with DB value
+                                    try:
+                                        seg['length_real'] = float(getattr(segment, 'length', 0) or 0)
+                                        fmtr = self.drawing_overlay.scale_manager.format_distance
+                                        seg['length_formatted'] = fmtr(seg['length_real'])
+                                    except Exception:
+                                        pass
+                                found = True
+                                break
+                
+                # If position-matching found elements but no linked DB elements exist,
+                # try to create visual elements from HVAC component positions as fallback
+                if not path_components and not path_segments and hvac_path.segments:
+                    print(f"DEBUG: Reconstructing visual elements from HVAC component positions for path {path_id}")
+                    path_components, path_segments = self._reconstruct_path_visuals_from_db(hvac_path)
             
             # Register the found elements
             if path_components or path_segments:
-                self.drawing_overlay.register_path_elements(hvac_path.id, path_components, path_segments)
-                print(f"DEBUG: Registered path {hvac_path.id} with {len(path_components)} components and {len(path_segments)} segments")
+                self.drawing_overlay.register_path_elements(path_id, path_components, path_segments)
+                print(f"DEBUG: Registered path {path_id} with {len(path_components)} components and {len(path_segments)} segments")
             else:
-                print(f"DEBUG: No elements found to register for path {hvac_path.id}")
+                print(f"DEBUG: No elements found to register for path {path_id}")
             
         except Exception as e:
             print(f"Error registering path elements for path {hvac_path.id}: {e}")
     
+    def _reconstruct_path_visuals_from_db(self, hvac_path):
+        """Reconstruct visual overlay elements from HVAC database records.
+        
+        This is a fallback method used when no linked DrawingElements exist and
+        position-based matching fails. It creates new overlay elements from the
+        HVACComponent and HVACSegment positions stored in the database.
+        
+        Args:
+            hvac_path: HVACPath object with segments and components
+            
+        Returns:
+            Tuple of (components_list, segments_list) for overlay
+        """
+        path_components = []
+        path_segments = []
+        seen_comp_ids = set()
+        
+        try:
+            for segment in hvac_path.segments:
+                # Reconstruct component visuals
+                for db_comp in [segment.from_component, segment.to_component]:
+                    if db_comp and db_comp.id not in seen_comp_ids:
+                        comp_visual = {
+                            'type': 'component',
+                            'x': db_comp.x_position,
+                            'y': db_comp.y_position,
+                            'component_type': db_comp.component_type,
+                            'db_component_id': db_comp.id,
+                            'hvac_component_id': db_comp.id,
+                            'db_path_id': hvac_path.id,
+                            'hvac_path_id': hvac_path.id,
+                        }
+                        path_components.append(comp_visual)
+                        self.drawing_overlay.components.append(comp_visual)
+                        seen_comp_ids.add(db_comp.id)
+                
+                # Reconstruct segment visual
+                if segment.from_component and segment.to_component:
+                    from_comp = segment.from_component
+                    to_comp = segment.to_component
+                    
+                    seg_visual = {
+                        'type': 'segment',
+                        'start_x': from_comp.x_position,
+                        'start_y': from_comp.y_position,
+                        'end_x': to_comp.x_position,
+                        'end_y': to_comp.y_position,
+                        'from_component': {
+                            'x': from_comp.x_position,
+                            'y': from_comp.y_position,
+                            'component_type': from_comp.component_type,
+                        },
+                        'to_component': {
+                            'x': to_comp.x_position,
+                            'y': to_comp.y_position,
+                            'component_type': to_comp.component_type,
+                        },
+                        'db_segment_id': segment.id,
+                        'hvac_segment_id': segment.id,
+                        'db_path_id': hvac_path.id,
+                        'hvac_path_id': hvac_path.id,
+                        'length_real': segment.length,
+                    }
+                    
+                    # Format length for display
+                    try:
+                        fmtr = self.drawing_overlay.scale_manager.format_distance
+                        seg_visual['length_formatted'] = fmtr(segment.length or 0)
+                    except Exception:
+                        seg_visual['length_formatted'] = f"{segment.length:.1f} ft" if segment.length else "0 ft"
+                    
+                    path_segments.append(seg_visual)
+                    self.drawing_overlay.segments.append(seg_visual)
+            
+            print(f"DEBUG: Reconstructed {len(path_components)} components and {len(path_segments)} segments from DB for path {hvac_path.id}")
+            
+        except Exception as e:
+            print(f"Error reconstructing path visuals from DB: {e}")
+        
+        return path_components, path_segments
+    
     def register_path_elements_for_path(self, hvac_path):
         """Register path elements for a given HVAC path (alias for register_existing_path_elements)"""
         self.register_existing_path_elements(hvac_path)
+
+    def save_path_drawing_elements(self, hvac_path_id, components, segments):
+        """Save drawing elements linked to an HVAC path for persistent storage.
+        
+        This ensures that visual overlay elements (components and segments) are
+        stored in the database linked to their HVAC path, enabling reliable
+        reconstruction when the project is reloaded.
+        
+        Args:
+            hvac_path_id: ID of the HVACPath to link elements to
+            components: List of component element dicts from overlay
+            segments: List of segment element dicts from overlay
+        """
+        if not self.drawing or not hvac_path_id:
+            return
+            
+        try:
+            # Mark components and segments with HVAC path ID before saving
+            for comp in (components or []):
+                comp['hvac_path_id'] = hvac_path_id
+                comp['db_path_id'] = hvac_path_id
+                # Also try to link to specific component ID if available
+                db_comp_id = comp.get('db_component_id')
+                if db_comp_id:
+                    comp['hvac_component_id'] = db_comp_id
+            
+            for seg in (segments or []):
+                seg['hvac_path_id'] = hvac_path_id
+                seg['db_path_id'] = hvac_path_id
+                # Also try to link to specific segment ID if available
+                db_seg_id = seg.get('db_segment_id')
+                if db_seg_id:
+                    seg['hvac_segment_id'] = db_seg_id
+            
+            # Use the element manager to save path-linked elements
+            elements_saved = self.element_manager.save_path_elements(
+                self.drawing.id,
+                self.project_id,
+                hvac_path_id,
+                components or [],
+                segments or [],
+                self.current_page_number
+            )
+            
+            print(f"DEBUG: Saved {elements_saved} drawing elements linked to path {hvac_path_id}")
+            
+        except Exception as e:
+            print(f"Error saving path drawing elements: {e}")
 
     def _on_segment_saved(self, segment) -> None:
         """After editing a segment in the dialog, update any registered overlay
