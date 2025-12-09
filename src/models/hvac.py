@@ -124,13 +124,35 @@ class HVACPath(Base):
         locations = self.get_drawing_locations()
 
         if not locations:
-            # Try to derive from segments
-            if self.segments:
-                first_seg = self.segments[0]
-                if hasattr(first_seg, 'from_component') and first_seg.from_component:
-                    comp = first_seg.from_component
-                    if hasattr(comp, 'drawing') and comp.drawing:
-                        return f"Dwg: {comp.drawing.name}"
+            # Try to derive from segments using a fresh session to avoid detached instance errors
+            # Only attempt if path has been saved (has an id)
+            if self.id:
+                try:
+                    from models import get_session
+                    from sqlalchemy.orm import joinedload
+                    
+                    session = get_session()
+                    try:
+                        # Query segments with component and drawing relationships eagerly loaded
+                        first_seg = (
+                            session.query(HVACSegment)
+                            .options(
+                                joinedload(HVACSegment.from_component).joinedload(HVACComponent.drawing)
+                            )
+                            .filter(HVACSegment.hvac_path_id == self.id)
+                            .order_by(HVACSegment.segment_order)
+                            .first()
+                        )
+                        
+                        if first_seg and first_seg.from_component:
+                            comp = first_seg.from_component
+                            if comp.drawing:
+                                return f"Dwg: {comp.drawing.name}"
+                    finally:
+                        session.close()
+                except Exception:
+                    # If session query fails, fall through to drawing_set fallback
+                    pass
 
             if self.drawing_set:
                 return f"Set: {self.drawing_set.name}" if hasattr(self.drawing_set, 'name') else "In drawing set"

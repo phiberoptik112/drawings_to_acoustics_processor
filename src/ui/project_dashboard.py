@@ -247,15 +247,15 @@ class ProjectDashboard(QMainWindow):
         # HVAC Paths tab
         hvac_tab = self.create_hvac_tab()
         tabs.addTab(hvac_tab, "HVAC Paths")
-        
-        # Results tab
-        self.results_widget = ResultsWidget(self.project_id)
-        self.results_widget.export_requested.connect(self.export_to_excel)
-        tabs.addTab(self.results_widget, "📊 Results & Analysis")
 
         # Locations tab
         locations_tab = self.create_locations_tab()
         tabs.addTab(locations_tab, "📍 Locations")
+
+        # Results tab
+        self.results_widget = ResultsWidget(self.project_id)
+        self.results_widget.export_requested.connect(self.export_to_excel)
+        tabs.addTab(self.results_widget, "📊 Results & Analysis")
 
         left_layout.addWidget(tabs)
         left_widget.setLayout(left_layout)
