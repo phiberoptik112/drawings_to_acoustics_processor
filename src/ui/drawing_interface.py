@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QComboBox, QLineEdit, QGroupBox, 
                              QListWidget, QListWidgetItem, QMessageBox, QFileDialog, QSplitter,
                              QFrame, QSpinBox, QDialog, QCheckBox)
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import Qt, QSize, Signal, QTimer
 from PySide6.QtGui import QIcon, QFont, QAction
 
 from models import get_session, Drawing, Project, Space, RoomBoundary, DrawingElementManager
@@ -19,6 +19,7 @@ from ui.dialogs.room_properties import RoomPropertiesDialog
 from ui.dialogs.hvac_path_dialog import HVACPathDialog
 from ui.dialogs.hvac_component_dialog import HVACComponentDialog
 from ui.dialogs.hvac_segment_dialog import HVACSegmentDialog
+from ui.dialogs.space_edit_dialog import SpaceEditDialog
 from data.components import STANDARD_COMPONENTS
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 from calculations import RT60Calculator, NoiseCalculator, HVACPathCalculator
@@ -57,6 +58,10 @@ class DrawingInterface(QMainWindow):
         # Path visibility tracking
         self.visible_paths = set()  # Set of path IDs that are currently visible
         
+        # Space visibility tracking
+        self.visible_spaces = set()  # Set of space IDs that are currently visible
+        self.space_edit_dialogs = []  # Track open space edit dialogs
+        
         # Path editing mode tracking
         # None = creating new path, int = editing existing path with that ID
         self.editing_path_id = None
@@ -72,8 +77,9 @@ class DrawingInterface(QMainWindow):
         if self.drawing and self.drawing.file_path:
             self.load_pdf()
             
-        # Load saved paths
+        # Load saved paths and spaces
         self.load_saved_paths()
+        self.load_saved_spaces()
             
     def load_drawing_data(self):
         """Load drawing and project data from database"""
@@ -279,15 +285,35 @@ class DrawingInterface(QMainWindow):
         scale_group.setLayout(scale_layout)
         layout.addWidget(scale_group)
         
-        # Elements summary
-        summary_group = QGroupBox("Elements Summary")
-        summary_layout = QVBoxLayout()
+        # Saved Spaces section
+        spaces_group = QGroupBox("Saved Spaces")
+        spaces_layout = QVBoxLayout()
         
-        self.summary_label = QLabel("No elements drawn")
-        summary_layout.addWidget(self.summary_label)
+        # Spaces summary
+        self.spaces_summary_label = QLabel("No spaces saved")
+        spaces_layout.addWidget(self.spaces_summary_label)
         
-        summary_group.setLayout(summary_layout)
-        layout.addWidget(summary_group)
+        # Spaces list
+        self.spaces_list = QListWidget()
+        self.spaces_list.setMaximumHeight(120)  # Limit height to save space
+        self.spaces_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.spaces_list.customContextMenuRequested.connect(self.show_space_context_menu)
+        self.spaces_list.itemDoubleClicked.connect(self.open_space_editor_from_item)
+        spaces_layout.addWidget(self.spaces_list)
+        
+        # Space actions
+        space_actions_layout = QHBoxLayout()
+        
+        self.refresh_spaces_btn = QPushButton("🔄 Refresh")
+        self.refresh_spaces_btn.clicked.connect(self.load_saved_spaces)
+        self.refresh_spaces_btn.setToolTip("Refresh saved spaces list")
+        
+        space_actions_layout.addWidget(self.refresh_spaces_btn)
+        space_actions_layout.addStretch()
+        
+        spaces_layout.addLayout(space_actions_layout)
+        spaces_group.setLayout(spaces_layout)
+        layout.addWidget(spaces_group)
         
         # Path Element list
         elements_group = QGroupBox("Path Element List")
@@ -326,6 +352,7 @@ class DrawingInterface(QMainWindow):
         
         elements_layout.addLayout(element_actions_layout)
         elements_group.setLayout(elements_layout)
+        self.elements_group = elements_group  # Store reference for dynamic title updates
         layout.addWidget(elements_group)
         
         # Saved Paths section
@@ -431,6 +458,8 @@ class DrawingInterface(QMainWindow):
             self.drawing_overlay.measurement_taken.connect(self.measurement_taken)
             # Open edit dialogs on double-clicks in overlay
             self.drawing_overlay.element_double_clicked.connect(self.overlay_element_double_clicked)
+            # Handle space clicks for selection/editing
+            self.drawing_overlay.space_clicked.connect(self.on_space_clicked)
             
         self.scale_manager.scale_changed.connect(self.scale_updated)
         
@@ -557,6 +586,23 @@ class DrawingInterface(QMainWindow):
             # Show/hide component selection
             self.component_group.setVisible(tool_type == ToolType.COMPONENT)
             
+            # Update Path Element List context based on tool type
+            if tool_type in (ToolType.RECTANGLE, ToolType.POLYGON):
+                # Space creation mode
+                self.elements_group.setTitle("New Space")
+                self.path_mode_label.setText("Mode: Creating Space")
+                self.path_mode_label.setStyleSheet("font-weight: bold; color: #228B22; padding: 2px;")
+                self.create_room_btn.setVisible(True)
+                self.create_path_btn.setVisible(False)
+                self.elements_list.clear()  # Clear for new space
+            else:
+                # Path creation mode
+                self.elements_group.setTitle("Path Element List")
+                self.path_mode_label.setText("Mode: Creating New Path")
+                self.path_mode_label.setStyleSheet("font-weight: bold; color: #2196F3; padding: 2px;")
+                self.create_room_btn.setVisible(False)
+                self.create_path_btn.setVisible(True)
+            
     def component_index_changed(self, index):
         """Handle component combo box index change"""
         if index >= 0:
@@ -640,6 +686,18 @@ class DrawingInterface(QMainWindow):
         self.update_status_bar()
         
         element_type = element_data.get('type', 'unknown')
+        
+        # Auto-open Space Properties dialog for rectangle/polygon
+        if element_type == 'rectangle':
+            self._add_element_to_list(element_data)
+            # Use QTimer to allow the UI to update before opening dialog
+            QTimer.singleShot(100, lambda: self.create_room_from_rectangle(element_data))
+            return
+        elif element_type == 'polygon':
+            self._add_element_to_list(element_data)
+            # Use QTimer to allow the UI to update before opening dialog
+            QTimer.singleShot(100, lambda: self.create_room_from_polygon(element_data))
+            return
         
         # Check if we're in edit mode for an existing path and this is a path-related element
         if self.editing_path_id is not None and element_type in ['component', 'segment']:
@@ -752,25 +810,10 @@ class DrawingInterface(QMainWindow):
         self.update_elements_display()
         
     def update_elements_display(self):
-        """Update the elements summary display"""
-        if self.drawing_overlay:
-            summary = self.drawing_overlay.get_elements_summary()
-            
-            text = f"Rectangles: {summary['rectangles']}\n"
-            text += f"Polygons: {summary.get('polygons', 0)}\n"
-            text += f"Components: {summary['components']}\n" 
-            text += f"Segments: {summary['segments']}\n"
-            text += f"Measurements: {summary['measurements']}\n\n"
-            
-            if summary['total_area'] > 0:
-                area_formatted = self.scale_manager.format_area(summary['total_area'])
-                text += f"Total Area: {area_formatted}\n"
-                
-            if summary['total_duct_length'] > 0:
-                length_formatted = self.scale_manager.format_distance(summary['total_duct_length'])
-                text += f"Total Duct: {length_formatted}"
-                
-            self.summary_label.setText(text)
+        """Update the elements summary display (updates status bar only)"""
+        # Note: Elements Summary section was replaced with Saved Spaces list
+        # Element counts are now shown in the status bar instead
+        pass
             
     def update_status_bar(self):
         """Update the status bar"""
@@ -1491,10 +1534,11 @@ class DrawingInterface(QMainWindow):
         try:
             session = get_session()
             
-            # Create space record with drawing association
+            # Create space record with drawing and drawing set association
             space = Space(
                 project_id=self.project_id,
                 drawing_id=self.drawing.id if self.drawing else None,  # Set drawing_id directly
+                drawing_set_id=self.drawing.drawing_set_id if self.drawing else None,  # Also set drawing_set_id
                 name=space_data['name'],
                 description=space_data['description'],
                 floor_area=space_data['floor_area'],
@@ -1574,6 +1618,11 @@ class DrawingInterface(QMainWindow):
                 "• View results in the main project dashboard"
             )
             
+            # Build drawing info string
+            drawing_info = f"📋 Drawing: {self.drawing.name if self.drawing else 'None'}"
+            if self.drawing and self.drawing.drawing_set:
+                drawing_info += f"\n📁 Drawing Set: {self.drawing.drawing_set.name}"
+            
             QMessageBox.information(
                 self, 
                 "✅ Space Created Successfully!", 
@@ -1585,7 +1634,7 @@ class DrawingInterface(QMainWindow):
                 f"🔊 Acoustics:\n"
                 f"  • Target RT60: {space_data['target_rt60']:.1f} seconds\n"
                 f"  • Calculated RT60: {rt60_display}\n\n"
-                f"📋 Drawing: {self.drawing.name if self.drawing else 'None'}"
+                f"{drawing_info}"
                 f"{next_steps}"
             )
             
@@ -1594,6 +1643,9 @@ class DrawingInterface(QMainWindow):
             
             # Update rectangle to show it's now a space
             self.update_elements_after_space_creation(space_data['name'])
+            
+            # Refresh the saved spaces list to show the new space
+            self.load_saved_spaces()
         
         except Exception as e:
             if session is not None:
@@ -2609,6 +2661,238 @@ class DrawingInterface(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Path Editor", f"Failed to open path editor:\n{e}")
 
+    # ========== Saved Spaces Methods ==========
+    
+    def load_saved_spaces(self):
+        """Load saved spaces from database and populate the spaces list"""
+        session = None
+        try:
+            session = get_session()
+            
+            # Query spaces for this project
+            spaces = session.query(Space).filter(
+                Space.project_id == self.project_id
+            ).all()
+            
+            # Clear the current list
+            self.spaces_list.clear()
+            self.visible_spaces.clear()
+            
+            if not spaces:
+                self.spaces_summary_label.setText("No spaces saved")
+                session.close()
+                return
+                
+            # Update summary
+            space_count = len(spaces)
+            calculated_count = sum(1 for s in spaces if s.calculated_rt60)
+            self.spaces_summary_label.setText(f"{space_count} spaces ({calculated_count} calculated)")
+            
+            # Add spaces to list
+            for space in spaces:
+                # Create list item
+                item = QListWidgetItem()
+                
+                # Create a widget container for space controls
+                widget = QWidget()
+                layout = QHBoxLayout(widget)
+                layout.setContentsMargins(5, 2, 5, 2)
+                
+                # Space name label
+                space_label = QLabel(self.format_space_display_name(space))
+                space_label.setToolTip(self.format_space_tooltip(space))
+                # Let double-clicks pass through label to the list item row
+                space_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                
+                layout.addWidget(space_label)
+                layout.addStretch()
+                
+                # Store space data in the item
+                item.setData(Qt.UserRole, space)
+                
+                # Set the widget as the item widget
+                self.spaces_list.addItem(item)
+                self.spaces_list.setItemWidget(item, widget)
+                
+                # Also allow double-clicking the row to open the editor directly
+                def _row_dbl_click(event, s=space):
+                    try:
+                        if event.button() == Qt.LeftButton:
+                            self.open_space_editor(s)
+                            event.accept()
+                            return
+                    except Exception:
+                        pass
+                    QWidget.mouseDoubleClickEvent(widget, event)
+                widget.mouseDoubleClickEvent = _row_dbl_click
+            
+            session.close()
+            
+        except Exception as e:
+            if session is not None:
+                session.close()
+            QMessageBox.warning(self, "Error", f"Failed to load saved spaces:\n{str(e)}")
+    
+    def format_space_display_name(self, space):
+        """Format the display name for a space in the list"""
+        name = space.name or "Unnamed Space"
+        
+        # Add area info if available
+        area_info = ""
+        if space.floor_area:
+            area_info = f" [{space.floor_area:.0f} sf]"
+        
+        # Add RT60 info if calculated
+        rt60_info = ""
+        if space.calculated_rt60:
+            rt60_info = f" (RT60: {space.calculated_rt60:.2f}s)"
+            
+        return f"🏠 {name}{area_info}{rt60_info}"
+    
+    def format_space_tooltip(self, space):
+        """Format tooltip information for a space"""
+        tooltip = f"Space: {space.name or 'Unnamed'}\n"
+        
+        if space.floor_area:
+            tooltip += f"Floor Area: {space.floor_area:.0f} sf\n"
+        if space.ceiling_height:
+            tooltip += f"Ceiling Height: {space.ceiling_height:.1f} ft\n"
+        if space.wall_area:
+            tooltip += f"Wall Area: {space.wall_area:.0f} sf\n"
+        
+        if space.calculated_rt60:
+            tooltip += f"Calculated RT60: {space.calculated_rt60:.2f} seconds\n"
+            tooltip += f"Target RT60: {space.target_rt60:.2f} seconds\n" if space.target_rt60 else "Target RT60: Not set\n"
+        else:
+            tooltip += "RT60: Not calculated\n"
+        
+        # Add drawing and drawing set info
+        if space.drawing:
+            tooltip += f"Drawing: {space.drawing.name}\n"
+        if space.drawing_set:
+            tooltip += f"Drawing Set: {space.drawing_set.name}"
+            
+        return tooltip.rstrip()
+    
+    def open_space_editor_from_item(self, item: QListWidgetItem):
+        """Open the Edit Space dialog when a saved space list item is double-clicked."""
+        try:
+            space = item.data(Qt.UserRole)
+            if not space:
+                return
+            self.open_space_editor(space)
+        except Exception as e:
+            QMessageBox.warning(self, "Space Editor", f"Failed to open space editor:\n{e}")
+    
+    def open_space_editor(self, space):
+        """Open the SpaceEditDialog for the given space"""
+        try:
+            # Re-query space to get fresh data
+            session = get_session()
+            fresh_space = session.query(Space).filter(Space.id == space.id).first()
+            
+            if not fresh_space:
+                QMessageBox.warning(self, "Error", "Space not found in database.")
+                session.close()
+                return
+            
+            # Create non-modal dialog
+            dialog = SpaceEditDialog(self, fresh_space)
+            
+            # Connect signals for updates and cleanup
+            dialog.space_updated.connect(self.on_space_updated)
+            dialog.finished.connect(lambda: self.on_space_dialog_closed(dialog))
+            
+            # Store reference to prevent garbage collection
+            self.space_edit_dialogs.append(dialog)
+            
+            # Show as non-modal window
+            dialog.show()
+            
+            session.close()
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Space Editor", f"Failed to open space editor:\n{e}")
+    
+    def on_space_updated(self):
+        """Handle space update signal from SpaceEditDialog"""
+        # Refresh the spaces list to show updated data
+        self.load_saved_spaces()
+    
+    def on_space_clicked(self, space_data):
+        """Handle space clicked on drawing - open edit dialog for the space"""
+        try:
+            space_id = space_data.get('space_id')
+            if not space_id:
+                # No space_id means this is an unsaved rectangle/polygon
+                return
+            
+            # Find space in database and open editor
+            session = get_session()
+            space = session.query(Space).filter(Space.id == space_id).first()
+            session.close()
+            
+            if space:
+                self.open_space_editor(space)
+            else:
+                self.status_bar.showMessage(f"Space not found in database (ID: {space_id})", 3000)
+        except Exception as e:
+            print(f"ERROR: on_space_clicked failed: {e}")
+            QMessageBox.warning(self, "Error", f"Failed to open space editor:\n{str(e)}")
+    
+    def on_space_dialog_closed(self, dialog):
+        """Handle space dialog closed - clean up reference"""
+        try:
+            if dialog in self.space_edit_dialogs:
+                self.space_edit_dialogs.remove(dialog)
+        except Exception:
+            pass
+    
+    def show_space_context_menu(self, position):
+        """Show context menu for spaces list"""
+        item = self.spaces_list.itemAt(position)
+        if not item:
+            return
+            
+        space = item.data(Qt.UserRole)
+        if not space:
+            return
+        
+        from PySide6.QtWidgets import QMenu
+        
+        menu = QMenu(self)
+        
+        # Edit action
+        edit_action = menu.addAction("✏️ Edit Space")
+        edit_action.triggered.connect(lambda: self.open_space_editor(space))
+        
+        menu.addSeparator()
+        
+        # Space information action
+        info_action = menu.addAction("ℹ️ Space Information")
+        info_action.triggered.connect(lambda: self.show_space_information(space))
+        
+        menu.exec_(self.spaces_list.mapToGlobal(position))
+    
+    def show_space_information(self, space):
+        """Show detailed information about a space"""
+        info_text = f"<h3>{space.name or 'Unnamed Space'}</h3>"
+        info_text += f"<p><b>Floor Area:</b> {space.floor_area:.0f} sf</p>" if space.floor_area else ""
+        info_text += f"<p><b>Ceiling Height:</b> {space.ceiling_height:.1f} ft</p>" if space.ceiling_height else ""
+        info_text += f"<p><b>Wall Area:</b> {space.wall_area:.0f} sf</p>" if space.wall_area else ""
+        
+        if space.calculated_rt60:
+            info_text += f"<p><b>Calculated RT60:</b> {space.calculated_rt60:.2f} seconds</p>"
+        if space.target_rt60:
+            info_text += f"<p><b>Target RT60:</b> {space.target_rt60:.2f} seconds</p>"
+        if space.calculated_nc:
+            info_text += f"<p><b>Calculated NC:</b> NC-{space.calculated_nc:.0f}</p>"
+        
+        if space.description:
+            info_text += f"<p><b>Description:</b> {space.description}</p>"
+        
+        QMessageBox.information(self, "Space Information", info_text)
+
     def overlay_element_double_clicked(self, element: dict):
         """Open component or segment editor when double-clicked on the drawing overlay."""
         try:
@@ -3321,7 +3605,6 @@ class DrawingInterface(QMainWindow):
             self.elements_list.clear()
             
             if not hvac_path or not hvac_path.segments:
-                self.summary_label.setText("No elements in path")
                 return
             
             # Track unique components (segments reference from/to components)
@@ -3387,20 +3670,10 @@ class DrawingInterface(QMainWindow):
                 self.elements_list.addItem(item)
                 segment_count += 1
             
-            # Update summary
-            summary_text = f"Components: {component_count}\nSegments: {segment_count}"
-            if hvac_path.calculated_noise:
-                summary_text += f"\nNoise: {hvac_path.calculated_noise:.1f} dB(A)"
-            if hvac_path.calculated_nc:
-                summary_text += f"\nNC Rating: NC-{hvac_path.calculated_nc:.0f}"
-            
-            self.summary_label.setText(summary_text)
-            
             print(f"DEBUG: Populated path element list with {component_count} components and {segment_count} segments")
             
         except Exception as e:
             print(f"ERROR: populate_path_element_list failed: {e}")
-            self.summary_label.setText("Error loading path elements")
     
     def toggle_path_visibility(self, path_id: int, visible: bool, button: QPushButton):
         """Toggle a path's visibility using the eye button"""

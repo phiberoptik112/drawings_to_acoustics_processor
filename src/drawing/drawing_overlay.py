@@ -14,6 +14,7 @@ class DrawingOverlay(QWidget):
     coordinates_clicked = Signal(float, float)  # Raw coordinates clicked
     measurement_taken = Signal(float, str)    # Measurement in real units
     element_double_clicked = Signal(dict)     # Emitted on double-click of an element
+    space_clicked = Signal(dict)              # Emitted when a saved space is clicked
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -304,7 +305,16 @@ class DrawingOverlay(QWidget):
         if event.button() == Qt.LeftButton:
             point = QPoint(event.x(), event.y())
             self.coordinates_clicked.emit(event.x(), event.y())
+            
+            # Check for space click first when in SELECT mode
             if self.tool_manager.current_tool_type == ToolType.SELECT:
+                space_hit = self._hit_test_space(point)
+                if space_hit:
+                    # Emit signal for space selection
+                    self.space_clicked.emit(space_hit['data'])
+                    self.update()
+                    return
+                
                 self._select_modifiers = event.modifiers()
                 self._handle_select_press(point)
             else:
@@ -985,6 +995,54 @@ class DrawingOverlay(QWidget):
             if min_x <= point.x() <= max_x and min_y <= point.y() <= max_y:
                 return {'segment': seg, 'endpoint': None}
         return None
+
+    def _hit_test_space(self, point):
+        """Test if point hits a saved space (rectangle or polygon with converted_to_space=True)"""
+        # Check rectangles first
+        for rect in self.rectangles:
+            if rect.get('converted_to_space'):
+                bounds = rect.get('bounds')
+                if isinstance(bounds, QRect) and bounds.contains(point):
+                    return {'type': 'rectangle', 'data': rect}
+                elif isinstance(bounds, dict):
+                    # Handle dict bounds
+                    x = bounds.get('x', 0)
+                    y = bounds.get('y', 0)
+                    w = bounds.get('width', 0)
+                    h = bounds.get('height', 0)
+                    if x <= point.x() <= x + w and y <= point.y() <= y + h:
+                        return {'type': 'rectangle', 'data': rect}
+        
+        # Check polygons
+        for poly in self.polygons:
+            if poly.get('converted_to_space'):
+                points = poly.get('points', [])
+                if self._point_in_polygon(point, points):
+                    return {'type': 'polygon', 'data': poly}
+        
+        return None
+
+    def _point_in_polygon(self, point, polygon_points):
+        """Check if a point is inside a polygon using ray casting algorithm"""
+        if not polygon_points or len(polygon_points) < 3:
+            return False
+        
+        px, py = point.x(), point.y()
+        n = len(polygon_points)
+        inside = False
+        
+        j = n - 1
+        for i in range(n):
+            xi = polygon_points[i].get('x', 0)
+            yi = polygon_points[i].get('y', 0)
+            xj = polygon_points[j].get('x', 0)
+            yj = polygon_points[j].get('y', 0)
+            
+            if ((yi > py) != (yj > py)) and (px < (xj - xi) * (py - yi) / (yj - yi) + xi):
+                inside = not inside
+            j = i
+        
+        return inside
 
     def _update_segments_for_component_move(self, component):
         try:
