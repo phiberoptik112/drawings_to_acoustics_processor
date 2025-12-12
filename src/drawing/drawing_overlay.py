@@ -532,8 +532,8 @@ class DrawingOverlay(QWidget):
             else:
                 pen = QPen(QColor(0, 120, 215), 2, Qt.SolidLine)
                 brush = QBrush(QColor(0, 120, 215, 30))
-                painter.setPen(pen)
-                painter.setBrush(brush)
+            painter.setPen(pen)
+            painter.setBrush(brush)
             painter.drawPolygon(polygon)
             try:
                 cx = sum(p.x() for p in polygon) // polygon.count()

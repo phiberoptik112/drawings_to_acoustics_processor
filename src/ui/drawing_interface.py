@@ -48,6 +48,9 @@ class DrawingInterface(QMainWindow):
         self.hvac_path_calculator = HVACPathCalculator()
         self.element_manager = DrawingElementManager(get_session)
         
+        # Calibration mode flag
+        self._calibration_mode = False
+        
         # Selected element for context operations
         self.selected_rectangle = None
         self.selected_hvac_element = None
@@ -166,8 +169,8 @@ class DrawingInterface(QMainWindow):
         
         # Tools menu
         tools_menu = menubar.addMenu('Tools')
-        tools_menu.addAction('Set Scale', self.set_scale)
-        tools_menu.addAction('Calibrate Scale', self.calibrate_scale)
+        tools_menu.addAction('📏 Calibrate Scale...', self.calibrate_scale)
+        tools_menu.addAction('Set Scale from Ratio...', self.set_scale)
         tools_menu.addSeparator()
         tools_menu.addAction('Create HVAC Path', self.create_hvac_path_from_drawing)
         tools_menu.addAction('Analyze HVAC Path', self.analyze_hvac_path)
@@ -272,14 +275,19 @@ class DrawingInterface(QMainWindow):
         scale_layout.addWidget(self.scale_label)
         
         scale_btn_layout = QHBoxLayout()
-        self.set_scale_btn = QPushButton("Set Scale")
-        self.set_scale_btn.clicked.connect(self.set_scale)
         
-        self.calibrate_btn = QPushButton("Calibrate")
+        # Primary action - calibrate by drawing a reference line
+        self.calibrate_btn = QPushButton("📏 Calibrate Scale")
         self.calibrate_btn.clicked.connect(self.calibrate_scale)
+        self.calibrate_btn.setToolTip("Draw a reference line and enter its real-world length")
         
-        scale_btn_layout.addWidget(self.set_scale_btn)
+        # Secondary action - set from known scale string
+        self.set_scale_btn = QPushButton("Set Scale...")
+        self.set_scale_btn.clicked.connect(self.set_scale)
+        self.set_scale_btn.setToolTip("Set scale from a known scale ratio (e.g., 1/4\"=1'0\")")
+
         scale_btn_layout.addWidget(self.calibrate_btn)
+        scale_btn_layout.addWidget(self.set_scale_btn)
         scale_layout.addLayout(scale_btn_layout)
         
         scale_group.setLayout(scale_layout)
@@ -571,11 +579,42 @@ class DrawingInterface(QMainWindow):
         """Load scale information from drawing record"""
         if self.drawing and self.drawing.scale_string:
             self.scale_manager.set_scale_from_string(self.drawing.scale_string)
-            # Store the base scale ratio (at 100% zoom)
-            self._base_scale_ratio = self.scale_manager.scale_ratio
+            # Prefer persisted calibrated ratio if present; it represents 100% zoom.
+            # ScaleManager.set_scale_from_string() may produce a placeholder value
+            # (e.g. architectural scales defaulting to 10.0 until calibrated).
+            persisted_base = None
+            try:
+                persisted_base = float(getattr(self.drawing, "scale_ratio", None))
+            except Exception:
+                persisted_base = None
+
             # Apply current zoom factor
             current_zoom = self.pdf_viewer.zoom_factor if self.pdf_viewer else 1.0
-            self.scale_manager.scale_ratio = self._base_scale_ratio * current_zoom
+            try:
+                current_zoom = float(current_zoom or 1.0)
+            except Exception:
+                current_zoom = 1.0
+            if current_zoom <= 0:
+                current_zoom = 1.0
+
+            if persisted_base is not None and persisted_base > 0:
+                self._base_scale_ratio = persisted_base
+                self.scale_manager.scale_ratio = self._base_scale_ratio * current_zoom
+                # If ScaleManager was in "needs calibration" mode, this overrides it.
+                try:
+                    self.scale_manager._needs_calibration = False
+                except Exception:
+                    pass
+                # Force downstream consumers (overlay, UI) to pick up the calibrated ratio.
+                # Important: do NOT re-parse the scale string; just broadcast the current values.
+                try:
+                    self.scale_manager.scale_changed.emit(self.scale_manager.scale_ratio, self.scale_manager.scale_string)
+                except Exception:
+                    pass
+            else:
+                # Store base scale ratio derived from string
+                self._base_scale_ratio = self.scale_manager.scale_ratio
+                self.scale_manager.scale_ratio = self._base_scale_ratio * current_zoom
             
     def set_drawing_tool(self, tool_type):
         """Set the active drawing tool"""
@@ -797,6 +836,12 @@ class DrawingInterface(QMainWindow):
             
     def measurement_taken(self, length_real, length_formatted):
         """Handle measurement taken"""
+        # If in calibration mode, complete calibration instead of showing measurement popup
+        if getattr(self, '_calibration_mode', False):
+            self._complete_calibration_from_measurement()
+            return
+        
+        # Normal measurement - show result
         QMessageBox.information(self, "Measurement", f"Distance measured: {length_formatted}")
         
     def scale_updated(self, scale_ratio, scale_string):
@@ -854,7 +899,20 @@ class DrawingInterface(QMainWindow):
             # Update drawing record
             if self.scale_manager.scale_string:
                 self.drawing.scale_string = self.scale_manager.scale_string
-                self.drawing.scale_ratio = self.scale_manager.scale_ratio
+                # Persist base (100% zoom) scale ratio so reload is consistent.
+                base = getattr(self, "_base_scale_ratio", None)
+                if base is None:
+                    try:
+                        z = float(getattr(getattr(self, "pdf_viewer", None), "zoom_factor", None) or 1.0)
+                    except Exception:
+                        z = 1.0
+                    if z <= 0:
+                        z = 1.0
+                    base = float(getattr(self.scale_manager, "scale_ratio", 1.0)) / z
+                try:
+                    self.drawing.scale_ratio = float(base)
+                except Exception:
+                    self.drawing.scale_ratio = self.scale_manager.scale_ratio
                 
             if self.pdf_viewer and self.pdf_viewer.page_width:
                 self.drawing.width_pixels = self.pdf_viewer.page_width
@@ -915,54 +973,167 @@ class DrawingInterface(QMainWindow):
                 RoomBoundary.page_number == self.current_page_number
             ).all()
             
+            # Current on-screen zoom factor; we store RoomBoundary coords in "base" (100%) PDF pixels.
+            # When rendering, we scale base coords by current zoom.
+            try:
+                current_zoom = float(getattr(getattr(self, "pdf_viewer", None), "zoom_factor", None) or 1.0)
+            except Exception:
+                current_zoom = float(getattr(getattr(self, "drawing_overlay", None), "_current_zoom_factor", None) or 1.0)
+            if current_zoom <= 0:
+                current_zoom = 1.0
+
+            boundary_ids = {getattr(b, "id", None) for b in boundaries}
+            boundary_ids.discard(None)
+
+            # Remove any previously injected boundaries for this page to prevent duplicates
+            if self.drawing_overlay:
+                try:
+                    self.drawing_overlay.rectangles = [
+                        r for r in (self.drawing_overlay.rectangles or [])
+                        if r.get("boundary_id") not in boundary_ids
+                    ]
+                except Exception:
+                    pass
+                try:
+                    self.drawing_overlay.polygons = [
+                        p for p in (self.drawing_overlay.polygons or [])
+                        if p.get("boundary_id") not in boundary_ids
+                    ]
+                except Exception:
+                    pass
+
+            # Also remove from the elements list (UI) if present
+            try:
+                for i in range(self.elements_list.count() - 1, -1, -1):
+                    item = self.elements_list.item(i)
+                    data = item.data(Qt.UserRole)
+                    if isinstance(data, dict) and data.get("boundary_id") in boundary_ids:
+                        self.elements_list.takeItem(i)
+            except Exception:
+                pass
+
             space_rectangles = []
+            space_polygons = []
             for boundary in boundaries:
                 # Get the associated space name
                 space_name = boundary.space.name if boundary.space else f"Space {boundary.space_id}"
-                
-                # Create rectangle data compatible with drawing overlay
+
+                # If polygon_points exist, restore as polygon (not as a bounding rectangle).
+                polygon_points_raw = getattr(boundary, "polygon_points", None)
+                if polygon_points_raw:
+                    import json
+                    pts_base = []
+                    try:
+                        loaded = json.loads(polygon_points_raw)
+                        if isinstance(loaded, list):
+                            pts_base = loaded
+                    except Exception:
+                        pts_base = []
+
+                    pts_scaled = []
+                    for p in (pts_base or []):
+                        try:
+                            px = float(p.get("x", 0))
+                            py = float(p.get("y", 0))
+                        except Exception:
+                            px, py = 0.0, 0.0
+                        pts_scaled.append({
+                            "x": int(px * current_zoom),
+                            "y": int(py * current_zoom),
+                        })
+
+                    # Bounds from points
+                    if pts_scaled:
+                        xs = [pt["x"] for pt in pts_scaled]
+                        ys = [pt["y"] for pt in pts_scaled]
+                        bx, by = int(min(xs)), int(min(ys))
+                        bw = int(max(1, max(xs) - bx))
+                        bh = int(max(1, max(ys) - by))
+                    else:
+                        bx = int(float(boundary.x_position) * current_zoom)
+                        by = int(float(boundary.y_position) * current_zoom)
+                        bw = int(max(1, float(boundary.width) * current_zoom))
+                        bh = int(max(1, float(boundary.height) * current_zoom))
+
+                    poly_data = {
+                        "type": "polygon",
+                        "points": pts_scaled,
+                        "bounds": {"x": bx, "y": by, "width": bw, "height": bh},
+                        "x": bx,
+                        "y": by,
+                        "width": bw,
+                        "height": bh,
+                        "area_real": boundary.calculated_area or 0,
+                        "area_formatted": f"{boundary.calculated_area:.0f} sf" if boundary.calculated_area else "0 sf",
+                        "space_id": boundary.space_id,
+                        "space_name": space_name,
+                        "boundary_id": boundary.id,
+                        "converted_to_space": True,
+                        "saved_zoom": current_zoom,
+                        # real dims from bbox only (used rarely; polygon perimeter is preferred)
+                        "width_real": self.scale_manager.pixels_to_real(bw) if self.scale_manager else bw / 50,
+                        "height_real": self.scale_manager.pixels_to_real(bh) if self.scale_manager else bh / 50,
+                    }
+                    space_polygons.append(poly_data)
+                    continue
+
+                # Otherwise, treat as rectangle boundary (stored in base coords)
+                x = int(float(boundary.x_position) * current_zoom)
+                y = int(float(boundary.y_position) * current_zoom)
+                w = int(float(boundary.width) * current_zoom)
+                h = int(float(boundary.height) * current_zoom)
+
                 rect_data = {
-                    'type': 'rectangle',
-                    'bounds': {
-                        'x': int(boundary.x_position),
-                        'y': int(boundary.y_position), 
-                        'width': int(boundary.width),
-                        'height': int(boundary.height)
-                    },
-                    'x': int(boundary.x_position),
-                    'y': int(boundary.y_position),
-                    'width': int(boundary.width),
-                    'height': int(boundary.height),
-                    'area_real': boundary.calculated_area or 0,
-                    'area_formatted': f"{boundary.calculated_area:.0f} sf" if boundary.calculated_area else "0 sf",
-                    'space_id': boundary.space_id,
-                    'space_name': space_name,
-                    'boundary_id': boundary.id,
-                    'converted_to_space': True,  # Mark as already converted
-                    'width_real': self.scale_manager.pixels_to_real(boundary.width) if self.scale_manager else boundary.width / 50,
-                    'height_real': self.scale_manager.pixels_to_real(boundary.height) if self.scale_manager else boundary.height / 50
+                    "type": "rectangle",
+                    "bounds": {"x": x, "y": y, "width": w, "height": h},
+                    "x": x,
+                    "y": y,
+                    "width": w,
+                    "height": h,
+                    "area_real": boundary.calculated_area or 0,
+                    "area_formatted": f"{boundary.calculated_area:.0f} sf" if boundary.calculated_area else "0 sf",
+                    "space_id": boundary.space_id,
+                    "space_name": space_name,
+                    "boundary_id": boundary.id,
+                    "converted_to_space": True,
+                    "saved_zoom": current_zoom,
+                    "width_real": self.scale_manager.pixels_to_real(w) if self.scale_manager else w / 50,
+                    "height_real": self.scale_manager.pixels_to_real(h) if self.scale_manager else h / 50,
                 }
-                
                 space_rectangles.append(rect_data)
                 
             session.close()
             
-            if space_rectangles:
-                # Add space rectangles to the overlay
-                self.drawing_overlay.rectangles.extend(space_rectangles)
+            if space_rectangles or space_polygons:
+                # Add shapes to the overlay
+                if self.drawing_overlay:
+                    self.drawing_overlay.rectangles.extend(space_rectangles)
+                    self.drawing_overlay.polygons.extend(space_polygons)
+
+                    # Ensure zoom transforms include newly injected shapes
+                    try:
+                        self.drawing_overlay._base_dirty = True
+                    except Exception:
+                        pass
+                    try:
+                        self.drawing_overlay.set_zoom_factor(current_zoom)
+                    except Exception:
+                        pass
                 
                 # Add to elements list
-                for rect_data in space_rectangles:
-                    area_formatted = rect_data.get('area_formatted', '0 sf')
-                    space_name = rect_data.get('space_name', 'Unknown Space')
+                for shape_data in (space_rectangles + space_polygons):
+                    area_formatted = shape_data.get("area_formatted", "0 sf")
+                    space_name = shape_data.get("space_name", "Unknown Space")
                     item = QListWidgetItem(f"🏠 {space_name} - {area_formatted}")
-                    item.setData(Qt.UserRole, rect_data)
+                    item.setData(Qt.UserRole, shape_data)
                     self.elements_list.addItem(item)
                 
                 # Trigger repaint
                 self.drawing_overlay.update()
                 
-                self.status_bar.showMessage(f"Loaded {len(space_rectangles)} space rectangles", 2000)
+                self.status_bar.showMessage(
+                    f"Loaded {len(space_rectangles)} space rectangles and {len(space_polygons)} space polygons", 2000
+                )
                 
         except Exception as e:
             print(f"Error loading space rectangles: {e}")
@@ -1062,43 +1233,88 @@ class DrawingInterface(QMainWindow):
         dialog.exec()
         
     def calibrate_scale(self):
-        """Start scale calibration with measurement tool"""
-        # Check if we have any measurements to calibrate from
-        if self.drawing_overlay and self.drawing_overlay.measurements:
-            # Get the most recent measurement
-            last_measurement = self.drawing_overlay.measurements[-1]
-            pixel_distance = last_measurement.get('length_pixels', 0)
+        """Start scale calibration wizard - guided flow to draw reference line and enter length"""
+        if not self.drawing_overlay:
+            QMessageBox.warning(self, "Error", "Please open a drawing first.")
+            return
+        
+        # Enter calibration mode
+        self._calibration_mode = True
+        
+        # Store the current measurement count so we know when a new one is added
+        self._calibration_start_measurement_count = len(self.drawing_overlay.measurements)
+        
+        # Switch to measure tool
+        self.set_drawing_tool(ToolType.MEASURE)
+        
+        # Update status to guide user
+        self.status_bar.showMessage("📏 CALIBRATION: Draw a line along a known dimension on the drawing", 0)
+        
+        # Show instruction dialog
+        QMessageBox.information(
+            self, 
+            "Scale Calibration - Step 1 of 2",
+            "Draw a reference line on a known dimension:\n\n"
+            "1. Click and drag to draw a line along a dimension\n"
+            "   you know the real-world length of\n"
+            "   (e.g., a wall, door, or dimension line)\n\n"
+            "2. After drawing, you'll enter the actual length.\n\n"
+            "Click OK to begin drawing."
+        )
+    
+    def _complete_calibration_from_measurement(self):
+        """Complete calibration after user draws a reference line"""
+        if not self.drawing_overlay or not self.drawing_overlay.measurements:
+            self._calibration_mode = False
+            QMessageBox.warning(self, "Error", "No measurement found. Please try again.")
+            return
+        
+        # Get the most recent measurement (the one just drawn)
+        last_measurement = self.drawing_overlay.measurements[-1]
+        pixel_distance = last_measurement.get('length_pixels', 0)
+        
+        # Ask user for the real-world distance
+        from PySide6.QtWidgets import QInputDialog
+        real_distance, ok = QInputDialog.getDouble(
+            self, 
+            "Scale Calibration - Step 2 of 2",
+            "Enter the real-world length of the line you just drew:\n\n"
+            "(This should match a known dimension on the drawing)",
+            25.0, 0.1, 10000.0, 2
+        )
+        
+        if ok and real_distance > 0:
+            # Calibrate the scale
+            success = self.scale_manager.calibrate_from_known_measurement(
+                pixel_distance, real_distance, self.scale_manager.scale_string)
             
-            # Ask user for the real-world distance
-            from PySide6.QtWidgets import QInputDialog
-            real_distance, ok = QInputDialog.getDouble(
-                self, "Scale Calibration", 
-                f"The measured distance is {pixel_distance:.0f} pixels.\n"
-                f"Enter the real-world distance in feet:",
-                25.0, 0.1, 1000.0, 1)
-            
-            if ok and real_distance > 0:
-                # Calibrate the scale
-                success = self.scale_manager.calibrate_from_known_measurement(
-                    pixel_distance, real_distance, self.scale_manager.scale_string)
+            if success:
+                QMessageBox.information(
+                    self, 
+                    "Calibration Complete ✓",
+                    f"Scale calibrated successfully!\n\n"
+                    f"Reference: {pixel_distance:.0f} pixels = {real_distance:.1f} feet\n"
+                    f"Scale ratio: {self.scale_manager.scale_ratio:.2f} pixels/foot\n\n"
+                    f"All measurements will now use this scale."
+                )
                 
-                if success:
-                    QMessageBox.information(self, "Calibration Complete", 
-                        f"Scale calibrated successfully!\n"
-                        f"{pixel_distance:.0f} pixels = {real_distance:.1f} feet\n"
-                        f"Scale ratio: {self.scale_manager.scale_ratio:.2f} pixels/foot")
-                    
-                    # Update the display
-                    self.update_elements_display()
-                    self.save_drawing_to_db()
-                else:
-                    QMessageBox.warning(self, "Error", "Failed to calibrate scale.")
+                # Remove the calibration measurement line (it was just for calibration)
+                if self.drawing_overlay.measurements:
+                    self.drawing_overlay.measurements.pop()
+                    self.drawing_overlay.update()
+                
+                # Update the display and save
+                self.update_elements_display()
+                self.save_drawing_to_db()
+                
+                self.status_bar.showMessage("Scale calibrated successfully!", 5000)
+            else:
+                QMessageBox.warning(self, "Error", "Failed to calibrate scale. Please try again.")
         else:
-            # No measurements yet - start measurement tool
-            self.set_drawing_tool(ToolType.MEASURE)
-            QMessageBox.information(self, "Scale Calibration", 
-                                   "First, use the measurement tool to measure a known distance.\n"
-                                   "Then click 'Calibrate' again to set the real-world scale.")
+            self.status_bar.showMessage("Calibration cancelled", 3000)
+        
+        # Exit calibration mode
+        self._calibration_mode = False
         
     def element_selected(self):
         """Handle element list selection change"""
@@ -1575,10 +1791,27 @@ class DrawingInterface(QMainWindow):
             if shape_data and self.drawing:
                 if shape_data.get('type') == 'polygon':
                     import json
-                    x = int(shape_data.get('x', 0) or 0)
-                    y = int(shape_data.get('y', 0) or 0)
-                    w = int(shape_data.get('width', 1) or 1)
-                    h = int(shape_data.get('height', 1) or 1)
+                    # Persist RoomBoundary geometry in "base" PDF pixels (100% zoom)
+                    # so it can be reprojected correctly at any zoom.
+                    try:
+                        z = float(shape_data.get('saved_zoom') or getattr(getattr(self, 'pdf_viewer', None), 'zoom_factor', None) or 1.0)
+                    except Exception:
+                        z = 1.0
+                    if z <= 0:
+                        z = 1.0
+                    x = int((shape_data.get('x', 0) or 0) / z)
+                    y = int((shape_data.get('y', 0) or 0) / z)
+                    w = int(max(1, (shape_data.get('width', 1) or 1) / z))
+                    h = int(max(1, (shape_data.get('height', 1) or 1) / z))
+                    pts = []
+                    for p in (shape_data.get('points', []) or []):
+                        try:
+                            pts.append({
+                                "x": float(p.get("x", 0)) / z,
+                                "y": float(p.get("y", 0)) / z,
+                            })
+                        except Exception:
+                            pts.append({"x": 0, "y": 0})
                     boundary = RoomBoundary(
                         space_id=space.id,
                         drawing_id=self.drawing.id,
@@ -1588,17 +1821,24 @@ class DrawingInterface(QMainWindow):
                         width=w,
                         height=h,
                         calculated_area=shape_data.get('area_real', 0),
-                        polygon_points=json.dumps(shape_data.get('points', []))
+                        polygon_points=json.dumps(pts)
                     )
                 else:
+                    # Rectangle boundary: also persist in base PDF pixels
+                    try:
+                        z = float(shape_data.get('saved_zoom') or getattr(getattr(self, 'pdf_viewer', None), 'zoom_factor', None) or 1.0)
+                    except Exception:
+                        z = 1.0
+                    if z <= 0:
+                        z = 1.0
                     boundary = RoomBoundary(
                         space_id=space.id,
                         drawing_id=self.drawing.id,
                         page_number=self.current_page_number,
-                        x_position=shape_data.get('x', 0),
-                        y_position=shape_data.get('y', 0),
-                        width=shape_data.get('width', 0),
-                        height=shape_data.get('height', 0),
+                        x_position=float(shape_data.get('x', 0) or 0) / z,
+                        y_position=float(shape_data.get('y', 0) or 0) / z,
+                        width=float(shape_data.get('width', 0) or 0) / z,
+                        height=float(shape_data.get('height', 0) or 0) / z,
                         calculated_area=shape_data.get('area_real', 0)
                     )
                 
@@ -1620,8 +1860,13 @@ class DrawingInterface(QMainWindow):
             
             # Build drawing info string
             drawing_info = f"📋 Drawing: {self.drawing.name if self.drawing else 'None'}"
-            if self.drawing and self.drawing.drawing_set:
-                drawing_info += f"\n📁 Drawing Set: {self.drawing.drawing_set.name}"
+            if self.drawing:
+                try:
+                    if getattr(self.drawing, "drawing_set", None):
+                        drawing_info += f"\n📁 Drawing Set: {self.drawing.drawing_set.name}"
+                except Exception:
+                    # Avoid crashing the success dialog due to detached session
+                    pass
             
             QMessageBox.information(
                 self, 
