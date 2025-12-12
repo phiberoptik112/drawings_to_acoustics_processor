@@ -144,7 +144,12 @@ class DrawingElement(Base):
 				'area_formatted': element_data.get('area_formatted'),
 				'width_real': element_data.get('width_real'),
 				'height_real': element_data.get('height_real'),
-				'saved_zoom': saved_zoom
+				'saved_zoom': saved_zoom,
+				# Preserve space-related flags for cleanup on space deletion
+				'converted_to_space': element_data.get('converted_to_space', False),
+				'space_id': element_data.get('space_id'),
+				'space_name': element_data.get('space_name'),
+				'boundary_id': element_data.get('boundary_id'),
 			}
 		elif element_type == 'polygon':
 			element.element_name = f"Polygon {element_data.get('area_formatted', '')}"
@@ -158,7 +163,12 @@ class DrawingElement(Base):
 				},
 				'area_formatted': element_data.get('area_formatted'),
 				'perimeter_real': element_data.get('perimeter_real'),
-				'saved_zoom': saved_zoom
+				'saved_zoom': saved_zoom,
+				# Preserve space-related flags for cleanup on space deletion
+				'converted_to_space': element_data.get('converted_to_space', False),
+				'space_id': element_data.get('space_id'),
+				'space_name': element_data.get('space_name'),
+				'boundary_id': element_data.get('boundary_id'),
 			}
 		elif element_type == 'component':
 			component_type = element_data.get('component_type', 'unknown')

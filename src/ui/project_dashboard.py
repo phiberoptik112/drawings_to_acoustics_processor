@@ -1284,6 +1284,48 @@ class ProjectDashboard(QMainWindow):
                 return
 
             try:
+                from models.drawing_elements import DrawingElement
+                
+                # Delete DrawingElement records that are linked to this space
+                # This removes the original polygon when the space is deleted
+                # Strategy 1: Delete by space_id in properties JSON (most reliable)
+                # Strategy 2: Delete by position matching as fallback
+                room_boundaries = session.query(RoomBoundary).filter(RoomBoundary.space_id == space_id).all()
+                deleted_drawing_elements = 0
+                
+                # Strategy 1: Delete DrawingElements that have this space_id in properties
+                # This catches elements that were saved with space linkage
+                from sqlalchemy import or_
+                space_id_patterns = [
+                    f'"space_id": {space_id}',  # JSON format
+                    f'"space_id":{space_id}',   # JSON without space
+                ]
+                for pattern in space_id_patterns:
+                    matching_by_space_id = session.query(DrawingElement).filter(
+                        DrawingElement.project_id == self.project_id,
+                        DrawingElement.element_type.in_(['rectangle', 'polygon']),
+                        DrawingElement.properties.like(f'%{pattern}%')
+                    ).all()
+                    for elem in matching_by_space_id:
+                        session.delete(elem)
+                        deleted_drawing_elements += 1
+                
+                # Strategy 2: Also delete by position matching for legacy elements without space_id
+                for boundary in room_boundaries:
+                    tolerance = 5.0  # pixels
+                    matching_elements = session.query(DrawingElement).filter(
+                        DrawingElement.drawing_id == boundary.drawing_id,
+                        DrawingElement.page_number == boundary.page_number,
+                        DrawingElement.element_type.in_(['rectangle', 'polygon']),
+                        DrawingElement.x_position >= (boundary.x_position - tolerance),
+                        DrawingElement.x_position <= (boundary.x_position + tolerance),
+                        DrawingElement.y_position >= (boundary.y_position - tolerance),
+                        DrawingElement.y_position <= (boundary.y_position + tolerance),
+                    ).all()
+                    for elem in matching_elements:
+                        session.delete(elem)
+                        deleted_drawing_elements += 1
+                
                 # Detach HVAC paths that reference this space
                 session.query(HVACPath).filter(HVACPath.target_space_id == space_id).update(
                     {HVACPath.target_space_id: None}, synchronize_session=False

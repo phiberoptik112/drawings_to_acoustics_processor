@@ -157,6 +157,8 @@ class DrawingInterface(QMainWindow):
         edit_menu = menubar.addMenu('Edit')
         edit_menu.addAction('Clear Unsaved', self.clear_unsaved_elements)
         edit_menu.addAction('Clear Measurements', self.clear_measurements)
+        edit_menu.addSeparator()
+        edit_menu.addAction('🧹 Clean Up Orphaned Polygons', self.cleanup_orphaned_polygons_manual)
         
         # View menu
         view_menu = menubar.addMenu('View')
@@ -943,6 +945,9 @@ class DrawingInterface(QMainWindow):
         try:
             overlay_data = self.element_manager.load_elements(self.drawing.id, self.current_page_number)
             
+            # Clean up orphaned elements - those marked converted_to_space but Space no longer exists
+            overlay_data = self._cleanup_orphaned_space_elements(overlay_data)
+            
             if any(overlay_data.values()):  # If there are any elements
                 self.drawing_overlay.load_elements_data(overlay_data)
                 
@@ -958,6 +963,119 @@ class DrawingInterface(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Warning", f"Could not load saved elements:\n{str(e)}")
             
+    def _cleanup_orphaned_space_elements(self, overlay_data):
+        """Clean up DrawingElements that reference spaces that no longer exist OR
+        that are duplicates of RoomBoundary positions (legacy elements).
+        
+        This handles:
+        1. Elements with converted_to_space=True and a space_id that doesn't exist
+        2. Legacy elements that match the position of a RoomBoundary (deduplication)
+        """
+        try:
+            session = get_session()
+            from models.space import Space, RoomBoundary
+            from models.drawing_elements import DrawingElement
+            
+            # Get all valid space IDs for this project
+            valid_space_ids = set(
+                s.id for s in session.query(Space.id).filter(Space.project_id == self.project_id).all()
+            )
+            
+            # Get all RoomBoundary positions for this drawing and page (these are authoritative)
+            # Store as (x, y) tuples with tolerance matching
+            room_boundary_positions = []
+            if self.drawing:
+                boundaries = session.query(RoomBoundary).filter(
+                    RoomBoundary.drawing_id == self.drawing.id,
+                    RoomBoundary.page_number == self.current_page_number
+                ).all()
+                for b in boundaries:
+                    room_boundary_positions.append({
+                        'x': float(b.x_position or 0),
+                        'y': float(b.y_position or 0),
+                        'space_id': b.space_id,
+                        'boundary_id': b.id
+                    })
+            
+            orphaned_element_ids = []
+            cleaned_rectangles = []
+            cleaned_polygons = []
+            tolerance = 10.0  # pixels for position matching
+            
+            def position_matches_boundary(elem_x, elem_y):
+                """Check if element position matches any RoomBoundary position"""
+                for rb in room_boundary_positions:
+                    if abs(elem_x - rb['x']) <= tolerance and abs(elem_y - rb['y']) <= tolerance:
+                        return True
+                return False
+            
+            # Check rectangles for orphaned space references OR position duplicates
+            for rect in overlay_data.get('rectangles', []):
+                space_id = rect.get('space_id')
+                is_converted = rect.get('converted_to_space', False)
+                elem_x = float(rect.get('x', 0) or 0)
+                elem_y = float(rect.get('y', 0) or 0)
+                
+                should_remove = False
+                
+                # Case 1: Has space_id but space no longer exists
+                if is_converted and space_id is not None and space_id not in valid_space_ids:
+                    should_remove = True
+                
+                # Case 2: Legacy element at same position as a RoomBoundary (duplicate)
+                # Only remove if it doesn't have a valid space_id (to avoid removing the authoritative one)
+                elif space_id is None and position_matches_boundary(elem_x, elem_y):
+                    should_remove = True
+                
+                if should_remove:
+                    elem_id = rect.get('id')
+                    if elem_id:
+                        orphaned_element_ids.append(elem_id)
+                else:
+                    cleaned_rectangles.append(rect)
+            
+            # Check polygons for orphaned space references OR position duplicates
+            for poly in overlay_data.get('polygons', []):
+                space_id = poly.get('space_id')
+                is_converted = poly.get('converted_to_space', False)
+                elem_x = float(poly.get('x', 0) or 0)
+                elem_y = float(poly.get('y', 0) or 0)
+                
+                should_remove = False
+                
+                # Case 1: Has space_id but space no longer exists
+                if is_converted and space_id is not None and space_id not in valid_space_ids:
+                    should_remove = True
+                
+                # Case 2: Legacy element at same position as a RoomBoundary (duplicate)
+                elif space_id is None and position_matches_boundary(elem_x, elem_y):
+                    should_remove = True
+                
+                if should_remove:
+                    elem_id = poly.get('id')
+                    if elem_id:
+                        orphaned_element_ids.append(elem_id)
+                else:
+                    cleaned_polygons.append(poly)
+            
+            # Delete orphaned/duplicate elements from database
+            if orphaned_element_ids:
+                deleted_count = session.query(DrawingElement).filter(
+                    DrawingElement.id.in_(orphaned_element_ids)
+                ).delete(synchronize_session=False)
+                session.commit()
+            
+            session.close()
+            
+            # Return cleaned overlay data
+            overlay_data['rectangles'] = cleaned_rectangles
+            overlay_data['polygons'] = cleaned_polygons
+            return overlay_data
+            
+        except Exception as e:
+            print(f"Error cleaning up orphaned space elements: {e}")
+            return overlay_data  # Return original data on error
+
     def load_space_rectangles(self):
         """Load space rectangles from RoomBoundary records in the database for current page"""
         if not self.drawing:
@@ -1206,6 +1324,101 @@ class DrawingInterface(QMainWindow):
         if self.drawing_overlay:
             self.drawing_overlay.clear_measurements()
             self.update_elements_display()
+    
+    def cleanup_orphaned_polygons_manual(self):
+        """Manually clean up orphaned polygon/rectangle DrawingElements on the current page.
+        
+        This removes all polygon and rectangle DrawingElements that don't have a 
+        corresponding RoomBoundary at the same position. Use this to clean up 
+        legacy orphaned elements from spaces that were deleted before the fix.
+        """
+        if not self.drawing:
+            QMessageBox.warning(self, "Cleanup", "No drawing loaded.")
+            return
+        
+        try:
+            session = get_session()
+            from models.space import RoomBoundary
+            from models.drawing_elements import DrawingElement
+            
+            # Get all RoomBoundary positions for this drawing and page
+            boundaries = session.query(RoomBoundary).filter(
+                RoomBoundary.drawing_id == self.drawing.id,
+                RoomBoundary.page_number == self.current_page_number
+            ).all()
+            
+            boundary_positions = []
+            for b in boundaries:
+                boundary_positions.append({
+                    'x': float(b.x_position or 0),
+                    'y': float(b.y_position or 0),
+                })
+            
+            # Get all polygon/rectangle DrawingElements on this page
+            elements = session.query(DrawingElement).filter(
+                DrawingElement.drawing_id == self.drawing.id,
+                DrawingElement.page_number == self.current_page_number,
+                DrawingElement.element_type.in_(['rectangle', 'polygon'])
+            ).all()
+            
+            # Find orphaned elements (those not matching any RoomBoundary position)
+            tolerance = 10.0
+            orphaned_ids = []
+            for elem in elements:
+                elem_x = float(elem.x_position or 0)
+                elem_y = float(elem.y_position or 0)
+                
+                has_matching_boundary = False
+                for bp in boundary_positions:
+                    if abs(elem_x - bp['x']) <= tolerance and abs(elem_y - bp['y']) <= tolerance:
+                        has_matching_boundary = True
+                        break
+                
+                if not has_matching_boundary:
+                    orphaned_ids.append(elem.id)
+            
+            if not orphaned_ids:
+                QMessageBox.information(self, "Cleanup Complete", 
+                    f"No orphaned polygons found on page {self.current_page_number}.\n\n"
+                    f"Found {len(boundary_positions)} spaces with matching RoomBoundaries.")
+                session.close()
+                return
+            
+            # Confirm with user
+            reply = QMessageBox.question(
+                self,
+                "Confirm Cleanup",
+                f"Found {len(orphaned_ids)} orphaned polygon(s) on page {self.current_page_number}.\n\n"
+                f"These are polygons that don't have a corresponding saved space (RoomBoundary).\n"
+                f"They may be from spaces that were deleted before the fix was applied.\n\n"
+                f"Delete these orphaned elements?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply != QMessageBox.Yes:
+                session.close()
+                return
+            
+            # Delete orphaned elements
+            deleted_count = session.query(DrawingElement).filter(
+                DrawingElement.id.in_(orphaned_ids)
+            ).delete(synchronize_session=False)
+            session.commit()
+            session.close()
+            
+            # Refresh the drawing to show the cleanup
+            if self.drawing_overlay:
+                self.drawing_overlay.clear_all_elements()
+            self.load_saved_elements()
+            self.load_space_rectangles()
+            
+            QMessageBox.information(self, "Cleanup Complete", 
+                f"Deleted {deleted_count} orphaned polygon(s) from page {self.current_page_number}.\n\n"
+                f"The drawing has been refreshed.")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Cleanup Error", f"Failed to clean up orphaned elements:\n{str(e)}")
             
     def fit_width(self):
         """Fit PDF to width"""
