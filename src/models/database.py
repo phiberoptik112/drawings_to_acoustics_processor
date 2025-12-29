@@ -127,7 +127,7 @@ def initialize_database(db_path=None):
 	)
 	
 	# Import all models to ensure they're registered
-	from . import project, drawing, space, hvac, rt60_models, mechanical, drawing_sets
+	from . import project, drawing, space, hvac, rt60_models, mechanical, drawing_sets, partition
 	
 	# Create all tables
 	Base.metadata.create_all(bind=engine)
@@ -175,6 +175,13 @@ def initialize_database(db_path=None):
 		ensure_drawing_element_hvac_schema()
 	except Exception as e:
 		print(f"Warning: Drawing element HVAC schema migration failed: {e}")
+	
+	# New: partition isolation schema
+	try:
+		from .migrate_partition_schema import ensure_partition_schema
+		ensure_partition_schema()
+	except Exception as e:
+		print(f"Warning: Partition schema migration failed: {e}")
 	
 	return db_path
 

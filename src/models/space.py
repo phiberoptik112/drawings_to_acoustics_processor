@@ -54,6 +54,11 @@ class Space(Base):
     wall_area = Column(Float)       # square feet (calculated)
     total_surface_area = Column(Float)       # square feet (calculated)
 
+    # Space identification for LEED compliance
+    room_id = Column(String(50))  # e.g., "105", "A-201"
+    location_in_project = Column(String(100))  # e.g., "Level 1", "Ground Floor"
+    space_type = Column(String(100))  # e.g., "Classroom", "Office", "Corridor"
+    
     # Acoustic properties
     target_rt60 = Column(Float, default=0.8)     # Target RT60 in seconds
     calculated_rt60 = Column(Float)              # Calculated RT60
@@ -84,6 +89,11 @@ class Space(Base):
     
     # New surface materials relationship
     surface_materials = relationship("SpaceSurfaceMaterial", back_populates="space", cascade="all, delete-orphan", order_by="SpaceSurfaceMaterial.order_index")
+    
+    # Partition isolation relationships
+    partitions = relationship("SpacePartition", back_populates="space",
+                             foreign_keys="SpacePartition.space_id",
+                             cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<Space(id={self.id}, name='{self.name}', project_id={self.project_id})>"

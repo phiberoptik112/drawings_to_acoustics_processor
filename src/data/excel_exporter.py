@@ -19,6 +19,7 @@ except ImportError:
 
 from models import get_session, Project, Space, Drawing
 from models.hvac import HVACPath, HVACComponent, HVACSegment, HVACReceiverResult
+from models.partition import SpacePartition, PartitionType
 from calculations import HVACPathCalculator, NCRatingAnalyzer
 
 
@@ -840,14 +841,14 @@ class ExcelExporter:
         self.auto_size_columns(ws)
     
     def create_leed_sound_transmission_sheet(self, wb, project, session):
-        """Create LEED Sound Transmission sheet"""
+        """Create LEED Sound Transmission sheet with partition data"""
         ws = wb.create_sheet("LEED - Sound Transmission")
         
-        # Headers matching LEED template
+        # Headers matching LEED template (updated for partition isolation)
         headers = [
-            "Room ID", "Room Name", "Type", "Assembly Location (Wall, Floor, Ceiling)",
-            "Assembly ID / Description", "Adjacent Space(s)", "STC Rating",
-            "Source of Assembly Data (e.g. A6.1 Wall Types)", "Notes"
+            "Room ID", "Assembly ID", "Assembly Description", "Assembly Location",
+            "Space Type", "Adjacent Space Type", "Min Required STC", 
+            "STC Rating", "Sound Transmission Compliance", "Notes"
         ]
         
         row = 1
@@ -855,30 +856,85 @@ class ExcelExporter:
             ws.cell(row=row, column=col, value=header)
             self.apply_header_style(ws, f'{get_column_letter(col)}{row}')
         
-        # Get spaces data
+        # Get spaces with their partitions
         spaces = session.query(Space).filter(Space.project_id == project.id).all()
         
         for space in spaces:
-            row += 1
-            # Get room type name from the room_type key
-            room_type_name = ""
-            if space.room_type and space.room_type in ROOM_TYPE_DEFAULTS:
-                room_type_name = ROOM_TYPE_DEFAULTS[space.room_type]['name']
+            # Get partitions for this space
+            partitions = session.query(SpacePartition).filter(
+                SpacePartition.space_id == space.id
+            ).all()
             
-            data = [
-                space.id or "",
-                space.name or "",
-                room_type_name or "",
-                "",  # Assembly Location
-                "",  # Assembly ID / Description
-                "",  # Adjacent Space(s)
-                "",  # STC Rating
-                "",  # Source of Assembly Data
-                space.description or ""
-            ]
-            
-            for col, value in enumerate(data, 1):
-                ws.cell(row=row, column=col, value=value)
+            if partitions:
+                # Add a row for each partition
+                for partition in partitions:
+                    row += 1
+                    
+                    # Get assembly details from partition type
+                    assembly_id = ""
+                    assembly_desc = ""
+                    source_doc = ""
+                    
+                    if partition.partition_type:
+                        assembly_id = partition.partition_type.assembly_id or ""
+                        assembly_desc = partition.partition_type.description or ""
+                        source_doc = partition.partition_type.source_document or ""
+                    
+                    # Determine compliance
+                    stc_rating = partition.effective_stc_rating
+                    min_stc = partition.minimum_stc_required
+                    
+                    if stc_rating is not None and min_stc is not None:
+                        compliance = "Yes" if stc_rating >= min_stc else "No"
+                    else:
+                        compliance = "N/A"
+                    
+                    data = [
+                        space.room_id or space.id or "",
+                        assembly_id,
+                        assembly_desc,
+                        partition.assembly_location or "",
+                        space.space_type or "",
+                        partition.adjacent_space_type or "",
+                        min_stc or "",
+                        stc_rating or "",
+                        compliance,
+                        partition.notes or ""
+                    ]
+                    
+                    for col, value in enumerate(data, 1):
+                        cell = ws.cell(row=row, column=col, value=value)
+                        
+                        # Color compliance column
+                        if col == 9:  # Compliance column
+                            if value == "Yes":
+                                cell.fill = PatternFill(start_color="C8E6C9", end_color="C8E6C9", fill_type="solid")
+                            elif value == "No":
+                                cell.fill = PatternFill(start_color="FFCDD2", end_color="FFCDD2", fill_type="solid")
+            else:
+                # Space has no partitions - add a placeholder row
+                row += 1
+                
+                # Get room type name from the room_type key
+                room_type_name = space.space_type or ""
+                if not room_type_name and space.room_type and space.room_type in ROOM_TYPE_DEFAULTS:
+                    room_type_name = ROOM_TYPE_DEFAULTS[space.room_type]['name']
+                
+                data = [
+                    space.room_id or space.id or "",
+                    "",  # Assembly ID
+                    "",  # Assembly Description
+                    "",  # Assembly Location
+                    room_type_name,
+                    "",  # Adjacent Space Type
+                    "",  # Min Required STC
+                    "",  # STC Rating
+                    "",  # Compliance
+                    "No partitions assigned"
+                ]
+                
+                for col, value in enumerate(data, 1):
+                    ws.cell(row=row, column=col, value=value)
         
         self.auto_size_columns(ws)
     

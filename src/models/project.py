@@ -35,6 +35,10 @@ class Project(Base):
     drawing_sets = relationship("DrawingSet", back_populates="project", cascade="all, delete-orphan")
     drawing_comparisons = relationship("DrawingComparison", back_populates="project", cascade="all, delete-orphan")
     
+    # Partition types library and reference documents
+    partition_types = relationship("PartitionType", back_populates="project", cascade="all, delete-orphan")
+    partition_schedule_documents = relationship("PartitionScheduleDocument", back_populates="project", cascade="all, delete-orphan")
+    
     def __repr__(self):
         return f"<Project(id={self.id}, name='{self.name}')>"
     

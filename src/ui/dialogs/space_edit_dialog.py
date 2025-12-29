@@ -13,7 +13,12 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from models import get_session
 from models.database import get_hvac_session
 from models.space import Space, SurfaceType
+from models.partition import PartitionType, SpacePartition
 from data.materials import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS, get_materials_by_category
+from data.partition_stc_standards import (
+    SPACE_TYPES, BUILDING_LOCATIONS, ASSEMBLY_LOCATIONS,
+    get_minimum_stc, validate_stc_compliance
+)
 from calculations.rt60_calculator import RT60Calculator
 from ui.rt60_plot_widget import RT60PlotContainer
 from ui.dialogs.material_search_dialog import MaterialSearchDialog
@@ -491,6 +496,10 @@ class SpaceEditDialog(QDialog):
         materials_tab = self.create_materials_tab()
         tabs.addTab(materials_tab, "Surface Materials")
         
+        # Partition Isolation tab
+        partition_tab = self.create_partition_tab()
+        tabs.addTab(partition_tab, "Partition Isolation")
+        
         # Calculations tab
         calc_tab = self.create_calculations_tab()
         tabs.addTab(calc_tab, "Calculations")
@@ -585,6 +594,30 @@ class SpaceEditDialog(QDialog):
         
         basic_group.setLayout(basic_layout)
         layout.addWidget(basic_group)
+        
+        # Space identification for LEED compliance
+        id_group = QGroupBox("Space Identification (LEED)")
+        id_layout = QFormLayout()
+        
+        self.room_id_edit = QLineEdit()
+        self.room_id_edit.setPlaceholderText("e.g., 105, A-201")
+        self.room_id_edit.setMaximumWidth(150)
+        id_layout.addRow("Room ID:", self.room_id_edit)
+        
+        self.location_combo = QComboBox()
+        self.location_combo.setEditable(True)
+        self.location_combo.addItems([""] + BUILDING_LOCATIONS)
+        self.location_combo.setMaximumWidth(200)
+        id_layout.addRow("Location:", self.location_combo)
+        
+        self.space_type_combo = QComboBox()
+        self.space_type_combo.setEditable(True)
+        self.space_type_combo.addItems([""] + SPACE_TYPES)
+        self.space_type_combo.setMaximumWidth(200)
+        id_layout.addRow("Space Type:", self.space_type_combo)
+        
+        id_group.setLayout(id_layout)
+        layout.addWidget(id_group)
         
         # Geometry information
         geometry_group = QGroupBox("Geometry")
@@ -828,6 +861,380 @@ class SpaceEditDialog(QDialog):
         layout.addStretch()
         widget.setLayout(layout)
         return widget
+    
+    def create_partition_tab(self):
+        """Create the partition isolation tab for STC compliance"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Instructions
+        instructions = QLabel(
+            "Assign partition assemblies to this space for LEED Sound Transmission compliance. "
+            "Each partition defines the wall, floor, or ceiling assembly separating this space from adjacent spaces."
+        )
+        instructions.setWordWrap(True)
+        instructions.setStyleSheet("color: #7f8c8d; font-style: italic; margin-bottom: 10px;")
+        layout.addWidget(instructions)
+        
+        # Open Partition Library button
+        library_layout = QHBoxLayout()
+        library_layout.addStretch()
+        
+        self.open_library_btn = QPushButton("📋 Open Partition Types Library")
+        self.open_library_btn.setToolTip("Manage the project's partition types library")
+        self.open_library_btn.clicked.connect(self.open_partition_library)
+        self.open_library_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        library_layout.addWidget(self.open_library_btn)
+        
+        layout.addLayout(library_layout)
+        
+        # Partitions table
+        partitions_group = QGroupBox("Partition Assignments")
+        partitions_layout = QVBoxLayout()
+        
+        self.partitions_table = QTableWidget()
+        self.partitions_table.setColumnCount(7)
+        self.partitions_table.setHorizontalHeaderLabels([
+            "Location", "Assembly ID", "Description", "Adjacent Type", 
+            "Min STC", "STC Rating", "Compliant"
+        ])
+        self.partitions_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.partitions_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.partitions_table.setMinimumHeight(200)
+        
+        # Configure columns
+        header = self.partitions_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
+        
+        self.partitions_table.setColumnWidth(0, 80)   # Location
+        self.partitions_table.setColumnWidth(1, 90)   # Assembly ID
+        self.partitions_table.setColumnWidth(3, 120)  # Adjacent Type
+        self.partitions_table.setColumnWidth(4, 70)   # Min STC
+        self.partitions_table.setColumnWidth(5, 80)   # STC Rating
+        self.partitions_table.setColumnWidth(6, 80)   # Compliant
+        
+        partitions_layout.addWidget(self.partitions_table)
+        
+        # Table buttons
+        table_btn_layout = QHBoxLayout()
+        
+        self.add_partition_btn = QPushButton("➕ Add Partition")
+        self.add_partition_btn.clicked.connect(self.add_partition)
+        table_btn_layout.addWidget(self.add_partition_btn)
+        
+        self.remove_partition_btn = QPushButton("🗑️ Remove Selected")
+        self.remove_partition_btn.clicked.connect(self.remove_partition)
+        self.remove_partition_btn.setEnabled(False)
+        table_btn_layout.addWidget(self.remove_partition_btn)
+        
+        table_btn_layout.addStretch()
+        
+        self.auto_suggest_btn = QPushButton("✨ Auto-Suggest Min STC")
+        self.auto_suggest_btn.setToolTip("Automatically suggest minimum STC based on space types")
+        self.auto_suggest_btn.clicked.connect(self.auto_suggest_stc)
+        table_btn_layout.addWidget(self.auto_suggest_btn)
+        
+        partitions_layout.addLayout(table_btn_layout)
+        
+        partitions_group.setLayout(partitions_layout)
+        layout.addWidget(partitions_group, 1)
+        
+        # Compliance summary
+        summary_group = QGroupBox("Compliance Summary")
+        summary_layout = QVBoxLayout()
+        
+        self.compliance_summary_label = QLabel("No partitions assigned")
+        self.compliance_summary_label.setStyleSheet("""
+            QLabel {
+                padding: 10px;
+                background-color: #f8f9fa;
+                border-radius: 4px;
+                font-size: 13px;
+            }
+        """)
+        summary_layout.addWidget(self.compliance_summary_label)
+        
+        summary_group.setLayout(summary_layout)
+        layout.addWidget(summary_group)
+        
+        # Connect selection change
+        self.partitions_table.itemSelectionChanged.connect(self.on_partition_selection_changed)
+        
+        widget.setLayout(layout)
+        return widget
+    
+    def load_partition_types(self):
+        """Load partition types for dropdowns"""
+        self.partition_types_cache = {}
+        if not self.space or not self.space.project_id:
+            return
+        
+        try:
+            session = get_session()
+            partition_types = session.query(PartitionType).filter(
+                PartitionType.project_id == self.space.project_id
+            ).order_by(PartitionType.assembly_id).all()
+            
+            for pt in partition_types:
+                self.partition_types_cache[pt.id] = {
+                    'id': pt.id,
+                    'assembly_id': pt.assembly_id,
+                    'description': pt.description,
+                    'stc_rating': pt.stc_rating
+                }
+            session.close()
+        except Exception as e:
+            print(f"Error loading partition types: {e}")
+    
+    def load_partitions(self):
+        """Load partition assignments for this space"""
+        if not self.space:
+            return
+        
+        self.load_partition_types()
+        
+        try:
+            session = get_session()
+            # Reload space with partitions
+            space = session.query(Space).filter(Space.id == self.space.id).first()
+            if not space:
+                session.close()
+                return
+            
+            partitions = session.query(SpacePartition).filter(
+                SpacePartition.space_id == self.space.id
+            ).all()
+            
+            self.partitions_table.setRowCount(len(partitions))
+            
+            for row, partition in enumerate(partitions):
+                self.populate_partition_row(row, partition)
+            
+            session.close()
+            self.update_compliance_summary()
+            
+        except Exception as e:
+            print(f"Error loading partitions: {e}")
+    
+    def populate_partition_row(self, row, partition):
+        """Populate a row in the partitions table"""
+        # Store partition ID
+        id_item = QTableWidgetItem(partition.assembly_location or "")
+        id_item.setData(Qt.ItemDataRole.UserRole, partition.id)
+        self.partitions_table.setItem(row, 0, id_item)
+        
+        # Assembly ID
+        assembly_id = partition.assembly_id or ""
+        self.partitions_table.setItem(row, 1, QTableWidgetItem(assembly_id))
+        
+        # Description
+        description = partition.assembly_description or ""
+        self.partitions_table.setItem(row, 2, QTableWidgetItem(description))
+        
+        # Adjacent Type
+        self.partitions_table.setItem(row, 3, QTableWidgetItem(partition.adjacent_space_type or ""))
+        
+        # Min STC
+        min_stc = str(partition.minimum_stc_required) if partition.minimum_stc_required else ""
+        self.partitions_table.setItem(row, 4, QTableWidgetItem(min_stc))
+        
+        # STC Rating
+        stc = partition.effective_stc_rating
+        stc_str = str(stc) if stc else ""
+        self.partitions_table.setItem(row, 5, QTableWidgetItem(stc_str))
+        
+        # Compliance status
+        compliant = partition.is_compliant
+        if compliant is None:
+            status = "N/A"
+            color = "#888888"
+        elif compliant:
+            status = "✅ Yes"
+            color = "#4CAF50"
+        else:
+            status = "❌ No"
+            color = "#F44336"
+        
+        status_item = QTableWidgetItem(status)
+        status_item.setForeground(Qt.GlobalColor.white if compliant is not None else Qt.GlobalColor.gray)
+        self.partitions_table.setItem(row, 6, status_item)
+    
+    def add_partition(self):
+        """Add a new partition assignment"""
+        from ui.dialogs.partition_edit_dialog import PartitionEditDialog
+        
+        if not self.space:
+            return
+        
+        dialog = PartitionEditDialog(
+            space_id=self.space.id,
+            project_id=self.space.project_id,
+            space_type=self.space_type_combo.currentText(),
+            parent=self
+        )
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.load_partitions()
+    
+    def remove_partition(self):
+        """Remove selected partition"""
+        current_row = self.partitions_table.currentRow()
+        if current_row < 0:
+            return
+        
+        item = self.partitions_table.item(current_row, 0)
+        if not item:
+            return
+        
+        partition_id = item.data(Qt.ItemDataRole.UserRole)
+        
+        reply = QMessageBox.question(
+            self, "Confirm Delete",
+            "Remove this partition assignment?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                with get_hvac_session() as session:
+                    partition = session.query(SpacePartition).filter(
+                        SpacePartition.id == partition_id
+                    ).first()
+                    if partition:
+                        session.delete(partition)
+                
+                self.load_partitions()
+                
+            except Exception as e:
+                print(f"Error removing partition: {e}")
+                QMessageBox.critical(self, "Error", f"Failed to remove partition:\n{e}")
+    
+    def on_partition_selection_changed(self):
+        """Handle partition selection change"""
+        has_selection = bool(self.partitions_table.selectedItems())
+        self.remove_partition_btn.setEnabled(has_selection)
+    
+    def auto_suggest_stc(self):
+        """Auto-suggest minimum STC values based on space types"""
+        space_type = self.space_type_combo.currentText()
+        if not space_type:
+            QMessageBox.warning(
+                self, "Space Type Required",
+                "Please set the Space Type in the Basic Properties tab first."
+            )
+            return
+        
+        # Update min STC for each partition based on adjacent type
+        updated = 0
+        for row in range(self.partitions_table.rowCount()):
+            adjacent_item = self.partitions_table.item(row, 3)
+            min_stc_item = self.partitions_table.item(row, 4)
+            
+            if adjacent_item and min_stc_item:
+                adjacent_type = adjacent_item.text()
+                if adjacent_type:
+                    suggested_stc = get_minimum_stc(space_type, adjacent_type)
+                    min_stc_item.setText(str(suggested_stc))
+                    updated += 1
+        
+        if updated > 0:
+            QMessageBox.information(
+                self, "STC Suggestions Applied",
+                f"Updated minimum STC values for {updated} partition(s) based on '{space_type}' space type."
+            )
+            self.update_compliance_summary()
+        else:
+            QMessageBox.information(
+                self, "No Updates",
+                "No partitions with adjacent space types found to update."
+            )
+    
+    def update_compliance_summary(self):
+        """Update the compliance summary display"""
+        total = self.partitions_table.rowCount()
+        
+        if total == 0:
+            self.compliance_summary_label.setText("No partitions assigned")
+            self.compliance_summary_label.setStyleSheet("""
+                QLabel {
+                    padding: 10px;
+                    background-color: #f8f9fa;
+                    border-radius: 4px;
+                    font-size: 13px;
+                    color: #666;
+                }
+            """)
+            return
+        
+        compliant = 0
+        non_compliant = 0
+        unknown = 0
+        
+        for row in range(total):
+            status_item = self.partitions_table.item(row, 6)
+            if status_item:
+                text = status_item.text()
+                if "Yes" in text:
+                    compliant += 1
+                elif "No" in text:
+                    non_compliant += 1
+                else:
+                    unknown += 1
+        
+        if non_compliant > 0:
+            summary = f"⚠️ {non_compliant}/{total} partitions do not meet minimum STC requirements"
+            bg_color = "#FFEBEE"
+            text_color = "#C62828"
+        elif compliant == total:
+            summary = f"✅ All {total} partitions meet minimum STC requirements"
+            bg_color = "#E8F5E9"
+            text_color = "#2E7D32"
+        else:
+            summary = f"✓ {compliant}/{total} compliant, {unknown} need data"
+            bg_color = "#FFF8E1"
+            text_color = "#F57F17"
+        
+        self.compliance_summary_label.setText(summary)
+        self.compliance_summary_label.setStyleSheet(f"""
+            QLabel {{
+                padding: 10px;
+                background-color: {bg_color};
+                border-radius: 4px;
+                font-size: 13px;
+                color: {text_color};
+                font-weight: bold;
+            }}
+        """)
+    
+    def open_partition_library(self):
+        """Open the partition types library dialog"""
+        if not self.space or not self.space.project_id:
+            QMessageBox.warning(self, "Error", "No project associated with this space.")
+            return
+        
+        from ui.dialogs.partition_types_dialog import PartitionTypesDialog
+        
+        dialog = PartitionTypesDialog(self.space.project_id, self)
+        dialog.partition_types_changed.connect(self.load_partitions)
+        dialog.exec()
         
     def get_average_absorption_coefficient(self, material_keys):
         """Calculate average absorption coefficient for a list of materials"""
@@ -963,12 +1370,36 @@ class SpaceEditDialog(QDialog):
         self.wall_materials.set_materials(wall_materials)
         self.floor_materials.set_materials(floor_materials)
         
+        # Load space identification fields
+        if hasattr(self, 'room_id_edit'):
+            self.room_id_edit.setText(self.space.room_id or "")
+        
+        if hasattr(self, 'location_combo'):
+            location = self.space.location_in_project or ""
+            index = self.location_combo.findText(location)
+            if index >= 0:
+                self.location_combo.setCurrentIndex(index)
+            else:
+                self.location_combo.setCurrentText(location)
+        
+        if hasattr(self, 'space_type_combo'):
+            space_type = self.space.space_type or ""
+            index = self.space_type_combo.findText(space_type)
+            if index >= 0:
+                self.space_type_combo.setCurrentIndex(index)
+            else:
+                self.space_type_combo.setCurrentText(space_type)
+        
         # Calculate initial volume
         self.calculate_volume()
         self.update_calculations_preview()
         
         # Initialize RT60 plot
         self.schedule_plot_update()
+        
+        # Load partition assignments
+        if hasattr(self, 'partitions_table'):
+            self.load_partitions()
         
     def room_type_index_changed(self, index):
         """Handle room type combo box index change"""
@@ -1237,6 +1668,14 @@ class SpaceEditDialog(QDialog):
         # Save room type
         room_type_key = self.room_type_combo.currentData()
         space.room_type = room_type_key if room_type_key else None
+        
+        # Save space identification fields
+        if hasattr(self, 'room_id_edit'):
+            space.room_id = self.room_id_edit.text().strip() or None
+        if hasattr(self, 'location_combo'):
+            space.location_in_project = self.location_combo.currentText().strip() or None
+        if hasattr(self, 'space_type_combo'):
+            space.space_type = self.space_type_combo.currentText().strip() or None
         
         # Store multiple materials using new system
         space.set_surface_materials(SurfaceType.CEILING, ceiling_materials, session)
