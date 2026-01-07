@@ -49,6 +49,26 @@ class MechanicalUnit(Base):
             f"<MechanicalUnit(id={self.id}, name='{self.name}', type='{self.unit_type}', "
             f"cfm={self.airflow_cfm})>"
         )
+    
+    def to_dict(self):
+        """Convert mechanical unit to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'project_id': self.project_id,
+            'name': self.name,
+            'unit_type': self.unit_type,
+            'manufacturer': self.manufacturer,
+            'model_number': self.model_number,
+            'airflow_cfm': self.airflow_cfm,
+            'external_static_inwg': self.external_static_inwg,
+            'power_kw': self.power_kw,
+            'notes': self.notes,
+            'created_date': self.created_date.isoformat() if self.created_date else None,
+            'inlet_levels_json': self.inlet_levels_json,
+            'radiated_levels_json': self.radiated_levels_json,
+            'outlet_levels_json': self.outlet_levels_json,
+            'extra_json': self.extra_json,
+        }
 
 
 class NoiseSource(Base):
@@ -73,5 +93,17 @@ class NoiseSource(Base):
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<NoiseSource(id={self.id}, name='{self.name}', dBA={self.base_noise_dba})>"
+    
+    def to_dict(self):
+        """Convert noise source to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'project_id': self.project_id,
+            'name': self.name,
+            'source_type': self.source_type,
+            'base_noise_dba': self.base_noise_dba,
+            'notes': self.notes,
+            'created_date': self.created_date.isoformat() if self.created_date else None,
+        }
 
 

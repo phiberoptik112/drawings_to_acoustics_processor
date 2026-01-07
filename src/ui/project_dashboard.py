@@ -120,6 +120,7 @@ class ProjectDashboard(QMainWindow):
         file_menu = menubar.addMenu('File')
         file_menu.addAction('Save Project', self.save_project)
         file_menu.addSeparator()
+        file_menu.addAction('Export Project...', self.export_project)
         file_menu.addAction('Export Results', self.export_results)
         file_menu.addSeparator()
         file_menu.addAction('Close Project', self.close)
@@ -247,15 +248,15 @@ class ProjectDashboard(QMainWindow):
         # HVAC Paths tab
         hvac_tab = self.create_hvac_tab()
         tabs.addTab(hvac_tab, "HVAC Paths")
-        
-        # Results tab
-        self.results_widget = ResultsWidget(self.project_id)
-        self.results_widget.export_requested.connect(self.export_to_excel)
-        tabs.addTab(self.results_widget, "📊 Results & Analysis")
 
         # Locations tab
         locations_tab = self.create_locations_tab()
         tabs.addTab(locations_tab, "📍 Locations")
+
+        # Results tab
+        self.results_widget = ResultsWidget(self.project_id)
+        self.results_widget.export_requested.connect(self.export_to_excel)
+        tabs.addTab(self.results_widget, "📊 Results & Analysis")
 
         left_layout.addWidget(tabs)
         left_widget.setLayout(left_layout)
@@ -1284,6 +1285,48 @@ class ProjectDashboard(QMainWindow):
                 return
 
             try:
+                from models.drawing_elements import DrawingElement
+                
+                # Delete DrawingElement records that are linked to this space
+                # This removes the original polygon when the space is deleted
+                # Strategy 1: Delete by space_id in properties JSON (most reliable)
+                # Strategy 2: Delete by position matching as fallback
+                room_boundaries = session.query(RoomBoundary).filter(RoomBoundary.space_id == space_id).all()
+                deleted_drawing_elements = 0
+                
+                # Strategy 1: Delete DrawingElements that have this space_id in properties
+                # This catches elements that were saved with space linkage
+                from sqlalchemy import or_
+                space_id_patterns = [
+                    f'"space_id": {space_id}',  # JSON format
+                    f'"space_id":{space_id}',   # JSON without space
+                ]
+                for pattern in space_id_patterns:
+                    matching_by_space_id = session.query(DrawingElement).filter(
+                        DrawingElement.project_id == self.project_id,
+                        DrawingElement.element_type.in_(['rectangle', 'polygon']),
+                        DrawingElement.properties.like(f'%{pattern}%')
+                    ).all()
+                    for elem in matching_by_space_id:
+                        session.delete(elem)
+                        deleted_drawing_elements += 1
+                
+                # Strategy 2: Also delete by position matching for legacy elements without space_id
+                for boundary in room_boundaries:
+                    tolerance = 5.0  # pixels
+                    matching_elements = session.query(DrawingElement).filter(
+                        DrawingElement.drawing_id == boundary.drawing_id,
+                        DrawingElement.page_number == boundary.page_number,
+                        DrawingElement.element_type.in_(['rectangle', 'polygon']),
+                        DrawingElement.x_position >= (boundary.x_position - tolerance),
+                        DrawingElement.x_position <= (boundary.x_position + tolerance),
+                        DrawingElement.y_position >= (boundary.y_position - tolerance),
+                        DrawingElement.y_position <= (boundary.y_position + tolerance),
+                    ).all()
+                    for elem in matching_elements:
+                        session.delete(elem)
+                        deleted_drawing_elements += 1
+                
                 # Detach HVAC paths that reference this space
                 session.query(HVACPath).filter(HVACPath.target_space_id == space_id).update(
                     {HVACPath.target_space_id: None}, synchronize_session=False
@@ -1369,6 +1412,42 @@ class ProjectDashboard(QMainWindow):
     def export_results(self):
         """Export analysis results"""
         QMessageBox.information(self, "Export Results", "Results export will be implemented.")
+    
+    def export_project(self):
+        """Export the project to a portable .acp file"""
+        try:
+            from data.project_serializer import ProjectExporter
+            
+            # Get suggested filename from project name
+            safe_name = self.project.name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+            suggested_filename = f"{safe_name}.acp"
+            
+            # Open save dialog
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export Project",
+                os.path.join(os.path.expanduser("~/Documents"), suggested_filename),
+                "Acoustic Project Files (*.acp);;All Files (*)"
+            )
+            
+            if not file_path:
+                return  # User cancelled
+            
+            # Ensure .acp extension
+            if not file_path.lower().endswith('.acp'):
+                file_path += '.acp'
+            
+            # Export the project
+            exporter = ProjectExporter()
+            success, message = exporter.export_to_file(self.project_id, file_path)
+            
+            if success:
+                QMessageBox.information(self, "Export Successful", message)
+            else:
+                QMessageBox.warning(self, "Export Failed", message)
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export project:\n{str(e)}")
         
     def project_settings(self):
         """Open project settings"""

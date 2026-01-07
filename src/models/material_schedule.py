@@ -45,4 +45,17 @@ class MaterialSchedule(Base):
         if self.file_path and os.path.exists(self.file_path):
             return True
         return False
-
+    
+    def to_dict(self):
+        """Convert material schedule to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'drawing_set_id': self.drawing_set_id,
+            'name': self.name,
+            'description': self.description,
+            'file_path': self.file_path,
+            'managed_file_path': self.managed_file_path,
+            'schedule_type': self.schedule_type,
+            'created_date': self.created_date.isoformat() if self.created_date else None,
+            'modified_date': self.modified_date.isoformat() if self.modified_date else None,
+        }

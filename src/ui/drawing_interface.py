@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QComboBox, QLineEdit, QGroupBox, 
                              QListWidget, QListWidgetItem, QMessageBox, QFileDialog, QSplitter,
                              QFrame, QSpinBox, QDialog, QCheckBox)
-from PySide6.QtCore import Qt, QSize, Signal
+from PySide6.QtCore import Qt, QSize, Signal, QTimer
 from PySide6.QtGui import QIcon, QFont, QAction
 
 from models import get_session, Drawing, Project, Space, RoomBoundary, DrawingElementManager
@@ -19,6 +19,7 @@ from ui.dialogs.room_properties import RoomPropertiesDialog
 from ui.dialogs.hvac_path_dialog import HVACPathDialog
 from ui.dialogs.hvac_component_dialog import HVACComponentDialog
 from ui.dialogs.hvac_segment_dialog import HVACSegmentDialog
+from ui.dialogs.space_edit_dialog import SpaceEditDialog
 from data.components import STANDARD_COMPONENTS
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 from calculations import RT60Calculator, NoiseCalculator, HVACPathCalculator
@@ -47,6 +48,9 @@ class DrawingInterface(QMainWindow):
         self.hvac_path_calculator = HVACPathCalculator()
         self.element_manager = DrawingElementManager(get_session)
         
+        # Calibration mode flag
+        self._calibration_mode = False
+        
         # Selected element for context operations
         self.selected_rectangle = None
         self.selected_hvac_element = None
@@ -56,6 +60,15 @@ class DrawingInterface(QMainWindow):
         
         # Path visibility tracking
         self.visible_paths = set()  # Set of path IDs that are currently visible
+        
+        # Space visibility tracking
+        self.visible_spaces = set()  # Set of space IDs that are currently visible
+        self.space_edit_dialogs = []  # Track open space edit dialogs
+        
+        # Path editing mode tracking
+        # None = creating new path, int = editing existing path with that ID
+        self.editing_path_id = None
+        self.editing_path_name = None  # Cache the name for display
         
         # Initialize base scale ratio for zoom adjustments
         self._base_scale_ratio = 1.0
@@ -67,8 +80,9 @@ class DrawingInterface(QMainWindow):
         if self.drawing and self.drawing.file_path:
             self.load_pdf()
             
-        # Load saved paths
+        # Load saved paths and spaces
         self.load_saved_paths()
+        self.load_saved_spaces()
             
     def load_drawing_data(self):
         """Load drawing and project data from database"""
@@ -143,6 +157,8 @@ class DrawingInterface(QMainWindow):
         edit_menu = menubar.addMenu('Edit')
         edit_menu.addAction('Clear Unsaved', self.clear_unsaved_elements)
         edit_menu.addAction('Clear Measurements', self.clear_measurements)
+        edit_menu.addSeparator()
+        edit_menu.addAction('🧹 Clean Up Orphaned Polygons', self.cleanup_orphaned_polygons_manual)
         
         # View menu
         view_menu = menubar.addMenu('View')
@@ -155,8 +171,8 @@ class DrawingInterface(QMainWindow):
         
         # Tools menu
         tools_menu = menubar.addMenu('Tools')
-        tools_menu.addAction('Set Scale', self.set_scale)
-        tools_menu.addAction('Calibrate Scale', self.calibrate_scale)
+        tools_menu.addAction('📏 Calibrate Scale...', self.calibrate_scale)
+        tools_menu.addAction('Set Scale from Ratio...', self.set_scale)
         tools_menu.addSeparator()
         tools_menu.addAction('Create HVAC Path', self.create_hvac_path_from_drawing)
         tools_menu.addAction('Analyze HVAC Path', self.analyze_hvac_path)
@@ -261,32 +277,62 @@ class DrawingInterface(QMainWindow):
         scale_layout.addWidget(self.scale_label)
         
         scale_btn_layout = QHBoxLayout()
-        self.set_scale_btn = QPushButton("Set Scale")
-        self.set_scale_btn.clicked.connect(self.set_scale)
         
-        self.calibrate_btn = QPushButton("Calibrate")
+        # Primary action - calibrate by drawing a reference line
+        self.calibrate_btn = QPushButton("📏 Calibrate Scale")
         self.calibrate_btn.clicked.connect(self.calibrate_scale)
+        self.calibrate_btn.setToolTip("Draw a reference line and enter its real-world length")
         
-        scale_btn_layout.addWidget(self.set_scale_btn)
+        # Secondary action - set from known scale string
+        self.set_scale_btn = QPushButton("Set Scale...")
+        self.set_scale_btn.clicked.connect(self.set_scale)
+        self.set_scale_btn.setToolTip("Set scale from a known scale ratio (e.g., 1/4\"=1'0\")")
+
         scale_btn_layout.addWidget(self.calibrate_btn)
+        scale_btn_layout.addWidget(self.set_scale_btn)
         scale_layout.addLayout(scale_btn_layout)
         
         scale_group.setLayout(scale_layout)
         layout.addWidget(scale_group)
         
-        # Elements summary
-        summary_group = QGroupBox("Elements Summary")
-        summary_layout = QVBoxLayout()
+        # Saved Spaces section
+        spaces_group = QGroupBox("Saved Spaces")
+        spaces_layout = QVBoxLayout()
         
-        self.summary_label = QLabel("No elements drawn")
-        summary_layout.addWidget(self.summary_label)
+        # Spaces summary
+        self.spaces_summary_label = QLabel("No spaces saved")
+        spaces_layout.addWidget(self.spaces_summary_label)
         
-        summary_group.setLayout(summary_layout)
-        layout.addWidget(summary_group)
+        # Spaces list
+        self.spaces_list = QListWidget()
+        self.spaces_list.setMaximumHeight(120)  # Limit height to save space
+        self.spaces_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.spaces_list.customContextMenuRequested.connect(self.show_space_context_menu)
+        self.spaces_list.itemDoubleClicked.connect(self.open_space_editor_from_item)
+        spaces_layout.addWidget(self.spaces_list)
         
-        # Element list
-        elements_group = QGroupBox("Element List")
+        # Space actions
+        space_actions_layout = QHBoxLayout()
+        
+        self.refresh_spaces_btn = QPushButton("🔄 Refresh")
+        self.refresh_spaces_btn.clicked.connect(self.load_saved_spaces)
+        self.refresh_spaces_btn.setToolTip("Refresh saved spaces list")
+        
+        space_actions_layout.addWidget(self.refresh_spaces_btn)
+        space_actions_layout.addStretch()
+        
+        spaces_layout.addLayout(space_actions_layout)
+        spaces_group.setLayout(spaces_layout)
+        layout.addWidget(spaces_group)
+        
+        # Path Element list
+        elements_group = QGroupBox("Path Element List")
         elements_layout = QVBoxLayout()
+        
+        # Mode indicator label
+        self.path_mode_label = QLabel("Mode: Creating New Path")
+        self.path_mode_label.setStyleSheet("font-weight: bold; color: #2196F3; padding: 2px;")
+        elements_layout.addWidget(self.path_mode_label)
         
         self.elements_list = QListWidget()
         self.elements_list.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -316,6 +362,7 @@ class DrawingInterface(QMainWindow):
         
         elements_layout.addLayout(element_actions_layout)
         elements_group.setLayout(elements_layout)
+        self.elements_group = elements_group  # Store reference for dynamic title updates
         layout.addWidget(elements_group)
         
         # Saved Paths section
@@ -358,24 +405,16 @@ class DrawingInterface(QMainWindow):
         path_actions_layout.addWidget(self.show_all_paths_btn)
         path_actions_layout.addWidget(self.hide_all_paths_btn)
         
-        # Advanced path actions
+        # New Path button - clears selection and enters new path creation mode
         path_actions_layout2 = QHBoxLayout()
         
-        self.register_all_btn = QPushButton("🔗 Register All to Path 1")
-        self.register_all_btn.clicked.connect(lambda: self.register_all_elements_to_path(1))
-        self.register_all_btn.setToolTip("Register all drawing elements to Path 1 for complete hide/show control")
+        self.new_path_btn = QPushButton("➕ New Path")
+        self.new_path_btn.clicked.connect(self.enter_new_path_mode)
+        self.new_path_btn.setToolTip("Start creating a new HVAC path (clears current selection)")
+        self.new_path_btn.setStyleSheet("font-weight: bold;")
         
-        self.force_show_btn = QPushButton("👁️ Force Show Path 1")
-        self.force_show_btn.clicked.connect(lambda: self.force_show_path(1))
-        self.force_show_btn.setToolTip("Force show Path 1 (debug button)")
-        
-        # Debug checkbox test
-        self.debug_checkbox = QCheckBox("Debug Test Toggle")
-        self.debug_checkbox.stateChanged.connect(lambda state: print(f"DEBUG: Debug checkbox state: {state} (checked={state == Qt.Checked})"))
-        
-        path_actions_layout2.addWidget(self.register_all_btn)
-        path_actions_layout2.addWidget(self.force_show_btn)
-        path_actions_layout2.addWidget(self.debug_checkbox)
+        path_actions_layout2.addWidget(self.new_path_btn)
+        path_actions_layout2.addStretch()
         
         paths_layout.addLayout(path_actions_layout)
         paths_layout.addLayout(path_actions_layout2)
@@ -429,25 +468,89 @@ class DrawingInterface(QMainWindow):
             self.drawing_overlay.measurement_taken.connect(self.measurement_taken)
             # Open edit dialogs on double-clicks in overlay
             self.drawing_overlay.element_double_clicked.connect(self.overlay_element_double_clicked)
+            # Handle space clicks for selection/editing
+            self.drawing_overlay.space_clicked.connect(self.on_space_clicked)
             
         self.scale_manager.scale_changed.connect(self.scale_updated)
         
         # Element list selection
         self.elements_list.itemSelectionChanged.connect(self.element_selected)
-        # Saved paths list double-click to edit path
+        # Saved paths list - single click to select path for editing, double-click to open editor
+        self.paths_list.itemClicked.connect(self.on_path_selected)
         self.paths_list.itemDoubleClicked.connect(self.open_path_editor_from_item)
         
     def load_pdf(self):
-        """Load the PDF file"""
-        if self.drawing and self.drawing.file_path:
-            if os.path.exists(self.drawing.file_path):
-                success = self.pdf_viewer.load_pdf(self.drawing.file_path)
+        """Load the PDF file with path resolution for portability"""
+        if not self.drawing or not self.drawing.file_path:
+            return
+        
+        # Use the path resolution method for portability
+        abs_path = self.drawing.get_absolute_file_path()
+        
+        if abs_path and os.path.exists(abs_path):
+            success = self.pdf_viewer.load_pdf(abs_path)
+            if success:
+                self.update_overlay_size()
+                self.load_scale_from_drawing()
+                self.load_saved_elements()
+        else:
+            # Try to locate the file in common locations
+            found_path, found = self.drawing.try_locate_file()
+            
+            if found and found_path:
+                # Ask user if they want to update the path
+                from PySide6.QtWidgets import QMessageBox
+                reply = QMessageBox.question(
+                    self, 
+                    "PDF Located",
+                    f"PDF file was found at a different location:\n{found_path}\n\n"
+                    f"Update the stored path to this location?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                
+                if reply == QMessageBox.Yes:
+                    # Update the path in the database
+                    self.drawing.update_file_path(found_path, make_relative=True)
+                    self.save_drawing_to_db()
+                
+                # Load the PDF
+                success = self.pdf_viewer.load_pdf(found_path)
                 if success:
                     self.update_overlay_size()
                     self.load_scale_from_drawing()
                     self.load_saved_elements()
             else:
-                QMessageBox.warning(self, "Warning", f"PDF file not found:\n{self.drawing.file_path}")
+                # Offer to browse for the file
+                from PySide6.QtWidgets import QMessageBox, QFileDialog
+                reply = QMessageBox.question(
+                    self,
+                    "PDF Not Found",
+                    f"PDF file not found:\n{self.drawing.file_path}\n\n"
+                    f"Would you like to browse for the file?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                
+                if reply == QMessageBox.Yes:
+                    file_path, _ = QFileDialog.getOpenFileName(
+                        self,
+                        "Locate PDF File",
+                        os.path.expanduser("~/Documents"),
+                        "PDF Files (*.pdf)"
+                    )
+                    
+                    if file_path and os.path.exists(file_path):
+                        # Update the path in the database
+                        self.drawing.update_file_path(file_path, make_relative=True)
+                        self.save_drawing_to_db()
+                        
+                        # Load the PDF
+                        success = self.pdf_viewer.load_pdf(file_path)
+                        if success:
+                            self.update_overlay_size()
+                            self.load_scale_from_drawing()
+                            self.load_saved_elements()
                 
     def update_overlay_size(self):
         """Update overlay size to match PDF display"""
@@ -478,11 +581,42 @@ class DrawingInterface(QMainWindow):
         """Load scale information from drawing record"""
         if self.drawing and self.drawing.scale_string:
             self.scale_manager.set_scale_from_string(self.drawing.scale_string)
-            # Store the base scale ratio (at 100% zoom)
-            self._base_scale_ratio = self.scale_manager.scale_ratio
+            # Prefer persisted calibrated ratio if present; it represents 100% zoom.
+            # ScaleManager.set_scale_from_string() may produce a placeholder value
+            # (e.g. architectural scales defaulting to 10.0 until calibrated).
+            persisted_base = None
+            try:
+                persisted_base = float(getattr(self.drawing, "scale_ratio", None))
+            except Exception:
+                persisted_base = None
+
             # Apply current zoom factor
             current_zoom = self.pdf_viewer.zoom_factor if self.pdf_viewer else 1.0
-            self.scale_manager.scale_ratio = self._base_scale_ratio * current_zoom
+            try:
+                current_zoom = float(current_zoom or 1.0)
+            except Exception:
+                current_zoom = 1.0
+            if current_zoom <= 0:
+                current_zoom = 1.0
+
+            if persisted_base is not None and persisted_base > 0:
+                self._base_scale_ratio = persisted_base
+                self.scale_manager.scale_ratio = self._base_scale_ratio * current_zoom
+                # If ScaleManager was in "needs calibration" mode, this overrides it.
+                try:
+                    self.scale_manager._needs_calibration = False
+                except Exception:
+                    pass
+                # Force downstream consumers (overlay, UI) to pick up the calibrated ratio.
+                # Important: do NOT re-parse the scale string; just broadcast the current values.
+                try:
+                    self.scale_manager.scale_changed.emit(self.scale_manager.scale_ratio, self.scale_manager.scale_string)
+                except Exception:
+                    pass
+            else:
+                # Store base scale ratio derived from string
+                self._base_scale_ratio = self.scale_manager.scale_ratio
+                self.scale_manager.scale_ratio = self._base_scale_ratio * current_zoom
             
     def set_drawing_tool(self, tool_type):
         """Set the active drawing tool"""
@@ -492,6 +626,23 @@ class DrawingInterface(QMainWindow):
             
             # Show/hide component selection
             self.component_group.setVisible(tool_type == ToolType.COMPONENT)
+            
+            # Update Path Element List context based on tool type
+            if tool_type in (ToolType.RECTANGLE, ToolType.POLYGON):
+                # Space creation mode
+                self.elements_group.setTitle("New Space")
+                self.path_mode_label.setText("Mode: Creating Space")
+                self.path_mode_label.setStyleSheet("font-weight: bold; color: #228B22; padding: 2px;")
+                self.create_room_btn.setVisible(True)
+                self.create_path_btn.setVisible(False)
+                self.elements_list.clear()  # Clear for new space
+            else:
+                # Path creation mode
+                self.elements_group.setTitle("Path Element List")
+                self.path_mode_label.setText("Mode: Creating New Path")
+                self.path_mode_label.setStyleSheet("font-weight: bold; color: #2196F3; padding: 2px;")
+                self.create_room_btn.setVisible(False)
+                self.create_path_btn.setVisible(True)
             
     def component_index_changed(self, index):
         """Handle component combo box index change"""
@@ -575,14 +726,55 @@ class DrawingInterface(QMainWindow):
         self.update_elements_display()
         self.update_status_bar()
         
-        # Add to elements list with data storage
+        element_type = element_data.get('type', 'unknown')
+        
+        # Auto-open Space Properties dialog for rectangle/polygon
+        if element_type == 'rectangle':
+            self._add_element_to_list(element_data)
+            # Use QTimer to allow the UI to update before opening dialog
+            QTimer.singleShot(100, lambda: self.create_room_from_rectangle(element_data))
+            return
+        elif element_type == 'polygon':
+            self._add_element_to_list(element_data)
+            # Use QTimer to allow the UI to update before opening dialog
+            QTimer.singleShot(100, lambda: self.create_room_from_polygon(element_data))
+            return
+        
+        # Check if we're in edit mode for an existing path and this is a path-related element
+        if self.editing_path_id is not None and element_type in ['component', 'segment']:
+            # Prompt user to add to existing path or start new path
+            reply = QMessageBox.question(
+                self,
+                "Add to Existing Path?",
+                f"You are currently editing '{self.editing_path_name}'.\n\n"
+                f"Would you like to add this {element_type} to '{self.editing_path_name}'?\n\n"
+                f"Click 'Yes' to add to the existing path.\n"
+                f"Click 'No' to start creating a new path.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            
+            if reply == QMessageBox.Yes:
+                # Add element to the existing path
+                self._add_element_to_existing_path(element_data)
+                return
+            else:
+                # Enter new path mode with this element
+                self._start_new_path_with_element(element_data)
+                return
+        
+        # Standard behavior for new path mode - add to elements list
+        self._add_element_to_list(element_data)
+    
+    def _add_element_to_list(self, element_data):
+        """Add an element to the Path Element List"""
         element_type = element_data.get('type', 'unknown')
         item = None
         
         if element_type == 'rectangle':
             area_text = element_data.get('area_formatted', '')
             item = QListWidgetItem(f"🔲 Rectangle - {area_text}")
-            item.setData(Qt.UserRole, element_data)  # Store element data
+            item.setData(Qt.UserRole, element_data)
         elif element_type == 'polygon':
             area_text = element_data.get('area_formatted', '')
             item = QListWidgetItem(f"🔷 Polygon - {area_text}")
@@ -602,9 +794,56 @@ class DrawingInterface(QMainWindow):
             
         if item:
             self.elements_list.addItem(item)
+    
+    def _add_element_to_existing_path(self, element_data):
+        """Add a new element to the currently selected existing path"""
+        try:
+            element_type = element_data.get('type', 'unknown')
+            
+            # For now, add to the list and show message
+            # Full database integration would require creating HVACComponent/Segment records
+            self._add_element_to_list(element_data)
+            
+            self.status_bar.showMessage(
+                f"Added {element_type} to '{self.editing_path_name}'. "
+                f"Open the path editor to save changes.", 5000
+            )
+            
+            print(f"DEBUG: Added {element_type} to existing path {self.editing_path_id}")
+            
+        except Exception as e:
+            print(f"ERROR: _add_element_to_existing_path failed: {e}")
+            QMessageBox.warning(self, "Error", f"Failed to add element to path:\n{str(e)}")
+    
+    def _start_new_path_with_element(self, element_data):
+        """Start a new path with the given element"""
+        # Reset to new path mode
+        self.editing_path_id = None
+        self.editing_path_name = None
+        
+        # Update mode indicator
+        self.path_mode_label.setText("Mode: Creating New Path")
+        self.path_mode_label.setStyleSheet("font-weight: bold; color: #2196F3; padding: 2px;")
+        
+        # Clear path selection
+        self.paths_list.clearSelection()
+        
+        # Clear the element list and add just this element
+        self.elements_list.clear()
+        self._add_element_to_list(element_data)
+        
+        self.status_bar.showMessage("Started new path - continue adding components and segments", 3000)
+        
+        print(f"DEBUG: Started new path with {element_data.get('type', 'unknown')}")
             
     def measurement_taken(self, length_real, length_formatted):
         """Handle measurement taken"""
+        # If in calibration mode, complete calibration instead of showing measurement popup
+        if getattr(self, '_calibration_mode', False):
+            self._complete_calibration_from_measurement()
+            return
+        
+        # Normal measurement - show result
         QMessageBox.information(self, "Measurement", f"Distance measured: {length_formatted}")
         
     def scale_updated(self, scale_ratio, scale_string):
@@ -618,25 +857,10 @@ class DrawingInterface(QMainWindow):
         self.update_elements_display()
         
     def update_elements_display(self):
-        """Update the elements summary display"""
-        if self.drawing_overlay:
-            summary = self.drawing_overlay.get_elements_summary()
-            
-            text = f"Rectangles: {summary['rectangles']}\n"
-            text += f"Polygons: {summary.get('polygons', 0)}\n"
-            text += f"Components: {summary['components']}\n" 
-            text += f"Segments: {summary['segments']}\n"
-            text += f"Measurements: {summary['measurements']}\n\n"
-            
-            if summary['total_area'] > 0:
-                area_formatted = self.scale_manager.format_area(summary['total_area'])
-                text += f"Total Area: {area_formatted}\n"
-                
-            if summary['total_duct_length'] > 0:
-                length_formatted = self.scale_manager.format_distance(summary['total_duct_length'])
-                text += f"Total Duct: {length_formatted}"
-                
-            self.summary_label.setText(text)
+        """Update the elements summary display (updates status bar only)"""
+        # Note: Elements Summary section was replaced with Saved Spaces list
+        # Element counts are now shown in the status bar instead
+        pass
             
     def update_status_bar(self):
         """Update the status bar"""
@@ -656,8 +880,8 @@ class DrawingInterface(QMainWindow):
         if file_path:
             success = self.pdf_viewer.load_pdf(file_path)
             if success:
-                # Update drawing record
-                self.drawing.file_path = file_path
+                # Update drawing record with relative path for portability
+                self.drawing.update_file_path(file_path, make_relative=True)
                 self.save_drawing_to_db()
                 self.update_overlay_size()
                 
@@ -677,7 +901,20 @@ class DrawingInterface(QMainWindow):
             # Update drawing record
             if self.scale_manager.scale_string:
                 self.drawing.scale_string = self.scale_manager.scale_string
-                self.drawing.scale_ratio = self.scale_manager.scale_ratio
+                # Persist base (100% zoom) scale ratio so reload is consistent.
+                base = getattr(self, "_base_scale_ratio", None)
+                if base is None:
+                    try:
+                        z = float(getattr(getattr(self, "pdf_viewer", None), "zoom_factor", None) or 1.0)
+                    except Exception:
+                        z = 1.0
+                    if z <= 0:
+                        z = 1.0
+                    base = float(getattr(self.scale_manager, "scale_ratio", 1.0)) / z
+                try:
+                    self.drawing.scale_ratio = float(base)
+                except Exception:
+                    self.drawing.scale_ratio = self.scale_manager.scale_ratio
                 
             if self.pdf_viewer and self.pdf_viewer.page_width:
                 self.drawing.width_pixels = self.pdf_viewer.page_width
@@ -708,6 +945,9 @@ class DrawingInterface(QMainWindow):
         try:
             overlay_data = self.element_manager.load_elements(self.drawing.id, self.current_page_number)
             
+            # Clean up orphaned elements - those marked converted_to_space but Space no longer exists
+            overlay_data = self._cleanup_orphaned_space_elements(overlay_data)
+            
             if any(overlay_data.values()):  # If there are any elements
                 self.drawing_overlay.load_elements_data(overlay_data)
                 
@@ -723,6 +963,119 @@ class DrawingInterface(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Warning", f"Could not load saved elements:\n{str(e)}")
             
+    def _cleanup_orphaned_space_elements(self, overlay_data):
+        """Clean up DrawingElements that reference spaces that no longer exist OR
+        that are duplicates of RoomBoundary positions (legacy elements).
+        
+        This handles:
+        1. Elements with converted_to_space=True and a space_id that doesn't exist
+        2. Legacy elements that match the position of a RoomBoundary (deduplication)
+        """
+        try:
+            session = get_session()
+            from models.space import Space, RoomBoundary
+            from models.drawing_elements import DrawingElement
+            
+            # Get all valid space IDs for this project
+            valid_space_ids = set(
+                s.id for s in session.query(Space.id).filter(Space.project_id == self.project_id).all()
+            )
+            
+            # Get all RoomBoundary positions for this drawing and page (these are authoritative)
+            # Store as (x, y) tuples with tolerance matching
+            room_boundary_positions = []
+            if self.drawing:
+                boundaries = session.query(RoomBoundary).filter(
+                    RoomBoundary.drawing_id == self.drawing.id,
+                    RoomBoundary.page_number == self.current_page_number
+                ).all()
+                for b in boundaries:
+                    room_boundary_positions.append({
+                        'x': float(b.x_position or 0),
+                        'y': float(b.y_position or 0),
+                        'space_id': b.space_id,
+                        'boundary_id': b.id
+                    })
+            
+            orphaned_element_ids = []
+            cleaned_rectangles = []
+            cleaned_polygons = []
+            tolerance = 10.0  # pixels for position matching
+            
+            def position_matches_boundary(elem_x, elem_y):
+                """Check if element position matches any RoomBoundary position"""
+                for rb in room_boundary_positions:
+                    if abs(elem_x - rb['x']) <= tolerance and abs(elem_y - rb['y']) <= tolerance:
+                        return True
+                return False
+            
+            # Check rectangles for orphaned space references OR position duplicates
+            for rect in overlay_data.get('rectangles', []):
+                space_id = rect.get('space_id')
+                is_converted = rect.get('converted_to_space', False)
+                elem_x = float(rect.get('x', 0) or 0)
+                elem_y = float(rect.get('y', 0) or 0)
+                
+                should_remove = False
+                
+                # Case 1: Has space_id but space no longer exists
+                if is_converted and space_id is not None and space_id not in valid_space_ids:
+                    should_remove = True
+                
+                # Case 2: Legacy element at same position as a RoomBoundary (duplicate)
+                # Only remove if it doesn't have a valid space_id (to avoid removing the authoritative one)
+                elif space_id is None and position_matches_boundary(elem_x, elem_y):
+                    should_remove = True
+                
+                if should_remove:
+                    elem_id = rect.get('id')
+                    if elem_id:
+                        orphaned_element_ids.append(elem_id)
+                else:
+                    cleaned_rectangles.append(rect)
+            
+            # Check polygons for orphaned space references OR position duplicates
+            for poly in overlay_data.get('polygons', []):
+                space_id = poly.get('space_id')
+                is_converted = poly.get('converted_to_space', False)
+                elem_x = float(poly.get('x', 0) or 0)
+                elem_y = float(poly.get('y', 0) or 0)
+                
+                should_remove = False
+                
+                # Case 1: Has space_id but space no longer exists
+                if is_converted and space_id is not None and space_id not in valid_space_ids:
+                    should_remove = True
+                
+                # Case 2: Legacy element at same position as a RoomBoundary (duplicate)
+                elif space_id is None and position_matches_boundary(elem_x, elem_y):
+                    should_remove = True
+                
+                if should_remove:
+                    elem_id = poly.get('id')
+                    if elem_id:
+                        orphaned_element_ids.append(elem_id)
+                else:
+                    cleaned_polygons.append(poly)
+            
+            # Delete orphaned/duplicate elements from database
+            if orphaned_element_ids:
+                deleted_count = session.query(DrawingElement).filter(
+                    DrawingElement.id.in_(orphaned_element_ids)
+                ).delete(synchronize_session=False)
+                session.commit()
+            
+            session.close()
+            
+            # Return cleaned overlay data
+            overlay_data['rectangles'] = cleaned_rectangles
+            overlay_data['polygons'] = cleaned_polygons
+            return overlay_data
+            
+        except Exception as e:
+            print(f"Error cleaning up orphaned space elements: {e}")
+            return overlay_data  # Return original data on error
+
     def load_space_rectangles(self):
         """Load space rectangles from RoomBoundary records in the database for current page"""
         if not self.drawing:
@@ -738,54 +1091,167 @@ class DrawingInterface(QMainWindow):
                 RoomBoundary.page_number == self.current_page_number
             ).all()
             
+            # Current on-screen zoom factor; we store RoomBoundary coords in "base" (100%) PDF pixels.
+            # When rendering, we scale base coords by current zoom.
+            try:
+                current_zoom = float(getattr(getattr(self, "pdf_viewer", None), "zoom_factor", None) or 1.0)
+            except Exception:
+                current_zoom = float(getattr(getattr(self, "drawing_overlay", None), "_current_zoom_factor", None) or 1.0)
+            if current_zoom <= 0:
+                current_zoom = 1.0
+
+            boundary_ids = {getattr(b, "id", None) for b in boundaries}
+            boundary_ids.discard(None)
+
+            # Remove any previously injected boundaries for this page to prevent duplicates
+            if self.drawing_overlay:
+                try:
+                    self.drawing_overlay.rectangles = [
+                        r for r in (self.drawing_overlay.rectangles or [])
+                        if r.get("boundary_id") not in boundary_ids
+                    ]
+                except Exception:
+                    pass
+                try:
+                    self.drawing_overlay.polygons = [
+                        p for p in (self.drawing_overlay.polygons or [])
+                        if p.get("boundary_id") not in boundary_ids
+                    ]
+                except Exception:
+                    pass
+
+            # Also remove from the elements list (UI) if present
+            try:
+                for i in range(self.elements_list.count() - 1, -1, -1):
+                    item = self.elements_list.item(i)
+                    data = item.data(Qt.UserRole)
+                    if isinstance(data, dict) and data.get("boundary_id") in boundary_ids:
+                        self.elements_list.takeItem(i)
+            except Exception:
+                pass
+
             space_rectangles = []
+            space_polygons = []
             for boundary in boundaries:
                 # Get the associated space name
                 space_name = boundary.space.name if boundary.space else f"Space {boundary.space_id}"
-                
-                # Create rectangle data compatible with drawing overlay
+
+                # If polygon_points exist, restore as polygon (not as a bounding rectangle).
+                polygon_points_raw = getattr(boundary, "polygon_points", None)
+                if polygon_points_raw:
+                    import json
+                    pts_base = []
+                    try:
+                        loaded = json.loads(polygon_points_raw)
+                        if isinstance(loaded, list):
+                            pts_base = loaded
+                    except Exception:
+                        pts_base = []
+
+                    pts_scaled = []
+                    for p in (pts_base or []):
+                        try:
+                            px = float(p.get("x", 0))
+                            py = float(p.get("y", 0))
+                        except Exception:
+                            px, py = 0.0, 0.0
+                        pts_scaled.append({
+                            "x": int(px * current_zoom),
+                            "y": int(py * current_zoom),
+                        })
+
+                    # Bounds from points
+                    if pts_scaled:
+                        xs = [pt["x"] for pt in pts_scaled]
+                        ys = [pt["y"] for pt in pts_scaled]
+                        bx, by = int(min(xs)), int(min(ys))
+                        bw = int(max(1, max(xs) - bx))
+                        bh = int(max(1, max(ys) - by))
+                    else:
+                        bx = int(float(boundary.x_position) * current_zoom)
+                        by = int(float(boundary.y_position) * current_zoom)
+                        bw = int(max(1, float(boundary.width) * current_zoom))
+                        bh = int(max(1, float(boundary.height) * current_zoom))
+
+                    poly_data = {
+                        "type": "polygon",
+                        "points": pts_scaled,
+                        "bounds": {"x": bx, "y": by, "width": bw, "height": bh},
+                        "x": bx,
+                        "y": by,
+                        "width": bw,
+                        "height": bh,
+                        "area_real": boundary.calculated_area or 0,
+                        "area_formatted": f"{boundary.calculated_area:.0f} sf" if boundary.calculated_area else "0 sf",
+                        "space_id": boundary.space_id,
+                        "space_name": space_name,
+                        "boundary_id": boundary.id,
+                        "converted_to_space": True,
+                        "saved_zoom": current_zoom,
+                        # real dims from bbox only (used rarely; polygon perimeter is preferred)
+                        "width_real": self.scale_manager.pixels_to_real(bw) if self.scale_manager else bw / 50,
+                        "height_real": self.scale_manager.pixels_to_real(bh) if self.scale_manager else bh / 50,
+                    }
+                    space_polygons.append(poly_data)
+                    continue
+
+                # Otherwise, treat as rectangle boundary (stored in base coords)
+                x = int(float(boundary.x_position) * current_zoom)
+                y = int(float(boundary.y_position) * current_zoom)
+                w = int(float(boundary.width) * current_zoom)
+                h = int(float(boundary.height) * current_zoom)
+
                 rect_data = {
-                    'type': 'rectangle',
-                    'bounds': {
-                        'x': int(boundary.x_position),
-                        'y': int(boundary.y_position), 
-                        'width': int(boundary.width),
-                        'height': int(boundary.height)
-                    },
-                    'x': int(boundary.x_position),
-                    'y': int(boundary.y_position),
-                    'width': int(boundary.width),
-                    'height': int(boundary.height),
-                    'area_real': boundary.calculated_area or 0,
-                    'area_formatted': f"{boundary.calculated_area:.0f} sf" if boundary.calculated_area else "0 sf",
-                    'space_id': boundary.space_id,
-                    'space_name': space_name,
-                    'boundary_id': boundary.id,
-                    'converted_to_space': True,  # Mark as already converted
-                    'width_real': self.scale_manager.pixels_to_real(boundary.width) if self.scale_manager else boundary.width / 50,
-                    'height_real': self.scale_manager.pixels_to_real(boundary.height) if self.scale_manager else boundary.height / 50
+                    "type": "rectangle",
+                    "bounds": {"x": x, "y": y, "width": w, "height": h},
+                    "x": x,
+                    "y": y,
+                    "width": w,
+                    "height": h,
+                    "area_real": boundary.calculated_area or 0,
+                    "area_formatted": f"{boundary.calculated_area:.0f} sf" if boundary.calculated_area else "0 sf",
+                    "space_id": boundary.space_id,
+                    "space_name": space_name,
+                    "boundary_id": boundary.id,
+                    "converted_to_space": True,
+                    "saved_zoom": current_zoom,
+                    "width_real": self.scale_manager.pixels_to_real(w) if self.scale_manager else w / 50,
+                    "height_real": self.scale_manager.pixels_to_real(h) if self.scale_manager else h / 50,
                 }
-                
                 space_rectangles.append(rect_data)
                 
             session.close()
             
-            if space_rectangles:
-                # Add space rectangles to the overlay
-                self.drawing_overlay.rectangles.extend(space_rectangles)
+            if space_rectangles or space_polygons:
+                # Add shapes to the overlay
+                if self.drawing_overlay:
+                    self.drawing_overlay.rectangles.extend(space_rectangles)
+                    self.drawing_overlay.polygons.extend(space_polygons)
+
+                    # Ensure zoom transforms include newly injected shapes
+                    try:
+                        self.drawing_overlay._base_dirty = True
+                    except Exception:
+                        pass
+                    try:
+                        self.drawing_overlay.set_zoom_factor(current_zoom)
+                    except Exception:
+                        pass
                 
                 # Add to elements list
-                for rect_data in space_rectangles:
-                    area_formatted = rect_data.get('area_formatted', '0 sf')
-                    space_name = rect_data.get('space_name', 'Unknown Space')
+                for shape_data in (space_rectangles + space_polygons):
+                    area_formatted = shape_data.get("area_formatted", "0 sf")
+                    space_name = shape_data.get("space_name", "Unknown Space")
                     item = QListWidgetItem(f"🏠 {space_name} - {area_formatted}")
-                    item.setData(Qt.UserRole, rect_data)
+                    item.setData(Qt.UserRole, shape_data)
                     self.elements_list.addItem(item)
                 
                 # Trigger repaint
                 self.drawing_overlay.update()
                 
-                self.status_bar.showMessage(f"Loaded {len(space_rectangles)} space rectangles", 2000)
+                self.status_bar.showMessage(
+                    f"Loaded {len(space_rectangles)} space rectangles and {len(space_polygons)} space polygons", 2000
+                )
                 
         except Exception as e:
             print(f"Error loading space rectangles: {e}")
@@ -858,6 +1324,101 @@ class DrawingInterface(QMainWindow):
         if self.drawing_overlay:
             self.drawing_overlay.clear_measurements()
             self.update_elements_display()
+    
+    def cleanup_orphaned_polygons_manual(self):
+        """Manually clean up orphaned polygon/rectangle DrawingElements on the current page.
+        
+        This removes all polygon and rectangle DrawingElements that don't have a 
+        corresponding RoomBoundary at the same position. Use this to clean up 
+        legacy orphaned elements from spaces that were deleted before the fix.
+        """
+        if not self.drawing:
+            QMessageBox.warning(self, "Cleanup", "No drawing loaded.")
+            return
+        
+        try:
+            session = get_session()
+            from models.space import RoomBoundary
+            from models.drawing_elements import DrawingElement
+            
+            # Get all RoomBoundary positions for this drawing and page
+            boundaries = session.query(RoomBoundary).filter(
+                RoomBoundary.drawing_id == self.drawing.id,
+                RoomBoundary.page_number == self.current_page_number
+            ).all()
+            
+            boundary_positions = []
+            for b in boundaries:
+                boundary_positions.append({
+                    'x': float(b.x_position or 0),
+                    'y': float(b.y_position or 0),
+                })
+            
+            # Get all polygon/rectangle DrawingElements on this page
+            elements = session.query(DrawingElement).filter(
+                DrawingElement.drawing_id == self.drawing.id,
+                DrawingElement.page_number == self.current_page_number,
+                DrawingElement.element_type.in_(['rectangle', 'polygon'])
+            ).all()
+            
+            # Find orphaned elements (those not matching any RoomBoundary position)
+            tolerance = 10.0
+            orphaned_ids = []
+            for elem in elements:
+                elem_x = float(elem.x_position or 0)
+                elem_y = float(elem.y_position or 0)
+                
+                has_matching_boundary = False
+                for bp in boundary_positions:
+                    if abs(elem_x - bp['x']) <= tolerance and abs(elem_y - bp['y']) <= tolerance:
+                        has_matching_boundary = True
+                        break
+                
+                if not has_matching_boundary:
+                    orphaned_ids.append(elem.id)
+            
+            if not orphaned_ids:
+                QMessageBox.information(self, "Cleanup Complete", 
+                    f"No orphaned polygons found on page {self.current_page_number}.\n\n"
+                    f"Found {len(boundary_positions)} spaces with matching RoomBoundaries.")
+                session.close()
+                return
+            
+            # Confirm with user
+            reply = QMessageBox.question(
+                self,
+                "Confirm Cleanup",
+                f"Found {len(orphaned_ids)} orphaned polygon(s) on page {self.current_page_number}.\n\n"
+                f"These are polygons that don't have a corresponding saved space (RoomBoundary).\n"
+                f"They may be from spaces that were deleted before the fix was applied.\n\n"
+                f"Delete these orphaned elements?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply != QMessageBox.Yes:
+                session.close()
+                return
+            
+            # Delete orphaned elements
+            deleted_count = session.query(DrawingElement).filter(
+                DrawingElement.id.in_(orphaned_ids)
+            ).delete(synchronize_session=False)
+            session.commit()
+            session.close()
+            
+            # Refresh the drawing to show the cleanup
+            if self.drawing_overlay:
+                self.drawing_overlay.clear_all_elements()
+            self.load_saved_elements()
+            self.load_space_rectangles()
+            
+            QMessageBox.information(self, "Cleanup Complete", 
+                f"Deleted {deleted_count} orphaned polygon(s) from page {self.current_page_number}.\n\n"
+                f"The drawing has been refreshed.")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Cleanup Error", f"Failed to clean up orphaned elements:\n{str(e)}")
             
     def fit_width(self):
         """Fit PDF to width"""
@@ -885,43 +1446,88 @@ class DrawingInterface(QMainWindow):
         dialog.exec()
         
     def calibrate_scale(self):
-        """Start scale calibration with measurement tool"""
-        # Check if we have any measurements to calibrate from
-        if self.drawing_overlay and self.drawing_overlay.measurements:
-            # Get the most recent measurement
-            last_measurement = self.drawing_overlay.measurements[-1]
-            pixel_distance = last_measurement.get('length_pixels', 0)
+        """Start scale calibration wizard - guided flow to draw reference line and enter length"""
+        if not self.drawing_overlay:
+            QMessageBox.warning(self, "Error", "Please open a drawing first.")
+            return
+        
+        # Enter calibration mode
+        self._calibration_mode = True
+        
+        # Store the current measurement count so we know when a new one is added
+        self._calibration_start_measurement_count = len(self.drawing_overlay.measurements)
+        
+        # Switch to measure tool
+        self.set_drawing_tool(ToolType.MEASURE)
+        
+        # Update status to guide user
+        self.status_bar.showMessage("📏 CALIBRATION: Draw a line along a known dimension on the drawing", 0)
+        
+        # Show instruction dialog
+        QMessageBox.information(
+            self, 
+            "Scale Calibration - Step 1 of 2",
+            "Draw a reference line on a known dimension:\n\n"
+            "1. Click and drag to draw a line along a dimension\n"
+            "   you know the real-world length of\n"
+            "   (e.g., a wall, door, or dimension line)\n\n"
+            "2. After drawing, you'll enter the actual length.\n\n"
+            "Click OK to begin drawing."
+        )
+    
+    def _complete_calibration_from_measurement(self):
+        """Complete calibration after user draws a reference line"""
+        if not self.drawing_overlay or not self.drawing_overlay.measurements:
+            self._calibration_mode = False
+            QMessageBox.warning(self, "Error", "No measurement found. Please try again.")
+            return
+        
+        # Get the most recent measurement (the one just drawn)
+        last_measurement = self.drawing_overlay.measurements[-1]
+        pixel_distance = last_measurement.get('length_pixels', 0)
+        
+        # Ask user for the real-world distance
+        from PySide6.QtWidgets import QInputDialog
+        real_distance, ok = QInputDialog.getDouble(
+            self, 
+            "Scale Calibration - Step 2 of 2",
+            "Enter the real-world length of the line you just drew:\n\n"
+            "(This should match a known dimension on the drawing)",
+            25.0, 0.1, 10000.0, 2
+        )
+        
+        if ok and real_distance > 0:
+            # Calibrate the scale
+            success = self.scale_manager.calibrate_from_known_measurement(
+                pixel_distance, real_distance, self.scale_manager.scale_string)
             
-            # Ask user for the real-world distance
-            from PySide6.QtWidgets import QInputDialog
-            real_distance, ok = QInputDialog.getDouble(
-                self, "Scale Calibration", 
-                f"The measured distance is {pixel_distance:.0f} pixels.\n"
-                f"Enter the real-world distance in feet:",
-                25.0, 0.1, 1000.0, 1)
-            
-            if ok and real_distance > 0:
-                # Calibrate the scale
-                success = self.scale_manager.calibrate_from_known_measurement(
-                    pixel_distance, real_distance, self.scale_manager.scale_string)
+            if success:
+                QMessageBox.information(
+                    self, 
+                    "Calibration Complete ✓",
+                    f"Scale calibrated successfully!\n\n"
+                    f"Reference: {pixel_distance:.0f} pixels = {real_distance:.1f} feet\n"
+                    f"Scale ratio: {self.scale_manager.scale_ratio:.2f} pixels/foot\n\n"
+                    f"All measurements will now use this scale."
+                )
                 
-                if success:
-                    QMessageBox.information(self, "Calibration Complete", 
-                        f"Scale calibrated successfully!\n"
-                        f"{pixel_distance:.0f} pixels = {real_distance:.1f} feet\n"
-                        f"Scale ratio: {self.scale_manager.scale_ratio:.2f} pixels/foot")
-                    
-                    # Update the display
-                    self.update_elements_display()
-                    self.save_drawing_to_db()
-                else:
-                    QMessageBox.warning(self, "Error", "Failed to calibrate scale.")
+                # Remove the calibration measurement line (it was just for calibration)
+                if self.drawing_overlay.measurements:
+                    self.drawing_overlay.measurements.pop()
+                    self.drawing_overlay.update()
+                
+                # Update the display and save
+                self.update_elements_display()
+                self.save_drawing_to_db()
+                
+                self.status_bar.showMessage("Scale calibrated successfully!", 5000)
+            else:
+                QMessageBox.warning(self, "Error", "Failed to calibrate scale. Please try again.")
         else:
-            # No measurements yet - start measurement tool
-            self.set_drawing_tool(ToolType.MEASURE)
-            QMessageBox.information(self, "Scale Calibration", 
-                                   "First, use the measurement tool to measure a known distance.\n"
-                                   "Then click 'Calibrate' again to set the real-world scale.")
+            self.status_bar.showMessage("Calibration cancelled", 3000)
+        
+        # Exit calibration mode
+        self._calibration_mode = False
         
     def element_selected(self):
         """Handle element list selection change"""
@@ -1216,13 +1822,23 @@ class DrawingInterface(QMainWindow):
             
             # Connect to path_saved signal to handle registration
             def on_path_saved(saved_path):
-                """Handle newly saved path by registering elements with drawing overlay"""
+                """Handle newly saved path by registering elements with drawing overlay and persisting them"""
                 try:
                     if self.drawing_overlay and saved_path:
                         # Temporarily disable clearing to prevent race conditions
                         self.drawing_overlay.disable_clearing_temporarily()
                         
                         print(f"DEBUG: Registering saved path {saved_path.id} with drawing overlay")
+                        
+                        # Save drawing elements linked to the path for persistent storage
+                        try:
+                            self.save_path_drawing_elements(
+                                saved_path.id,
+                                dialog.drawing_components or [],
+                                dialog.drawing_segments or []
+                            )
+                        except Exception as save_e:
+                            print(f"DEBUG: Could not save path drawing elements: {save_e}")
                         
                         # Use the robust registration method
                         self.register_existing_path_elements(saved_path)
@@ -1347,10 +1963,11 @@ class DrawingInterface(QMainWindow):
         try:
             session = get_session()
             
-            # Create space record with drawing association
+            # Create space record with drawing and drawing set association
             space = Space(
                 project_id=self.project_id,
                 drawing_id=self.drawing.id if self.drawing else None,  # Set drawing_id directly
+                drawing_set_id=self.drawing.drawing_set_id if self.drawing else None,  # Also set drawing_set_id
                 name=space_data['name'],
                 description=space_data['description'],
                 floor_area=space_data['floor_area'],
@@ -1387,10 +2004,27 @@ class DrawingInterface(QMainWindow):
             if shape_data and self.drawing:
                 if shape_data.get('type') == 'polygon':
                     import json
-                    x = int(shape_data.get('x', 0) or 0)
-                    y = int(shape_data.get('y', 0) or 0)
-                    w = int(shape_data.get('width', 1) or 1)
-                    h = int(shape_data.get('height', 1) or 1)
+                    # Persist RoomBoundary geometry in "base" PDF pixels (100% zoom)
+                    # so it can be reprojected correctly at any zoom.
+                    try:
+                        z = float(shape_data.get('saved_zoom') or getattr(getattr(self, 'pdf_viewer', None), 'zoom_factor', None) or 1.0)
+                    except Exception:
+                        z = 1.0
+                    if z <= 0:
+                        z = 1.0
+                    x = int((shape_data.get('x', 0) or 0) / z)
+                    y = int((shape_data.get('y', 0) or 0) / z)
+                    w = int(max(1, (shape_data.get('width', 1) or 1) / z))
+                    h = int(max(1, (shape_data.get('height', 1) or 1) / z))
+                    pts = []
+                    for p in (shape_data.get('points', []) or []):
+                        try:
+                            pts.append({
+                                "x": float(p.get("x", 0)) / z,
+                                "y": float(p.get("y", 0)) / z,
+                            })
+                        except Exception:
+                            pts.append({"x": 0, "y": 0})
                     boundary = RoomBoundary(
                         space_id=space.id,
                         drawing_id=self.drawing.id,
@@ -1400,17 +2034,24 @@ class DrawingInterface(QMainWindow):
                         width=w,
                         height=h,
                         calculated_area=shape_data.get('area_real', 0),
-                        polygon_points=json.dumps(shape_data.get('points', []))
+                        polygon_points=json.dumps(pts)
                     )
                 else:
+                    # Rectangle boundary: also persist in base PDF pixels
+                    try:
+                        z = float(shape_data.get('saved_zoom') or getattr(getattr(self, 'pdf_viewer', None), 'zoom_factor', None) or 1.0)
+                    except Exception:
+                        z = 1.0
+                    if z <= 0:
+                        z = 1.0
                     boundary = RoomBoundary(
                         space_id=space.id,
                         drawing_id=self.drawing.id,
                         page_number=self.current_page_number,
-                        x_position=shape_data.get('x', 0),
-                        y_position=shape_data.get('y', 0),
-                        width=shape_data.get('width', 0),
-                        height=shape_data.get('height', 0),
+                        x_position=float(shape_data.get('x', 0) or 0) / z,
+                        y_position=float(shape_data.get('y', 0) or 0) / z,
+                        width=float(shape_data.get('width', 0) or 0) / z,
+                        height=float(shape_data.get('height', 0) or 0) / z,
                         calculated_area=shape_data.get('area_real', 0)
                     )
                 
@@ -1430,6 +2071,16 @@ class DrawingInterface(QMainWindow):
                 "• View results in the main project dashboard"
             )
             
+            # Build drawing info string
+            drawing_info = f"📋 Drawing: {self.drawing.name if self.drawing else 'None'}"
+            if self.drawing:
+                try:
+                    if getattr(self.drawing, "drawing_set", None):
+                        drawing_info += f"\n📁 Drawing Set: {self.drawing.drawing_set.name}"
+                except Exception:
+                    # Avoid crashing the success dialog due to detached session
+                    pass
+            
             QMessageBox.information(
                 self, 
                 "✅ Space Created Successfully!", 
@@ -1441,7 +2092,7 @@ class DrawingInterface(QMainWindow):
                 f"🔊 Acoustics:\n"
                 f"  • Target RT60: {space_data['target_rt60']:.1f} seconds\n"
                 f"  • Calculated RT60: {rt60_display}\n\n"
-                f"📋 Drawing: {self.drawing.name if self.drawing else 'None'}"
+                f"{drawing_info}"
                 f"{next_steps}"
             )
             
@@ -1450,6 +2101,9 @@ class DrawingInterface(QMainWindow):
             
             # Update rectangle to show it's now a space
             self.update_elements_after_space_creation(space_data['name'])
+            
+            # Refresh the saved spaces list to show the new space
+            self.load_saved_spaces()
         
         except Exception as e:
             if session is not None:
@@ -2465,6 +3119,238 @@ class DrawingInterface(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Path Editor", f"Failed to open path editor:\n{e}")
 
+    # ========== Saved Spaces Methods ==========
+    
+    def load_saved_spaces(self):
+        """Load saved spaces from database and populate the spaces list"""
+        session = None
+        try:
+            session = get_session()
+            
+            # Query spaces for this project
+            spaces = session.query(Space).filter(
+                Space.project_id == self.project_id
+            ).all()
+            
+            # Clear the current list
+            self.spaces_list.clear()
+            self.visible_spaces.clear()
+            
+            if not spaces:
+                self.spaces_summary_label.setText("No spaces saved")
+                session.close()
+                return
+                
+            # Update summary
+            space_count = len(spaces)
+            calculated_count = sum(1 for s in spaces if s.calculated_rt60)
+            self.spaces_summary_label.setText(f"{space_count} spaces ({calculated_count} calculated)")
+            
+            # Add spaces to list
+            for space in spaces:
+                # Create list item
+                item = QListWidgetItem()
+                
+                # Create a widget container for space controls
+                widget = QWidget()
+                layout = QHBoxLayout(widget)
+                layout.setContentsMargins(5, 2, 5, 2)
+                
+                # Space name label
+                space_label = QLabel(self.format_space_display_name(space))
+                space_label.setToolTip(self.format_space_tooltip(space))
+                # Let double-clicks pass through label to the list item row
+                space_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+                
+                layout.addWidget(space_label)
+                layout.addStretch()
+                
+                # Store space data in the item
+                item.setData(Qt.UserRole, space)
+                
+                # Set the widget as the item widget
+                self.spaces_list.addItem(item)
+                self.spaces_list.setItemWidget(item, widget)
+                
+                # Also allow double-clicking the row to open the editor directly
+                def _row_dbl_click(event, s=space):
+                    try:
+                        if event.button() == Qt.LeftButton:
+                            self.open_space_editor(s)
+                            event.accept()
+                            return
+                    except Exception:
+                        pass
+                    QWidget.mouseDoubleClickEvent(widget, event)
+                widget.mouseDoubleClickEvent = _row_dbl_click
+            
+            session.close()
+            
+        except Exception as e:
+            if session is not None:
+                session.close()
+            QMessageBox.warning(self, "Error", f"Failed to load saved spaces:\n{str(e)}")
+    
+    def format_space_display_name(self, space):
+        """Format the display name for a space in the list"""
+        name = space.name or "Unnamed Space"
+        
+        # Add area info if available
+        area_info = ""
+        if space.floor_area:
+            area_info = f" [{space.floor_area:.0f} sf]"
+        
+        # Add RT60 info if calculated
+        rt60_info = ""
+        if space.calculated_rt60:
+            rt60_info = f" (RT60: {space.calculated_rt60:.2f}s)"
+            
+        return f"🏠 {name}{area_info}{rt60_info}"
+    
+    def format_space_tooltip(self, space):
+        """Format tooltip information for a space"""
+        tooltip = f"Space: {space.name or 'Unnamed'}\n"
+        
+        if space.floor_area:
+            tooltip += f"Floor Area: {space.floor_area:.0f} sf\n"
+        if space.ceiling_height:
+            tooltip += f"Ceiling Height: {space.ceiling_height:.1f} ft\n"
+        if space.wall_area:
+            tooltip += f"Wall Area: {space.wall_area:.0f} sf\n"
+        
+        if space.calculated_rt60:
+            tooltip += f"Calculated RT60: {space.calculated_rt60:.2f} seconds\n"
+            tooltip += f"Target RT60: {space.target_rt60:.2f} seconds\n" if space.target_rt60 else "Target RT60: Not set\n"
+        else:
+            tooltip += "RT60: Not calculated\n"
+        
+        # Add drawing and drawing set info
+        if space.drawing:
+            tooltip += f"Drawing: {space.drawing.name}\n"
+        if space.drawing_set:
+            tooltip += f"Drawing Set: {space.drawing_set.name}"
+            
+        return tooltip.rstrip()
+    
+    def open_space_editor_from_item(self, item: QListWidgetItem):
+        """Open the Edit Space dialog when a saved space list item is double-clicked."""
+        try:
+            space = item.data(Qt.UserRole)
+            if not space:
+                return
+            self.open_space_editor(space)
+        except Exception as e:
+            QMessageBox.warning(self, "Space Editor", f"Failed to open space editor:\n{e}")
+    
+    def open_space_editor(self, space):
+        """Open the SpaceEditDialog for the given space"""
+        try:
+            # Re-query space to get fresh data
+            session = get_session()
+            fresh_space = session.query(Space).filter(Space.id == space.id).first()
+            
+            if not fresh_space:
+                QMessageBox.warning(self, "Error", "Space not found in database.")
+                session.close()
+                return
+            
+            # Create non-modal dialog
+            dialog = SpaceEditDialog(self, fresh_space)
+            
+            # Connect signals for updates and cleanup
+            dialog.space_updated.connect(self.on_space_updated)
+            dialog.finished.connect(lambda: self.on_space_dialog_closed(dialog))
+            
+            # Store reference to prevent garbage collection
+            self.space_edit_dialogs.append(dialog)
+            
+            # Show as non-modal window
+            dialog.show()
+            
+            session.close()
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Space Editor", f"Failed to open space editor:\n{e}")
+    
+    def on_space_updated(self):
+        """Handle space update signal from SpaceEditDialog"""
+        # Refresh the spaces list to show updated data
+        self.load_saved_spaces()
+    
+    def on_space_clicked(self, space_data):
+        """Handle space clicked on drawing - open edit dialog for the space"""
+        try:
+            space_id = space_data.get('space_id')
+            if not space_id:
+                # No space_id means this is an unsaved rectangle/polygon
+                return
+            
+            # Find space in database and open editor
+            session = get_session()
+            space = session.query(Space).filter(Space.id == space_id).first()
+            session.close()
+            
+            if space:
+                self.open_space_editor(space)
+            else:
+                self.status_bar.showMessage(f"Space not found in database (ID: {space_id})", 3000)
+        except Exception as e:
+            print(f"ERROR: on_space_clicked failed: {e}")
+            QMessageBox.warning(self, "Error", f"Failed to open space editor:\n{str(e)}")
+    
+    def on_space_dialog_closed(self, dialog):
+        """Handle space dialog closed - clean up reference"""
+        try:
+            if dialog in self.space_edit_dialogs:
+                self.space_edit_dialogs.remove(dialog)
+        except Exception:
+            pass
+    
+    def show_space_context_menu(self, position):
+        """Show context menu for spaces list"""
+        item = self.spaces_list.itemAt(position)
+        if not item:
+            return
+            
+        space = item.data(Qt.UserRole)
+        if not space:
+            return
+        
+        from PySide6.QtWidgets import QMenu
+        
+        menu = QMenu(self)
+        
+        # Edit action
+        edit_action = menu.addAction("✏️ Edit Space")
+        edit_action.triggered.connect(lambda: self.open_space_editor(space))
+        
+        menu.addSeparator()
+        
+        # Space information action
+        info_action = menu.addAction("ℹ️ Space Information")
+        info_action.triggered.connect(lambda: self.show_space_information(space))
+        
+        menu.exec_(self.spaces_list.mapToGlobal(position))
+    
+    def show_space_information(self, space):
+        """Show detailed information about a space"""
+        info_text = f"<h3>{space.name or 'Unnamed Space'}</h3>"
+        info_text += f"<p><b>Floor Area:</b> {space.floor_area:.0f} sf</p>" if space.floor_area else ""
+        info_text += f"<p><b>Ceiling Height:</b> {space.ceiling_height:.1f} ft</p>" if space.ceiling_height else ""
+        info_text += f"<p><b>Wall Area:</b> {space.wall_area:.0f} sf</p>" if space.wall_area else ""
+        
+        if space.calculated_rt60:
+            info_text += f"<p><b>Calculated RT60:</b> {space.calculated_rt60:.2f} seconds</p>"
+        if space.target_rt60:
+            info_text += f"<p><b>Target RT60:</b> {space.target_rt60:.2f} seconds</p>"
+        if space.calculated_nc:
+            info_text += f"<p><b>Calculated NC:</b> NC-{space.calculated_nc:.0f}</p>"
+        
+        if space.description:
+            info_text += f"<p><b>Description:</b> {space.description}</p>"
+        
+        QMessageBox.information(self, "Space Information", info_text)
+
     def overlay_element_double_clicked(self, element: dict):
         """Open component or segment editor when double-clicked on the drawing overlay."""
         try:
@@ -2718,115 +3604,344 @@ class DrawingInterface(QMainWindow):
             QMessageBox.critical(self, "Error", f"Failed to calculate path noise:\n{str(e)}")
     
     def register_existing_path_elements(self, hvac_path):
-        """Register existing path elements in the drawing overlay for show/hide functionality"""
+        """Register existing path elements in the drawing overlay for show/hide functionality.
+        
+        This method first attempts to load linked drawing elements from the database,
+        filtered to only include elements on the current drawing and page.
+        If linked elements exist, they are added to the overlay and registered.
+        If no linked elements are found, it falls back to position-based matching.
+        """
         if not self.drawing_overlay:
             return
             
         try:
+            path_id = hvac_path.id
             path_components = []
             path_segments = []
             
-            # Find drawing elements that match the path's components and segments
-            overlay_data = self.drawing_overlay.get_elements_data()
-            drawing_components = overlay_data.get('components', [])
-            drawing_segments = overlay_data.get('segments', [])
+            # Get current drawing context for filtering
+            current_drawing_id = self.drawing.id if self.drawing else None
+            current_page = self.current_page_number
             
-            # print(f"DEBUG: Registering path {hvac_path.id} with {len(hvac_path.segments)} database segments")
-            # print(f"DEBUG: Available drawing elements: {len(drawing_components)} components, {len(drawing_segments)} segments")
+            # First, try to load linked elements from the database
+            # Filter to only elements on the current drawing/page
+            linked_elements_loaded = False
+            try:
+                linked_data = self.element_manager.load_elements_for_path(
+                    path_id,
+                    drawing_id=current_drawing_id,
+                    page_number=current_page
+                )
+                db_components = linked_data.get('components', [])
+                db_segments = linked_data.get('segments', [])
+                
+                if db_components or db_segments:
+                    print(f"DEBUG: Found {len(db_components)} linked components and {len(db_segments)} linked segments for path {path_id}")
+                    
+                    # Add linked elements to overlay if not already present
+                    for comp in db_components:
+                        # Ensure component has required fields for overlay rendering
+                        if 'x' not in comp and 'x_position' in comp:
+                            comp['x'] = comp['x_position']
+                        if 'y' not in comp and 'y_position' in comp:
+                            comp['y'] = comp['y_position']
+                        if 'component_type' not in comp and comp.get('properties'):
+                            comp['component_type'] = comp['properties'].get('component_type', 'unknown')
+                        
+                        # Add to overlay components if not already there
+                        existing = False
+                        for existing_comp in self.drawing_overlay.components:
+                            if (existing_comp.get('x') == comp.get('x') and 
+                                existing_comp.get('y') == comp.get('y') and
+                                existing_comp.get('component_type') == comp.get('component_type')):
+                                # Already exists, use the existing one
+                                path_components.append(existing_comp)
+                                existing = True
+                                break
+                        
+                        if not existing:
+                            # Add to overlay
+                            self.drawing_overlay.components.append(comp)
+                            path_components.append(comp)
+                    
+                    for seg in db_segments:
+                        # Ensure segment has required fields for overlay rendering
+                        if seg.get('properties'):
+                            props = seg['properties']
+                            if 'start_x' not in seg:
+                                seg['start_x'] = props.get('start_x')
+                            if 'start_y' not in seg:
+                                seg['start_y'] = props.get('start_y')
+                            if 'end_x' not in seg:
+                                seg['end_x'] = props.get('end_x')
+                            if 'end_y' not in seg:
+                                seg['end_y'] = props.get('end_y')
+                            if 'from_component' not in seg:
+                                seg['from_component'] = props.get('from_component')
+                            if 'to_component' not in seg:
+                                seg['to_component'] = props.get('to_component')
+                        
+                        # Add to overlay segments if not already there
+                        existing = False
+                        for existing_seg in self.drawing_overlay.segments:
+                            if (abs(existing_seg.get('start_x', 0) - seg.get('start_x', 0)) < 5 and
+                                abs(existing_seg.get('start_y', 0) - seg.get('start_y', 0)) < 5 and
+                                abs(existing_seg.get('end_x', 0) - seg.get('end_x', 0)) < 5 and
+                                abs(existing_seg.get('end_y', 0) - seg.get('end_y', 0)) < 5):
+                                # Already exists, use the existing one
+                                path_segments.append(existing_seg)
+                                existing = True
+                                break
+                        
+                        if not existing:
+                            # Add to overlay
+                            self.drawing_overlay.segments.append(seg)
+                            path_segments.append(seg)
+                    
+                    if path_components or path_segments:
+                        linked_elements_loaded = True
+                        print(f"DEBUG: Loaded {len(path_components)} components and {len(path_segments)} segments from database for path {path_id}")
+                        
+            except Exception as load_e:
+                print(f"DEBUG: Could not load linked elements for path {path_id}: {load_e}")
             
-            # Match path components to drawing components
-            for i, segment in enumerate(hvac_path.segments):
-                print(f"DEBUG: Processing segment {i}")
+            # Fall back to position-based matching if no linked elements found
+            if not linked_elements_loaded:
+                print(f"DEBUG: No linked elements found, using position-based matching for path {path_id}")
                 
-                if segment.from_component:
-                    db_comp = segment.from_component
-                    print(f"DEBUG: Looking for from_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                # Find drawing elements that match the path's components and segments
+                overlay_data = self.drawing_overlay.get_elements_data()
+                drawing_components = overlay_data.get('components', [])
+                drawing_segments = overlay_data.get('segments', [])
+                
+                # Match path components to drawing components
+                for i, segment in enumerate(hvac_path.segments):
+                    if segment.from_component:
+                        db_comp = segment.from_component
+                        
+                        # Look for matching component in drawing elements
+                        found = False
+                        for comp in drawing_components:
+                            if (comp.get('x') == db_comp.x_position and
+                                comp.get('y') == db_comp.y_position and
+                                comp.get('component_type') == db_comp.component_type):
+                                if comp not in path_components:
+                                    path_components.append(comp)
+                                    # Attach DB id for edit lookups
+                                    comp['db_component_id'] = db_comp.id
+                                found = True
+                                break
                     
-                    # Look for matching component in drawing elements
-                    found = False
-                    for comp in drawing_components:
-                        if (comp.get('x') == db_comp.x_position and
-                            comp.get('y') == db_comp.y_position and
-                            comp.get('component_type') == db_comp.component_type):
-                            if comp not in path_components:
-                                path_components.append(comp)
-                                # Attach DB id for edit lookups
-                                comp['db_component_id'] = db_comp.id
-                                print(f"DEBUG: Found matching from_component: {comp}")
-                            found = True
-                            break
-                    if not found:
-                        print(f"DEBUG: No match found for from_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
-                
-                if segment.to_component:
-                    db_comp = segment.to_component
-                    print(f"DEBUG: Looking for to_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                    if segment.to_component:
+                        db_comp = segment.to_component
+                        
+                        # Look for matching component in drawing elements
+                        found = False
+                        for comp in drawing_components:
+                            if (comp.get('x') == db_comp.x_position and
+                                comp.get('y') == db_comp.y_position and
+                                comp.get('component_type') == db_comp.component_type):
+                                if comp not in path_components:
+                                    path_components.append(comp)
+                                    # Attach DB id for edit lookups
+                                    comp['db_component_id'] = db_comp.id
+                                found = True
+                                break
                     
-                    # Look for matching component in drawing elements
-                    found = False
-                    for comp in drawing_components:
-                        if (comp.get('x') == db_comp.x_position and
-                            comp.get('y') == db_comp.y_position and
-                            comp.get('component_type') == db_comp.component_type):
-                            if comp not in path_components:
-                                path_components.append(comp)
-                                # Attach DB id for edit lookups
-                                comp['db_component_id'] = db_comp.id
-                                print(f"DEBUG: Found matching to_component: {comp}")
-                            found = True
-                            break
-                    if not found:
-                        print(f"DEBUG: No match found for to_component: {db_comp.component_type} at ({db_comp.x_position}, {db_comp.y_position})")
+                    # Match segments (robust: allow small pixel tolerance on endpoints)
+                    if segment.from_component and segment.to_component:
+                        found = False
+                        tol = 12.0  # pixels
+                        fx = float(segment.from_component.x_position or 0.0)
+                        fy = float(segment.from_component.y_position or 0.0)
+                        tx = float(segment.to_component.x_position or 0.0)
+                        ty = float(segment.to_component.y_position or 0.0)
+                        for seg in drawing_segments:
+                            # Check if this segment connects the same components (within tolerance)
+                            from_comp = seg.get('from_component')
+                            to_comp = seg.get('to_component')
+                            if not (from_comp and to_comp):
+                                continue
+                            d1 = abs(float(from_comp.get('x') or 0) - fx) + abs(float(from_comp.get('y') or 0) - fy)
+                            d2 = abs(float(to_comp.get('x') or 0) - tx) + abs(float(to_comp.get('y') or 0) - ty)
+                            if d1 <= tol and d2 <= tol:
+                                if seg not in path_segments:
+                                    path_segments.append(seg)
+                                    # Attach DB ids for edit lookups
+                                    seg['db_segment_id'] = segment.id
+                                    seg['db_path_id'] = hvac_path.id
+                                    # Also synchronize overlay label length with DB value
+                                    try:
+                                        seg['length_real'] = float(getattr(segment, 'length', 0) or 0)
+                                        fmtr = self.drawing_overlay.scale_manager.format_distance
+                                        seg['length_formatted'] = fmtr(seg['length_real'])
+                                    except Exception:
+                                        pass
+                                found = True
+                                break
                 
-                # Match segments (robust: allow small pixel tolerance on endpoints)
-                if segment.from_component and segment.to_component:
-                    print(f"DEBUG: Looking for segment from {segment.from_component.component_type} to {segment.to_component.component_type}")
-                    found = False
-                    tol = 12.0  # pixels
-                    fx = float(segment.from_component.x_position or 0.0)
-                    fy = float(segment.from_component.y_position or 0.0)
-                    tx = float(segment.to_component.x_position or 0.0)
-                    ty = float(segment.to_component.y_position or 0.0)
-                    for seg in drawing_segments:
-                        # Check if this segment connects the same components (within tolerance)
-                        from_comp = seg.get('from_component')
-                        to_comp = seg.get('to_component')
-                        if not (from_comp and to_comp):
-                            continue
-                        d1 = abs(float(from_comp.get('x') or 0) - fx) + abs(float(from_comp.get('y') or 0) - fy)
-                        d2 = abs(float(to_comp.get('x') or 0) - tx) + abs(float(to_comp.get('y') or 0) - ty)
-                        if d1 <= tol and d2 <= tol:
-                            if seg not in path_segments:
-                                path_segments.append(seg)
-                                # Attach DB ids for edit lookups
-                                seg['db_segment_id'] = segment.id
-                                seg['db_path_id'] = hvac_path.id
-                                # Also synchronize overlay label length with DB value
-                                try:
-                                    seg['length_real'] = float(getattr(segment, 'length', 0) or 0)
-                                    fmtr = self.drawing_overlay.scale_manager.format_distance
-                                    seg['length_formatted'] = fmtr(seg['length_real'])
-                                except Exception:
-                                    pass
-                                print(f"DEBUG: Found matching segment (tol {tol}px): {from_comp.get('component_type')} -> {to_comp.get('component_type')}")
-                            found = True
-                            break
-                    if not found:
-                        print(f"DEBUG: No matching segment found (with tolerance) for {segment.from_component.component_type} -> {segment.to_component.component_type}")
+                # If position-matching found elements but no linked DB elements exist,
+                # try to create visual elements from HVAC component positions as fallback
+                if not path_components and not path_segments and hvac_path.segments:
+                    print(f"DEBUG: Reconstructing visual elements from HVAC component positions for path {path_id}")
+                    path_components, path_segments = self._reconstruct_path_visuals_from_db(hvac_path)
             
             # Register the found elements
             if path_components or path_segments:
-                self.drawing_overlay.register_path_elements(hvac_path.id, path_components, path_segments)
-                print(f"DEBUG: Registered path {hvac_path.id} with {len(path_components)} components and {len(path_segments)} segments")
+                self.drawing_overlay.register_path_elements(path_id, path_components, path_segments)
+                print(f"DEBUG: Registered path {path_id} with {len(path_components)} components and {len(path_segments)} segments")
             else:
-                print(f"DEBUG: No elements found to register for path {hvac_path.id}")
+                print(f"DEBUG: No elements found to register for path {path_id}")
             
         except Exception as e:
             print(f"Error registering path elements for path {hvac_path.id}: {e}")
     
+    def _reconstruct_path_visuals_from_db(self, hvac_path):
+        """Reconstruct visual overlay elements from HVAC database records.
+        
+        This is a fallback method used when no linked DrawingElements exist and
+        position-based matching fails. It creates new overlay elements from the
+        HVACComponent and HVACSegment positions stored in the database.
+        
+        Only reconstructs elements for components on the current drawing.
+        
+        Args:
+            hvac_path: HVACPath object with segments and components
+            
+        Returns:
+            Tuple of (components_list, segments_list) for overlay
+        """
+        path_components = []
+        path_segments = []
+        seen_comp_ids = set()
+        
+        # Get current drawing context
+        current_drawing_id = self.drawing.id if self.drawing else None
+        
+        try:
+            for segment in hvac_path.segments:
+                # Reconstruct component visuals - only for components on this drawing
+                for db_comp in [segment.from_component, segment.to_component]:
+                    if db_comp and db_comp.id not in seen_comp_ids:
+                        # Skip components that are not on the current drawing
+                        if current_drawing_id and db_comp.drawing_id != current_drawing_id:
+                            continue
+                            
+                        comp_visual = {
+                            'type': 'component',
+                            'x': db_comp.x_position,
+                            'y': db_comp.y_position,
+                            'component_type': db_comp.component_type,
+                            'db_component_id': db_comp.id,
+                            'hvac_component_id': db_comp.id,
+                            'db_path_id': hvac_path.id,
+                            'hvac_path_id': hvac_path.id,
+                        }
+                        path_components.append(comp_visual)
+                        self.drawing_overlay.components.append(comp_visual)
+                        seen_comp_ids.add(db_comp.id)
+                
+                # Reconstruct segment visual - only if BOTH endpoints are on this drawing
+                if segment.from_component and segment.to_component:
+                    from_comp = segment.from_component
+                    to_comp = segment.to_component
+                    
+                    # Skip segments where either endpoint is not on the current drawing
+                    if current_drawing_id:
+                        if from_comp.drawing_id != current_drawing_id or to_comp.drawing_id != current_drawing_id:
+                            continue
+                    
+                    seg_visual = {
+                        'type': 'segment',
+                        'start_x': from_comp.x_position,
+                        'start_y': from_comp.y_position,
+                        'end_x': to_comp.x_position,
+                        'end_y': to_comp.y_position,
+                        'from_component': {
+                            'x': from_comp.x_position,
+                            'y': from_comp.y_position,
+                            'component_type': from_comp.component_type,
+                        },
+                        'to_component': {
+                            'x': to_comp.x_position,
+                            'y': to_comp.y_position,
+                            'component_type': to_comp.component_type,
+                        },
+                        'db_segment_id': segment.id,
+                        'hvac_segment_id': segment.id,
+                        'db_path_id': hvac_path.id,
+                        'hvac_path_id': hvac_path.id,
+                        'length_real': segment.length,
+                    }
+                    
+                    # Format length for display
+                    try:
+                        fmtr = self.drawing_overlay.scale_manager.format_distance
+                        seg_visual['length_formatted'] = fmtr(segment.length or 0)
+                    except Exception:
+                        seg_visual['length_formatted'] = f"{segment.length:.1f} ft" if segment.length else "0 ft"
+                    
+                    path_segments.append(seg_visual)
+                    self.drawing_overlay.segments.append(seg_visual)
+            
+            print(f"DEBUG: Reconstructed {len(path_components)} components and {len(path_segments)} segments from DB for path {hvac_path.id}")
+            
+        except Exception as e:
+            print(f"Error reconstructing path visuals from DB: {e}")
+        
+        return path_components, path_segments
+    
     def register_path_elements_for_path(self, hvac_path):
         """Register path elements for a given HVAC path (alias for register_existing_path_elements)"""
         self.register_existing_path_elements(hvac_path)
+
+    def save_path_drawing_elements(self, hvac_path_id, components, segments):
+        """Save drawing elements linked to an HVAC path for persistent storage.
+        
+        This ensures that visual overlay elements (components and segments) are
+        stored in the database linked to their HVAC path, enabling reliable
+        reconstruction when the project is reloaded.
+        
+        Args:
+            hvac_path_id: ID of the HVACPath to link elements to
+            components: List of component element dicts from overlay
+            segments: List of segment element dicts from overlay
+        """
+        if not self.drawing or not hvac_path_id:
+            return
+            
+        try:
+            # Mark components and segments with HVAC path ID before saving
+            for comp in (components or []):
+                comp['hvac_path_id'] = hvac_path_id
+                comp['db_path_id'] = hvac_path_id
+                # Also try to link to specific component ID if available
+                db_comp_id = comp.get('db_component_id')
+                if db_comp_id:
+                    comp['hvac_component_id'] = db_comp_id
+            
+            for seg in (segments or []):
+                seg['hvac_path_id'] = hvac_path_id
+                seg['db_path_id'] = hvac_path_id
+                # Also try to link to specific segment ID if available
+                db_seg_id = seg.get('db_segment_id')
+                if db_seg_id:
+                    seg['hvac_segment_id'] = db_seg_id
+            
+            # Use the element manager to save path-linked elements
+            elements_saved = self.element_manager.save_path_elements(
+                self.drawing.id,
+                self.project_id,
+                hvac_path_id,
+                components or [],
+                segments or [],
+                self.current_page_number
+            )
+            
+            print(f"DEBUG: Saved {elements_saved} drawing elements linked to path {hvac_path_id}")
+            
+        except Exception as e:
+            print(f"Error saving path drawing elements: {e}")
 
     def _on_segment_saved(self, segment) -> None:
         """After editing a segment in the dialog, update any registered overlay
@@ -2886,6 +4001,137 @@ class DrawingInterface(QMainWindow):
         except Exception as e:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Registration Error", f"Failed to register elements:\n{str(e)}")
+    
+    def on_path_selected(self, item: QListWidgetItem):
+        """Handle path selection in the Saved Paths list - enters edit mode for that path"""
+        try:
+            hvac_path = item.data(Qt.UserRole)
+            if not hvac_path:
+                return
+            
+            # Set editing mode
+            self.editing_path_id = hvac_path.id
+            self.editing_path_name = hvac_path.name
+            
+            # Update mode indicator
+            self.path_mode_label.setText(f"Editing: {hvac_path.name}")
+            self.path_mode_label.setStyleSheet("font-weight: bold; color: #4CAF50; padding: 2px;")
+            
+            # Populate the Path Element List with this path's elements
+            self.populate_path_element_list(hvac_path)
+            
+            # Also make sure the path is visible on drawing
+            self.show_path_on_drawing(hvac_path.id)
+            
+            print(f"DEBUG: Selected path {hvac_path.id} ({hvac_path.name}) for editing")
+            
+        except Exception as e:
+            print(f"ERROR: on_path_selected failed: {e}")
+    
+    def enter_new_path_mode(self):
+        """Enter new path creation mode - clears selection and resets element list"""
+        # Reset editing state
+        self.editing_path_id = None
+        self.editing_path_name = None
+        
+        # Update mode indicator
+        self.path_mode_label.setText("Mode: Creating New Path")
+        self.path_mode_label.setStyleSheet("font-weight: bold; color: #2196F3; padding: 2px;")
+        
+        # Clear path selection in the Saved Paths list
+        self.paths_list.clearSelection()
+        
+        # Clear the Path Element List
+        self.elements_list.clear()
+        
+        # Clear the drawing overlay of any temporary elements (but keep path-registered elements)
+        if self.drawing_overlay:
+            self.drawing_overlay.clear_unsaved_elements()
+        
+        # Update the elements display summary
+        self.update_elements_display()
+        
+        # Update status bar
+        self.status_bar.showMessage("Entered new path creation mode - draw components and segments", 3000)
+        
+        print("DEBUG: Entered new path creation mode")
+    
+    def populate_path_element_list(self, hvac_path):
+        """Populate the Path Element List with a path's components and segments"""
+        try:
+            # Clear the current list
+            self.elements_list.clear()
+            
+            if not hvac_path or not hvac_path.segments:
+                return
+            
+            # Track unique components (segments reference from/to components)
+            seen_component_ids = set()
+            component_count = 0
+            segment_count = 0
+            
+            # Process each segment to extract components
+            for segment in hvac_path.segments:
+                # Add from_component if not already added
+                if segment.from_component and segment.from_component.id not in seen_component_ids:
+                    seen_component_ids.add(segment.from_component.id)
+                    comp = segment.from_component
+                    comp_type = comp.component_type or 'unknown'
+                    comp_name = comp.name or comp_type.upper()
+                    
+                    item = QListWidgetItem(f"🔧 {comp_name} ({comp_type})")
+                    item.setData(Qt.UserRole, {
+                        'type': 'component',
+                        'component_type': comp_type,
+                        'x': comp.x_position,
+                        'y': comp.y_position,
+                        'db_component_id': comp.id,
+                        'db_path_id': hvac_path.id
+                    })
+                    self.elements_list.addItem(item)
+                    component_count += 1
+                
+                # Add to_component if not already added
+                if segment.to_component and segment.to_component.id not in seen_component_ids:
+                    seen_component_ids.add(segment.to_component.id)
+                    comp = segment.to_component
+                    comp_type = comp.component_type or 'unknown'
+                    comp_name = comp.name or comp_type.upper()
+                    
+                    item = QListWidgetItem(f"🔧 {comp_name} ({comp_type})")
+                    item.setData(Qt.UserRole, {
+                        'type': 'component',
+                        'component_type': comp_type,
+                        'x': comp.x_position,
+                        'y': comp.y_position,
+                        'db_component_id': comp.id,
+                        'db_path_id': hvac_path.id
+                    })
+                    self.elements_list.addItem(item)
+                    component_count += 1
+                
+                # Add the segment itself
+                length = segment.length or 0
+                length_formatted = self.scale_manager.format_distance(length) if self.scale_manager else f"{length:.1f} ft"
+                
+                from_name = segment.from_component.name if segment.from_component else "?"
+                to_name = segment.to_component.name if segment.to_component else "?"
+                
+                item = QListWidgetItem(f"━ Segment: {from_name} → {to_name} ({length_formatted})")
+                item.setData(Qt.UserRole, {
+                    'type': 'segment',
+                    'length_real': length,
+                    'length_formatted': length_formatted,
+                    'db_segment_id': segment.id,
+                    'db_path_id': hvac_path.id
+                })
+                self.elements_list.addItem(item)
+                segment_count += 1
+            
+            print(f"DEBUG: Populated path element list with {component_count} components and {segment_count} segments")
+            
+        except Exception as e:
+            print(f"ERROR: populate_path_element_list failed: {e}")
     
     def toggle_path_visibility(self, path_id: int, visible: bool, button: QPushButton):
         """Toggle a path's visibility using the eye button"""

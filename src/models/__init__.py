@@ -17,6 +17,7 @@ from .mechanical import MechanicalUnit, NoiseSource
 from .drawing_sets import DrawingSet, DrawingComparison, ChangeItem
 from .material_schedule import MaterialSchedule
 from .drawing_location import DrawingLocation, LocationType
+from .partition import PartitionType, PartitionScheduleDocument, SpacePartition
 
 __all__ = [
 	'Base',
@@ -46,5 +47,8 @@ __all__ = [
 	'ChangeItem',
 	'MaterialSchedule',
 	'DrawingLocation',
-	'LocationType'
+	'LocationType',
+	'PartitionType',
+	'PartitionScheduleDocument',
+	'SpacePartition'
 ]
