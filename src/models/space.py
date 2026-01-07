@@ -32,6 +32,16 @@ class SpaceSurfaceMaterial(Base):
     
     def __repr__(self):
         return f"<SpaceSurfaceMaterial(space_id={self.space_id}, surface_type={self.surface_type.value}, material_key='{self.material_key}')>"
+    
+    def to_dict(self):
+        """Convert space surface material to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'space_id': self.space_id,
+            'surface_type': self.surface_type.value if self.surface_type else None,
+            'material_key': self.material_key,
+            'order_index': self.order_index,
+        }
 
 
 class Space(Base):
@@ -546,3 +556,18 @@ class RoomBoundary(Base):
     
     def __repr__(self):
         return f"<RoomBoundary(id={self.id}, space_id={self.space_id}, drawing_id={self.drawing_id})>"
+    
+    def to_dict(self):
+        """Convert room boundary to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'space_id': self.space_id,
+            'drawing_id': self.drawing_id,
+            'page_number': self.page_number,
+            'x_position': self.x_position,
+            'y_position': self.y_position,
+            'width': self.width,
+            'height': self.height,
+            'calculated_area': self.calculated_area,
+            'polygon_points': self.polygon_points,
+        }

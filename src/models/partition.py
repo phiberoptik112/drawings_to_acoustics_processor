@@ -54,6 +54,8 @@ class PartitionType(Base):
             'stc_rating': self.stc_rating,
             'source_document': self.source_document,
             'notes': self.notes,
+            'created_date': self.created_date.isoformat() if self.created_date else None,
+            'modified_date': self.modified_date.isoformat() if self.modified_date else None,
         }
 
 
@@ -111,6 +113,8 @@ class PartitionScheduleDocument(Base):
             'file_path': self.file_path,
             'managed_file_path': self.managed_file_path,
             'page_number': self.page_number,
+            'created_date': self.created_date.isoformat() if self.created_date else None,
+            'modified_date': self.modified_date.isoformat() if self.modified_date else None,
         }
 
 
@@ -205,12 +209,8 @@ class SpacePartition(Base):
             'minimum_stc_required': self.minimum_stc_required,
             'stc_rating_override': self.stc_rating_override,
             'notes': self.notes,
-            # Computed properties
-            'assembly_id': self.assembly_id,
-            'assembly_description': self.assembly_description,
-            'effective_stc_rating': self.effective_stc_rating,
-            'is_compliant': self.is_compliant,
-            'compliance_status': self.compliance_status,
+            'created_date': self.created_date.isoformat() if self.created_date else None,
+            'modified_date': self.modified_date.isoformat() if self.modified_date else None,
         }
     
     def to_leed_dict(self):

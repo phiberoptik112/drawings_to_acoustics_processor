@@ -38,6 +38,19 @@ class DrawingSet(Base):
     
     def __repr__(self):
         return f"<DrawingSet(id={self.id}, name='{self.name}', phase='{self.phase_type}')>"
+    
+    def to_dict(self):
+        """Convert drawing set to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'project_id': self.project_id,
+            'name': self.name,
+            'phase_type': self.phase_type,
+            'description': self.description,
+            'is_active': self.is_active,
+            'created_date': self.created_date.isoformat() if self.created_date else None,
+            'modified_date': self.modified_date.isoformat() if self.modified_date else None,
+        }
 
 
 class DrawingComparison(Base):
@@ -65,6 +78,21 @@ class DrawingComparison(Base):
     
     def __repr__(self):
         return f"<DrawingComparison(id={self.id}, base_set={self.base_set_id}, compare_set={self.compare_set_id})>"
+    
+    def to_dict(self):
+        """Convert drawing comparison to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'project_id': self.project_id,
+            'base_set_id': self.base_set_id,
+            'compare_set_id': self.compare_set_id,
+            'comparison_date': self.comparison_date.isoformat() if self.comparison_date else None,
+            'comparison_results': self.comparison_results,
+            'notes': self.notes,
+            'total_changes': self.total_changes,
+            'critical_changes': self.critical_changes,
+            'acoustic_impact_score': self.acoustic_impact_score,
+        }
 
 
 class ChangeItem(Base):
@@ -102,3 +130,23 @@ class ChangeItem(Base):
     
     def __repr__(self):
         return f"<ChangeItem(id={self.id}, type='{self.element_type}', change='{self.change_type}')>"
+    
+    def to_dict(self):
+        """Convert change item to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'comparison_id': self.comparison_id,
+            'element_type': self.element_type,
+            'change_type': self.change_type,
+            'base_element_id': self.base_element_id,
+            'compare_element_id': self.compare_element_id,
+            'change_details': self.change_details,
+            'acoustic_impact': self.acoustic_impact,
+            'severity': self.severity,
+            'drawing_id': self.drawing_id,
+            'x_position': self.x_position,
+            'y_position': self.y_position,
+            'area_change': self.area_change,
+            'position_delta': self.position_delta,
+            'created_date': self.created_date.isoformat() if self.created_date else None,
+        }

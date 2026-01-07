@@ -56,6 +56,33 @@ class HVACComponent(Base):
     
     def __repr__(self):
         return f"<HVACComponent(id={self.id}, name='{self.name}', type='{self.component_type}')>"
+    
+    def to_dict(self):
+        """Convert component to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'project_id': self.project_id,
+            'drawing_id': self.drawing_id,
+            'name': self.name,
+            'component_type': self.component_type,
+            'x_position': self.x_position,
+            'y_position': self.y_position,
+            'noise_level': self.noise_level,
+            'cfm': self.cfm,
+            'branch_takeoff_choice': self.branch_takeoff_choice,
+            'has_turning_vanes': self.has_turning_vanes,
+            'vane_chord_length': self.vane_chord_length,
+            'num_vanes': self.num_vanes,
+            'lining_thickness': self.lining_thickness,
+            'pressure_drop': self.pressure_drop,
+            'is_silencer': self.is_silencer,
+            'silencer_type': self.silencer_type,
+            'target_noise_reduction': self.target_noise_reduction,
+            'frequency_requirements': self.frequency_requirements,
+            'space_constraints': self.space_constraints,
+            'selected_product_id': self.selected_product_id,
+            'created_date': self.created_date.isoformat() if self.created_date else None,
+        }
 
 
 class HVACPath(Base):
@@ -161,6 +188,25 @@ class HVACPath(Base):
 
         # Return first location's label
         return locations[0].get_location_label()
+    
+    def to_dict(self):
+        """Convert path to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'project_id': self.project_id,
+            'target_space_id': self.target_space_id,
+            'primary_source_id': self.primary_source_id,
+            'drawing_set_id': self.drawing_set_id,
+            'name': self.name,
+            'description': self.description,
+            'path_type': self.path_type,
+            'calculated_noise': self.calculated_noise,
+            'calculated_nc': self.calculated_nc,
+            'created_date': self.created_date.isoformat() if self.created_date else None,
+            'modified_date': self.modified_date.isoformat() if self.modified_date else None,
+            'receiver_distance_ft': self.receiver_distance_ft,
+            'receiver_method': self.receiver_method,
+        }
 
 
 class HVACSegment(Base):
@@ -204,6 +250,30 @@ class HVACSegment(Base):
     
     def __repr__(self):
         return f"<HVACSegment(id={self.id}, path_id={self.hvac_path_id}, order={self.segment_order})>"
+    
+    def to_dict(self):
+        """Convert segment to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'hvac_path_id': self.hvac_path_id,
+            'from_component_id': self.from_component_id,
+            'to_component_id': self.to_component_id,
+            'length': self.length,
+            'segment_order': self.segment_order,
+            'duct_width': self.duct_width,
+            'duct_height': self.duct_height,
+            'diameter': self.diameter,
+            'duct_shape': self.duct_shape,
+            'duct_type': self.duct_type,
+            'insulation': self.insulation,
+            'lining_thickness': self.lining_thickness,
+            'flow_rate': self.flow_rate,
+            'flow_velocity': self.flow_velocity,
+            'distance_loss': self.distance_loss,
+            'duct_loss': self.duct_loss,
+            'fitting_additions': self.fitting_additions,
+            'created_date': self.created_date.isoformat() if self.created_date else None,
+        }
 
 
 class SegmentFitting(Base):
@@ -222,6 +292,17 @@ class SegmentFitting(Base):
     
     def __repr__(self):
         return f"<SegmentFitting(id={self.id}, type='{self.fitting_type}', adjustment={self.noise_adjustment})>"
+    
+    def to_dict(self):
+        """Convert fitting to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'segment_id': self.segment_id,
+            'fitting_type': self.fitting_type,
+            'quantity': self.quantity,
+            'position_on_segment': self.position_on_segment,
+            'noise_adjustment': self.noise_adjustment,
+        }
 
 
 class SilencerProduct(Base):
@@ -329,3 +410,26 @@ class HVACReceiverResult(Base):
             f"<HVACReceiverResult(id={self.id}, space_id={self.space_id}, "
             f"nc={self.nc_rating}, dBA={self.total_dba})>"
         )
+    
+    def to_dict(self):
+        """Convert receiver result to dictionary for JSON serialization"""
+        return {
+            'id': self.id,
+            'space_id': self.space_id,
+            'calculation_date': self.calculation_date.isoformat() if self.calculation_date else None,
+            'target_nc': self.target_nc,
+            'nc_rating': self.nc_rating,
+            'total_dba': self.total_dba,
+            'meets_target': self.meets_target,
+            'lp_63': self.lp_63,
+            'lp_125': self.lp_125,
+            'lp_250': self.lp_250,
+            'lp_500': self.lp_500,
+            'lp_1000': self.lp_1000,
+            'lp_2000': self.lp_2000,
+            'lp_4000': self.lp_4000,
+            'room_volume': self.room_volume,
+            'distributed_ceiling_height': self.distributed_ceiling_height,
+            'distributed_floor_area_per_diffuser': self.distributed_floor_area_per_diffuser,
+            'path_parameters_json': self.path_parameters_json,
+        }

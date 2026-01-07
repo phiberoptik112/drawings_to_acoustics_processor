@@ -267,8 +267,61 @@ class SplashScreen(QWidget):
                 QMessageBox.critical(self, "Error", f"Failed to open project:\n{str(e)}")
                 
     def import_project(self):
-        """Import project from another database"""
-        QMessageBox.information(self, "Import Project", "Import functionality will be implemented in a future version.")
+        """Import project from a .acp file"""
+        try:
+            from data.project_serializer import ProjectImporter
+            from PySide6.QtWidgets import QInputDialog
+            
+            # Open file dialog to select .acp file
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Import Project",
+                os.path.expanduser("~/Documents"),
+                "Acoustic Project Files (*.acp);;All Files (*)"
+            )
+            
+            if not file_path:
+                return  # User cancelled
+            
+            # Optionally prompt for new project name
+            new_name, ok = QInputDialog.getText(
+                self,
+                "Project Name",
+                "Enter a name for the imported project\n(leave blank to use original name):",
+                text=""
+            )
+            
+            if not ok:
+                return  # User cancelled
+            
+            # Import the project
+            importer = ProjectImporter()
+            success, message, new_project_id = importer.import_from_file(
+                file_path,
+                new_name if new_name.strip() else None
+            )
+            
+            if success:
+                QMessageBox.information(self, "Import Successful", message)
+                # Refresh the project list
+                self.load_recent_projects()
+                
+                # Optionally open the imported project
+                reply = QMessageBox.question(
+                    self,
+                    "Open Project",
+                    "Would you like to open the imported project now?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                
+                if reply == QMessageBox.Yes and new_project_id:
+                    self.open_project_dashboard(new_project_id)
+            else:
+                QMessageBox.warning(self, "Import Failed", message)
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", f"Failed to import project:\n{str(e)}")
     
     def open_database_settings(self):
         """Open the database settings dialog"""

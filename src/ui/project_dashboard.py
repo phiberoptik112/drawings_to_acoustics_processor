@@ -120,6 +120,7 @@ class ProjectDashboard(QMainWindow):
         file_menu = menubar.addMenu('File')
         file_menu.addAction('Save Project', self.save_project)
         file_menu.addSeparator()
+        file_menu.addAction('Export Project...', self.export_project)
         file_menu.addAction('Export Results', self.export_results)
         file_menu.addSeparator()
         file_menu.addAction('Close Project', self.close)
@@ -1411,6 +1412,42 @@ class ProjectDashboard(QMainWindow):
     def export_results(self):
         """Export analysis results"""
         QMessageBox.information(self, "Export Results", "Results export will be implemented.")
+    
+    def export_project(self):
+        """Export the project to a portable .acp file"""
+        try:
+            from data.project_serializer import ProjectExporter
+            
+            # Get suggested filename from project name
+            safe_name = self.project.name.replace(' ', '_').replace('/', '_').replace('\\', '_')
+            suggested_filename = f"{safe_name}.acp"
+            
+            # Open save dialog
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Export Project",
+                os.path.join(os.path.expanduser("~/Documents"), suggested_filename),
+                "Acoustic Project Files (*.acp);;All Files (*)"
+            )
+            
+            if not file_path:
+                return  # User cancelled
+            
+            # Ensure .acp extension
+            if not file_path.lower().endswith('.acp'):
+                file_path += '.acp'
+            
+            # Export the project
+            exporter = ProjectExporter()
+            success, message = exporter.export_to_file(self.project_id, file_path)
+            
+            if success:
+                QMessageBox.information(self, "Export Successful", message)
+            else:
+                QMessageBox.warning(self, "Export Failed", message)
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Export Error", f"Failed to export project:\n{str(e)}")
         
     def project_settings(self):
         """Open project settings"""
