@@ -24,6 +24,7 @@ from data.components import STANDARD_COMPONENTS
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 from calculations import RT60Calculator, NoiseCalculator, HVACPathCalculator
 from help import HelpMixin
+from utils.settings_manager import get_settings_manager
 
 
 class DrawingInterface(HelpMixin, QMainWindow):
@@ -132,6 +133,10 @@ class DrawingInterface(HelpMixin, QMainWindow):
         # Help panel - collapsible right side
         self.help_panel = self.setup_help_panel("drawing_interface")
         splitter.addWidget(self.help_panel)
+        
+        # Apply auto-hide setting
+        if get_settings_manager().get_help_panel_auto_hide():
+            self.help_panel.collapse()
         
         # Set splitter proportions
         splitter.setSizes([300, 1100, 320])

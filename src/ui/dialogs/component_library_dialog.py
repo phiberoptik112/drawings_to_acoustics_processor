@@ -53,6 +53,7 @@ from models.hvac import SilencerProduct
 from models.rt60_models import AcousticMaterial, SurfaceCategory, RoomSurfaceInstance
 from calculations.hvac_constants import is_valid_cfm_value
 from help import HelpMixin
+from utils.settings_manager import get_settings_manager
 
 
 class ComponentLibraryDialog(HelpMixin, QDialog):
@@ -294,6 +295,11 @@ class ComponentLibraryDialog(HelpMixin, QDialog):
         # Help panel - collapsible right side
         self.help_panel = self.setup_help_panel("component_library")
         main_splitter.addWidget(self.help_panel)
+        
+        # Apply auto-hide setting
+        if get_settings_manager().get_help_panel_auto_hide():
+            self.help_panel.collapse()
+        
         main_splitter.setSizes([800, 100])
         
         layout.addWidget(main_splitter, 1)

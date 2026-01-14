@@ -24,6 +24,7 @@ from ui.rt60_plot_widget import RT60PlotContainer
 from ui.dialogs.material_search_dialog import MaterialSearchDialog
 from data.materials_database import get_all_materials
 from help import HelpMixin
+from utils.settings_manager import get_settings_manager
 
 
 class MaterialSearchWidget(QWidget):
@@ -515,6 +516,10 @@ class SpaceEditDialog(HelpMixin, QDialog):
         # Help panel - collapsible right side
         self.help_panel = self.setup_help_panel("space_edit")
         main_splitter.addWidget(self.help_panel)
+        
+        # Apply auto-hide setting
+        if get_settings_manager().get_help_panel_auto_hide():
+            self.help_panel.collapse()
         
         # Set splitter proportions (55% tabs, 35% plot, 10% help)
         main_splitter.setSizes([770, 490, 140])

@@ -32,6 +32,7 @@ from ui.dialogs.drawing_sets_dialog import DrawingSetsDialog
 from ui.drawing_comparison_interface import DrawingComparisonInterface
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 from help import HelpMixin
+from utils.settings_manager import get_settings_manager
 
 
 class ProjectDashboard(HelpMixin, QMainWindow):
@@ -108,6 +109,10 @@ class ProjectDashboard(HelpMixin, QMainWindow):
         self.help_panel = self.setup_help_panel("project_dashboard")
         splitter.addWidget(self.help_panel)
         
+        # Apply auto-hide setting
+        if get_settings_manager().get_help_panel_auto_hide():
+            self.help_panel.collapse()
+        
         # Set splitter proportions (favor the drawing/right pane, help panel gets fixed width)
         splitter.setSizes([450, 750, 320])
         
@@ -157,6 +162,14 @@ class ProjectDashboard(HelpMixin, QMainWindow):
         # Help menu
         help_menu = menubar.addMenu('Help')
         help_menu.addAction('Toggle Help Panel (F1)', self._toggle_help_panel)
+        
+        # Auto-hide checkbox
+        self.auto_hide_help_action = QAction('Auto-hide Help Panels', self)
+        self.auto_hide_help_action.setCheckable(True)
+        self.auto_hide_help_action.setChecked(get_settings_manager().get_help_panel_auto_hide())
+        self.auto_hide_help_action.triggered.connect(self._on_auto_hide_help_changed)
+        help_menu.addAction(self.auto_hide_help_action)
+        
         help_menu.addSeparator()
         help_menu.addAction('About', self.show_about)
         
@@ -1798,6 +1811,18 @@ class ProjectDashboard(HelpMixin, QMainWindow):
                 )
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open database settings:\n{str(e)}")
+    
+    def _on_auto_hide_help_changed(self, checked: bool):
+        """Handle auto-hide help panel preference change."""
+        settings = get_settings_manager()
+        settings.set_help_panel_auto_hide(checked)
+        
+        # Apply immediately to current help panel
+        if hasattr(self, 'help_panel') and self.help_panel:
+            if checked:
+                self.help_panel.collapse()
+            else:
+                self.help_panel.expand()
     
     def show_about(self):
         """Show about dialog"""

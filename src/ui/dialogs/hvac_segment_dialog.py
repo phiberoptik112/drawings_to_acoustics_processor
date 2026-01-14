@@ -19,6 +19,7 @@ from data.components import STANDARD_FITTINGS
 from calculations.hvac_path_calculator import HVACPathCalculator
 from calculations.hvac_noise_engine import HVACNoiseEngine
 from help import HelpMixin
+from utils.settings_manager import get_settings_manager
 
 
 class FittingTableWidget(QTableWidget):
@@ -240,6 +241,11 @@ class HVACSegmentDialog(HelpMixin, QDialog):
         # Help panel - collapsible right side
         self.help_panel = self.setup_help_panel("hvac_segment")
         h_splitter.addWidget(self.help_panel)
+        
+        # Apply auto-hide setting
+        if get_settings_manager().get_help_panel_auto_hide():
+            self.help_panel.collapse()
+        
         h_splitter.setSizes([550, 150])
         
         layout.addWidget(h_splitter)

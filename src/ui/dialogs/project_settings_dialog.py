@@ -17,6 +17,7 @@ from models.drawing_sets import DrawingSet
 from models.drawing import Drawing
 from sqlalchemy.orm import selectinload
 from help import HelpMixin
+from utils.settings_manager import get_settings_manager
 
 
 class ProjectSettingsDialog(HelpMixin, QDialog):
@@ -143,6 +144,11 @@ class ProjectSettingsDialog(HelpMixin, QDialog):
         # Help panel - collapsible right side
         self.help_panel = self.setup_help_panel("project_settings")
         main_splitter.addWidget(self.help_panel)
+        
+        # Apply auto-hide setting
+        if get_settings_manager().get_help_panel_auto_hide():
+            self.help_panel.collapse()
+        
         main_splitter.setSizes([500, 200])
         
         layout.addWidget(main_splitter)
