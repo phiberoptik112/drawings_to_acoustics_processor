@@ -15,6 +15,8 @@ class DrawingOverlay(QWidget):
     measurement_taken = Signal(float, str)    # Measurement in real units
     element_double_clicked = Signal(dict)     # Emitted on double-click of an element
     space_clicked = Signal(dict)              # Emitted when a saved space is clicked
+    element_hovered = Signal(object, str)     # Emitted when hovering over an element (id, type)
+    element_unhovered = Signal()              # Emitted when leaving an element
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -53,6 +55,12 @@ class DrawingOverlay(QWidget):
         self.show_grid = False
         self.path_only_mode = False
         self._highlighted_path_id: Optional[int] = None
+        
+        # Element highlighting for analysis panel integration
+        self._highlighted_element_id: Optional[object] = None
+        self._highlighted_element_type: Optional[str] = None
+        self._selected_analysis_element_id: Optional[object] = None
+        self._selected_analysis_element_type: Optional[str] = None
 
         # Selection/drag state
         self._selection_rect: Optional[QRect] = None
@@ -307,6 +315,65 @@ class DrawingOverlay(QWidget):
     def set_highlighted_path(self, path_id: Optional[int]) -> None:
         self._highlighted_path_id = path_id
         self.update()
+    
+    # ---------------------- Element Highlighting (Analysis Panel) ----------------------
+    
+    def set_highlighted_element(self, element_id: object, element_type: str) -> None:
+        """Highlight a specific element for analysis panel integration.
+        
+        Args:
+            element_id: The database ID of the element (can be int or None)
+            element_type: Type of element ('segment', 'component', 'source', 'receiver', etc.)
+        """
+        self._highlighted_element_id = element_id
+        self._highlighted_element_type = element_type
+        self.update()
+    
+    def clear_highlighted_element(self) -> None:
+        """Clear the highlighted element."""
+        self._highlighted_element_id = None
+        self._highlighted_element_type = None
+        self.update()
+    
+    def set_selected_element(self, element_id: object, element_type: str) -> None:
+        """Select a specific element for analysis panel integration.
+        
+        Args:
+            element_id: The database ID of the element
+            element_type: Type of element
+        """
+        self._selected_analysis_element_id = element_id
+        self._selected_analysis_element_type = element_type
+        self.update()
+    
+    def clear_selected_element(self) -> None:
+        """Clear the selected analysis element."""
+        self._selected_analysis_element_id = None
+        self._selected_analysis_element_type = None
+        self.update()
+    
+    def _is_element_highlighted(self, element: dict, element_type: str) -> bool:
+        """Check if an element should be drawn with highlight styling."""
+        if self._highlighted_element_id is None:
+            return False
+        
+        # Get element ID (could be 'id', 'db_id', or other)
+        elem_id = element.get('id') or element.get('db_id')
+        if elem_id is None:
+            return False
+        
+        return elem_id == self._highlighted_element_id
+    
+    def _is_element_selected(self, element: dict, element_type: str) -> bool:
+        """Check if an element should be drawn with selection styling."""
+        if self._selected_analysis_element_id is None:
+            return False
+        
+        elem_id = element.get('id') or element.get('db_id')
+        if elem_id is None:
+            return False
+        
+        return elem_id == self._selected_analysis_element_id
         
     # ---------------------- Mouse/keyboard events ----------------------
     def mousePressEvent(self, event):
@@ -340,13 +407,41 @@ class DrawingOverlay(QWidget):
             self.update()
             
     def mouseMoveEvent(self, event):
+        point = QPoint(event.x(), event.y())
+        
+        # Handle hover detection for analysis panel integration
+        if not (event.buttons() & Qt.LeftButton):
+            self._handle_hover_detection(point)
+        
         if event.buttons() & Qt.LeftButton:
-            point = QPoint(event.x(), event.y())
             if self.tool_manager.current_tool_type == ToolType.SELECT:
                 self._handle_select_move(point)
             else:
                 self.tool_manager.update_tool(point)
             self.update()
+    
+    def _handle_hover_detection(self, point: QPoint):
+        """Detect which element is being hovered and emit signals for analysis panel."""
+        # Check components first
+        comp = self._hit_test_component(point)
+        if comp is not None and isinstance(comp, dict):
+            elem_id = comp.get('id') or comp.get('db_id')
+            if elem_id:
+                self.element_hovered.emit(elem_id, 'component')
+                return
+        
+        # Check segments
+        hit = self._hit_test_segment(point)
+        if hit is not None:
+            seg = hit.get('segment')
+            if isinstance(seg, dict):
+                elem_id = seg.get('id') or seg.get('db_id')
+                if elem_id:
+                    self.element_hovered.emit(elem_id, 'segment')
+                    return
+        
+        # Nothing hovered - emit unhover signal
+        self.element_unhovered.emit()
             
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -776,6 +871,12 @@ class DrawingOverlay(QWidget):
             x = comp.get('x', 0)
             y = comp.get('y', 0)
             comp_type = comp.get('component_type', 'unknown')
+            
+            # Check for highlighting from analysis panel
+            is_highlighted = self._is_element_highlighted(comp, 'component')
+            is_selected = self._is_element_selected(comp, 'component')
+            
+            # Determine base color
             if comp_type == 'fan':
                 color = QColor(255, 100, 100)
             elif comp_type == 'grille':
@@ -786,14 +887,37 @@ class DrawingOverlay(QWidget):
                 color = QColor(255, 255, 100)
             else:
                 color = QColor(150, 150, 150)
-            pen = QPen(color, 2)
-            brush = QBrush(color)
+            
+            # Apply highlighting/selection styling
+            if is_selected:
+                # Selected: larger, with bright cyan outline
+                pen = QPen(QColor(0, 188, 212), 4)
+                brush = QBrush(color)
+                size = 14
+            elif is_highlighted:
+                # Highlighted: pulsing effect with bright outline
+                pen = QPen(QColor(33, 150, 243), 3)
+                brush = QBrush(color.lighter(120))
+                size = 12
+            else:
+                pen = QPen(color, 2)
+                brush = QBrush(color)
+                size = 8
+            
             painter.setPen(pen)
             painter.setBrush(brush)
-            painter.drawEllipse(x - 8, y - 8, 16, 16)
+            painter.drawEllipse(x - size, y - size, size * 2, size * 2)
+            
+            # Draw text
             painter.setPen(QPen(Qt.black))
             painter.setFont(QFont("Arial", 8))
             painter.drawText(x - 15, y + 25, comp_type)
+            
+            # Draw highlight ring for selected elements
+            if is_selected:
+                painter.setPen(QPen(QColor(0, 188, 212, 128), 2, Qt.DashLine))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawEllipse(x - size - 4, y - size - 4, (size + 4) * 2, (size + 4) * 2)
 
     def draw_segments(self, painter):
         for seg in self.segments:
@@ -814,11 +938,36 @@ class DrawingOverlay(QWidget):
             start_y = seg.get('start_y', 0)
             end_x = seg.get('end_x', 0)
             end_y = seg.get('end_y', 0)
-            pen = QPen(QColor(255, 165, 0), 3)
+            
+            # Check for highlighting from analysis panel
+            is_highlighted = self._is_element_highlighted(seg, 'segment')
+            is_selected = self._is_element_selected(seg, 'segment')
+            
+            # Apply styling based on state
+            if is_selected:
+                # Selected: thick cyan line
+                pen = QPen(QColor(0, 188, 212), 6)
+            elif is_highlighted:
+                # Highlighted: bright blue, slightly thicker
+                pen = QPen(QColor(33, 150, 243), 5)
+            else:
+                # Default orange
+                pen = QPen(QColor(255, 165, 0), 3)
+            
             painter.setPen(pen)
             painter.drawLine(start_x, start_y, end_x, end_y)
+            
+            # Draw midpoint marker for highlighted/selected segments
             mid_x = (start_x + end_x) // 2
             mid_y = (start_y + end_y) // 2
+            
+            if is_highlighted or is_selected:
+                marker_color = QColor(0, 188, 212) if is_selected else QColor(33, 150, 243)
+                painter.setPen(QPen(marker_color, 2))
+                painter.setBrush(QBrush(marker_color))
+                painter.drawEllipse(mid_x - 4, mid_y - 4, 8, 8)
+            
+            # Draw length text
             length_text = seg.get('length_formatted', f"{seg.get('length_real', 0):.1f} ft")
             painter.setPen(QPen(Qt.black))
             painter.setFont(QFont("Arial", 8))

@@ -25,6 +25,7 @@ from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAIL
 from calculations import RT60Calculator, NoiseCalculator, HVACPathCalculator
 from help import HelpMixin
 from utils.settings_manager import get_settings_manager
+from ui.widgets.path_analysis_panel import PathAnalysisPanel
 
 
 class DrawingInterface(HelpMixin, QMainWindow):
@@ -120,28 +121,32 @@ class DrawingInterface(HelpMixin, QMainWindow):
         main_layout = QHBoxLayout()
         
         # Create splitter
-        splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter = QSplitter(Qt.Horizontal)
         
         # Left panel - tools and properties
         left_panel = self.create_left_panel()
-        splitter.addWidget(left_panel)
+        self.main_splitter.addWidget(left_panel)
         
         # Center panel - PDF viewer with overlay
         center_panel = self.create_center_panel()
-        splitter.addWidget(center_panel)
+        self.main_splitter.addWidget(center_panel)
+        
+        # Analysis panel - path calculation view (collapsible)
+        self.analysis_panel = PathAnalysisPanel(project_id=self.project_id)
+        self.main_splitter.addWidget(self.analysis_panel)
         
         # Help panel - collapsible right side
         self.help_panel = self.setup_help_panel("drawing_interface")
-        splitter.addWidget(self.help_panel)
+        self.main_splitter.addWidget(self.help_panel)
         
-        # Apply auto-hide setting
+        # Apply auto-hide setting for help panel
         if get_settings_manager().get_help_panel_auto_hide():
             self.help_panel.collapse()
         
-        # Set splitter proportions
-        splitter.setSizes([300, 1100, 320])
+        # Set splitter proportions: tools, drawing, analysis, help
+        self.main_splitter.setSizes([280, 750, 400, 320])
         
-        main_layout.addWidget(splitter)
+        main_layout.addWidget(self.main_splitter)
         central_widget.setLayout(main_layout)
         
         # Create status bar
@@ -178,6 +183,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction('Toggle Grid', self.toggle_grid)
         view_menu.addAction('Toggle Measurements', self.toggle_measurements)
+        view_menu.addSeparator()
+        view_menu.addAction('📊 Toggle Analysis Panel', self.toggle_analysis_panel)
         
         # Tools menu
         tools_menu = menubar.addMenu('Tools')
@@ -484,6 +491,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
             self.drawing_overlay.element_double_clicked.connect(self.overlay_element_double_clicked)
             # Handle space clicks for selection/editing
             self.drawing_overlay.space_clicked.connect(self.on_space_clicked)
+            # Connect hover signals for analysis panel integration
+            self.drawing_overlay.element_hovered.connect(self.on_drawing_element_hovered)
+            self.drawing_overlay.element_unhovered.connect(self.on_drawing_element_unhovered)
             
         self.scale_manager.scale_changed.connect(self.scale_updated)
         
@@ -492,6 +502,19 @@ class DrawingInterface(HelpMixin, QMainWindow):
         # Saved paths list - single click to select path for editing, double-click to open editor
         self.paths_list.itemClicked.connect(self.on_path_selected)
         self.paths_list.itemDoubleClicked.connect(self.open_path_editor_from_item)
+        
+        # Analysis panel connections - bidirectional linking with drawing
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            # When hovering cards in analysis panel, highlight on drawing
+            self.analysis_panel.element_hover_requested.connect(self.highlight_element_on_drawing)
+            self.analysis_panel.element_unhover_requested.connect(self.clear_element_highlight_on_drawing)
+            # When clicking cards, select and pan to element on drawing
+            self.analysis_panel.element_select_requested.connect(self.select_element_on_drawing)
+            self.analysis_panel.pan_to_element_requested.connect(self.pan_to_element_on_drawing)
+            # When path selection changes in analysis panel
+            self.analysis_panel.path_changed.connect(self.on_analysis_path_changed)
+            # When edit is requested from analysis panel
+            self.analysis_panel.edit_element_requested.connect(self.edit_element_from_analysis)
         
     def load_pdf(self):
         """Load the PDF file with path resolution for portability"""
@@ -2972,6 +2995,10 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
             session.close()
             
+            # Refresh analysis panel path list
+            if hasattr(self, 'analysis_panel') and self.analysis_panel:
+                self.analysis_panel.refresh_paths()
+            
         except Exception as e:
             if session is not None:
                 session.close()
@@ -4037,6 +4064,10 @@ class DrawingInterface(HelpMixin, QMainWindow):
             # Also make sure the path is visible on drawing
             self.show_path_on_drawing(hvac_path.id)
             
+            # Update analysis panel to show this path's calculations
+            if hasattr(self, 'analysis_panel') and self.analysis_panel:
+                self.analysis_panel.set_path(hvac_path.id)
+            
             print(f"DEBUG: Selected path {hvac_path.id} ({hvac_path.name}) for editing")
             
         except Exception as e:
@@ -4254,6 +4285,194 @@ class DrawingInterface(HelpMixin, QMainWindow):
         """Update any cached space data with fresh database values"""
         # This method can be extended to update specific UI elements
         pass
+
+    # ========== Analysis Panel Integration Methods ==========
+    
+    def on_drawing_element_hovered(self, element_id: object, element_type: str):
+        """Handle element hover on drawing - highlight in analysis panel"""
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.highlight_element_card(element_id, element_type)
+    
+    def on_drawing_element_unhovered(self):
+        """Handle element unhover on drawing - clear highlight in analysis panel"""
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.clear_highlight()
+    
+    def toggle_analysis_panel(self):
+        """Toggle the analysis panel visibility"""
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            if self.analysis_panel.content_widget.isVisible():
+                self.analysis_panel.collapse()
+            else:
+                self.analysis_panel.expand()
+    
+    def show_path_in_analysis_panel(self, path_id: int):
+        """Show a specific path in the analysis panel"""
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.expand()
+            self.analysis_panel.set_path(path_id)
+    
+    def highlight_element_on_drawing(self, element_id: object, element_type: str):
+        """Highlight a specific element on the drawing overlay (called from analysis panel hover)"""
+        if not self.drawing_overlay:
+            return
+        
+        try:
+            # Set highlighted element in overlay
+            self.drawing_overlay.set_highlighted_element(element_id, element_type)
+            self.drawing_overlay.update()
+        except AttributeError:
+            # If method doesn't exist yet, just log
+            print(f"DEBUG: highlight_element_on_drawing - overlay doesn't support highlighting yet")
+    
+    def clear_element_highlight_on_drawing(self):
+        """Clear element highlight on drawing (called from analysis panel unhover)"""
+        if not self.drawing_overlay:
+            return
+        
+        try:
+            self.drawing_overlay.clear_highlighted_element()
+            self.drawing_overlay.update()
+        except AttributeError:
+            pass
+    
+    def select_element_on_drawing(self, element_id: object, element_type: str):
+        """Select an element on the drawing (called from analysis panel click)"""
+        if not self.drawing_overlay:
+            return
+        
+        try:
+            self.drawing_overlay.set_selected_element(element_id, element_type)
+            self.drawing_overlay.update()
+        except AttributeError:
+            print(f"DEBUG: select_element_on_drawing - overlay doesn't support selection yet")
+    
+    def pan_to_element_on_drawing(self, element_id: object, element_type: str):
+        """Pan the drawing view to show a specific element"""
+        if not self.drawing_overlay or not self.pdf_viewer:
+            return
+        
+        try:
+            # Find element position on drawing
+            pos = self._find_element_position(element_id, element_type)
+            if pos:
+                # Pan viewer to center on position
+                self.pdf_viewer.center_on_point(pos[0], pos[1])
+        except Exception as e:
+            print(f"DEBUG: pan_to_element_on_drawing error: {e}")
+    
+    def _find_element_position(self, element_id: object, element_type: str):
+        """Find the position of an element on the drawing"""
+        if not element_id:
+            return None
+        
+        # Check components
+        for comp in self.drawing_overlay.components:
+            comp_id = comp.get('id') or comp.get('db_id')
+            if comp_id == element_id:
+                return (comp.get('x', 0), comp.get('y', 0))
+        
+        # Check segments (return midpoint)
+        for seg in self.drawing_overlay.segments:
+            seg_id = seg.get('id') or seg.get('db_id')
+            if seg_id == element_id:
+                x1, y1 = seg.get('start_x', 0), seg.get('start_y', 0)
+                x2, y2 = seg.get('end_x', 0), seg.get('end_y', 0)
+                return ((x1 + x2) / 2, (y1 + y2) / 2)
+        
+        # Check if it's a space/receiver
+        if element_type in ('receiver', 'space'):
+            for space_data in self.drawing_overlay.saved_spaces:
+                if space_data.get('id') == element_id:
+                    # Return center of space polygon
+                    coords = space_data.get('coordinates', [])
+                    if coords:
+                        xs = [c[0] for c in coords]
+                        ys = [c[1] for c in coords]
+                        return (sum(xs) / len(xs), sum(ys) / len(ys))
+        
+        return None
+    
+    def on_analysis_path_changed(self, path_id: int):
+        """Handle when the analysis panel selects a different path"""
+        # Update the visible paths to show this path on the drawing
+        if path_id and self.drawing_overlay:
+            # Add to visible paths
+            self.visible_paths.add(path_id)
+            self.drawing_overlay.set_path_visibility(path_id, True)
+            self.drawing_overlay.update()
+            
+            # Also update the paths list selection
+            for i in range(self.paths_list.count()):
+                item = self.paths_list.item(i)
+                if item and item.data(Qt.UserRole) == path_id:
+                    self.paths_list.setCurrentItem(item)
+                    break
+    
+    def edit_element_from_analysis(self, element_id: object, element_type: str):
+        """Open edit dialog for an element (called from analysis panel double-click)"""
+        if not element_id:
+            return
+        
+        try:
+            if element_type in ('segment', 'duct'):
+                # Open segment editor
+                from models.hvac_segment import HVACSegment
+                session = get_session()
+                segment = session.query(HVACSegment).filter(HVACSegment.id == element_id).first()
+                if segment:
+                    dialog = HVACSegmentDialog(
+                        self,
+                        hvac_path_id=segment.hvac_path_id,
+                        from_component=segment.from_component,
+                        to_component=segment.to_component,
+                        segment=segment
+                    )
+                    dialog.segment_saved.connect(self._on_segment_saved)
+                    if dialog.exec() == QDialog.Accepted:
+                        # Refresh analysis panel
+                        if hasattr(self, 'analysis_panel'):
+                            self.analysis_panel._recalculate_path()
+                session.close()
+                
+            elif element_type in ('source', 'component', 'ahu', 'fan', 'mechanical_unit', 
+                                  'elbow', 'silencer', 'diffuser', 'damper', 'terminal'):
+                # Open component editor
+                from models.hvac_component import HVACComponent
+                session = get_session()
+                component = session.query(HVACComponent).filter(HVACComponent.id == element_id).first()
+                if component:
+                    dialog = HVACComponentDialog(
+                        self,
+                        project_id=self.project_id,
+                        drawing_id=self.drawing_id,
+                        component=component
+                    )
+                    if dialog.exec() == QDialog.Accepted:
+                        # Refresh analysis panel
+                        if hasattr(self, 'analysis_panel'):
+                            self.analysis_panel._recalculate_path()
+                session.close()
+                
+            elif element_type in ('receiver', 'space'):
+                # Open space editor
+                from models.space import Space
+                session = get_session()
+                space = session.query(Space).filter(Space.id == element_id).first()
+                if space:
+                    dialog = SpaceEditDialog(self, space)
+                    dialog.show()  # Non-modal
+                session.close()
+                
+        except Exception as e:
+            print(f"DEBUG: edit_element_from_analysis error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def refresh_analysis_panel(self):
+        """Refresh the analysis panel data"""
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.refresh_paths()
 
     def closeEvent(self, event):
         """Handle window close event"""
