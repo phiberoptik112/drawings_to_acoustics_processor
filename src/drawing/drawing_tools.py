@@ -364,6 +364,13 @@ class SegmentTool(DrawingTool):
 
         # Try to find a component at the start point
         self.from_component = self.find_nearby_component(point)
+        
+        # If found a component, SNAP start_point to the component center
+        if self.from_component:
+            comp_x = int(self.from_component.get('x', 0))
+            comp_y = int(self.from_component.get('y', 0))
+            self.start_point = QPoint(comp_x, comp_y)
+            print(f"DEBUG: Snapped start_point to component center ({comp_x}, {comp_y})")
 
         # If no component found, try to find a segment endpoint; snap and infer component
         if not self.from_component:
@@ -373,13 +380,18 @@ class SegmentTool(DrawingTool):
                 self.from_segment = nearby_segment
                 # Snap start point for clean geometry
                 try:
-                    self.start_point.setX(int(nearby_segment['snap_x']))
-                    self.start_point.setY(int(nearby_segment['snap_y']))
+                    snap_x = int(nearby_segment['snap_x'])
+                    snap_y = int(nearby_segment['snap_y'])
+                    self.start_point = QPoint(snap_x, snap_y)
                 except Exception:
                     pass
                 # If that endpoint is attached to a component, use it
                 if nearby_segment.get('component') is not None:
                     self.from_component = nearby_segment['component']
+                    # Snap to component center
+                    comp_x = int(self.from_component.get('x', 0))
+                    comp_y = int(self.from_component.get('y', 0))
+                    self.start_point = QPoint(comp_x, comp_y)
                 else:
                     # Re-check for a component at the snapped point
                     try:
@@ -388,6 +400,10 @@ class SegmentTool(DrawingTool):
                         if alt_component is not None:
                             print("DEBUG: Found component at snapped start point; using as from_component")
                             self.from_component = alt_component
+                            # Snap to component center
+                            comp_x = int(alt_component.get('x', 0))
+                            comp_y = int(alt_component.get('y', 0))
+                            self.start_point = QPoint(comp_x, comp_y)
                     except Exception:
                         pass
         
@@ -400,6 +416,13 @@ class SegmentTool(DrawingTool):
 
             # Try to find a component at the end point
             self.to_component = self.find_nearby_component(point)
+            
+            # If found a component, SNAP current_point to the component center
+            if self.to_component:
+                comp_x = int(self.to_component.get('x', 0))
+                comp_y = int(self.to_component.get('y', 0))
+                self.current_point = QPoint(comp_x, comp_y)
+                print(f"DEBUG: Snapped current_point to component center ({comp_x}, {comp_y})")
 
             # If no component found, try to find a segment endpoint; snap and infer component
             if not self.to_component:
@@ -409,13 +432,18 @@ class SegmentTool(DrawingTool):
                     self.to_segment = nearby_segment
                     # Snap end point for clean geometry
                     try:
-                        self.current_point.setX(int(nearby_segment['snap_x']))
-                        self.current_point.setY(int(nearby_segment['snap_y']))
+                        snap_x = int(nearby_segment['snap_x'])
+                        snap_y = int(nearby_segment['snap_y'])
+                        self.current_point = QPoint(snap_x, snap_y)
                     except Exception:
                         pass
                     # If that endpoint is attached to a component, use it
                     if nearby_segment.get('component') is not None:
                         self.to_component = nearby_segment['component']
+                        # Snap to component center
+                        comp_x = int(self.to_component.get('x', 0))
+                        comp_y = int(self.to_component.get('y', 0))
+                        self.current_point = QPoint(comp_x, comp_y)
                     else:
                         # Re-check for a component at the snapped point
                         try:
@@ -424,6 +452,10 @@ class SegmentTool(DrawingTool):
                             if alt_component is not None:
                                 print("DEBUG: Found component at snapped end point; using as to_component")
                                 self.to_component = alt_component
+                                # Snap to component center
+                                comp_x = int(alt_component.get('x', 0))
+                                comp_y = int(alt_component.get('y', 0))
+                                self.current_point = QPoint(comp_x, comp_y)
                         except Exception:
                             pass
 
@@ -445,17 +477,33 @@ class SegmentTool(DrawingTool):
         if not self.start_point or not self.current_point:
             print(f"DEBUG: get_result - no start or current point")
             return None
-            
-        # Calculate length (with axis snapping)
+        
+        # Get base coordinates from points (already snapped to component centers if connected)
         x1, y1 = self.start_point.x(), self.start_point.y()
         x2, y2 = self.current_point.x(), self.current_point.y()
-        dx = x2 - x1
-        dy = y2 - y1
-        # Snap to axis if nearly horizontal/vertical (10px tolerance)
-        if abs(dx) < 10 and abs(dy) >= 10:
-            x2 = x1
-        elif abs(dy) < 10 and abs(dx) >= 10:
-            y2 = y1
+        
+        # If connected to components, use component coordinates directly (highest priority)
+        if self.from_component:
+            x1 = int(self.from_component.get('x', x1))
+            y1 = int(self.from_component.get('y', y1))
+            print(f"DEBUG: Using from_component coordinates: ({x1}, {y1})")
+        
+        if self.to_component:
+            x2 = int(self.to_component.get('x', x2))
+            y2 = int(self.to_component.get('y', y2))
+            print(f"DEBUG: Using to_component coordinates: ({x2}, {y2})")
+        
+        # Only apply axis snapping if NOT connected to components
+        # This preserves the exact component positions
+        if not self.from_component and not self.to_component:
+            dx = x2 - x1
+            dy = y2 - y1
+            # Snap to axis if nearly horizontal/vertical (10px tolerance)
+            if abs(dx) < 10 and abs(dy) >= 10:
+                x2 = x1
+            elif abs(dy) < 10 and abs(dx) >= 10:
+                y2 = y1
+        
         length_pixels = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
         
         print(f"DEBUG: get_result - length_pixels: {length_pixels}")
@@ -463,8 +511,9 @@ class SegmentTool(DrawingTool):
         if length_pixels > 10:  # Minimum segment length (reduced for precise connections)
             # Prevent self-connections
             if self.from_component and self.to_component:
-                from_comp_id = f"{self.from_component.get('x', 0)}_{self.from_component.get('y', 0)}_{self.from_component.get('component_type', 'unknown')}"
-                to_comp_id = f"{self.to_component.get('x', 0)}_{self.to_component.get('y', 0)}_{self.to_component.get('component_type', 'unknown')}"
+                # Use element IDs if available, otherwise fall back to position-based ID
+                from_comp_id = self.from_component.get('_element_id') or f"{self.from_component.get('x', 0)}_{self.from_component.get('y', 0)}_{self.from_component.get('component_type', 'unknown')}"
+                to_comp_id = self.to_component.get('_element_id') or f"{self.to_component.get('x', 0)}_{self.to_component.get('y', 0)}_{self.to_component.get('component_type', 'unknown')}"
                 
                 if from_comp_id == to_comp_id:
                     print(f"DEBUG: get_result - preventing self-connection")

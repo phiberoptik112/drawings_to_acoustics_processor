@@ -66,8 +66,16 @@ class DrawingOverlay(QWidget):
         # Snapping threshold in pixels
         self._snap_threshold_px: int = 20
         
+        # Element ID counter for unique identification
+        self._element_id_counter: int = 0
+        
         # Connect signals
         self.tool_manager.element_created.connect(self.handle_element_created)
+    
+    def _generate_element_id(self) -> str:
+        """Generate a unique element ID for components and segments."""
+        self._element_id_counter += 1
+        return f"elem_{self._element_id_counter}"
         
     def set_scale_manager(self, scale_manager):
         self.scale_manager = scale_manager
@@ -422,6 +430,9 @@ class DrawingOverlay(QWidget):
             self._base_dirty = True
             
         elif element_type == 'component':
+            # Assign unique element ID if not already present
+            if '_element_id' not in element_data:
+                element_data['_element_id'] = self._generate_element_id()
             self.components.append(element_data)
             self.update_segment_tool_components()
             try:
@@ -429,8 +440,12 @@ class DrawingOverlay(QWidget):
             except Exception as e:
                 print(f"DEBUG: attach_component_to_nearby_segments error: {e}")
             self._base_dirty = True
+            print(f"DEBUG: Created component with ID {element_data['_element_id']} at ({element_data.get('x')}, {element_data.get('y')})")
             
         elif element_type == 'segment':
+            # Assign unique element ID if not already present
+            if '_element_id' not in element_data:
+                element_data['_element_id'] = self._generate_element_id()
             length_pixels = element_data.get('length_pixels', 0)
             try:
                 length_real = self.scale_manager.pixels_to_real(length_pixels)
@@ -440,6 +455,7 @@ class DrawingOverlay(QWidget):
                 pass
             self.segments.append(element_data)
             self._base_dirty = True
+            print(f"DEBUG: Created segment with ID {element_data['_element_id']} from ({element_data.get('start_x')}, {element_data.get('start_y')}) to ({element_data.get('end_x')}, {element_data.get('end_y')})")
             
         elif element_type == 'measurement':
             length_pixels = element_data.get('length_pixels', 0)
@@ -825,29 +841,69 @@ class DrawingOverlay(QWidget):
             painter.drawText(mid_x - 15, mid_y - 5, length_text)
 
     def _is_component_in_visible_path(self, comp):
+        """Check if component is in a visible path using ID or coordinate matching."""
+        comp_id = comp.get('_element_id')
         for path_id in self.visible_paths:
             mapping = self.path_element_mapping.get(path_id, {})
-            if comp in mapping.get('components', []):
-                        return True
+            for registered_comp in mapping.get('components', []):
+                # Try ID-based match first (most reliable)
+                if comp_id and registered_comp.get('_element_id') == comp_id:
+                    return True
+                # Fall back to identity check
+                if comp is registered_comp:
+                    return True
+                # Fall back to coordinate/type matching
+                if self._components_match(comp, registered_comp):
+                    return True
         return False
     
     def _is_segment_in_visible_path(self, seg):
+        """Check if segment is in a visible path using ID or coordinate matching."""
+        seg_id = seg.get('_element_id')
         for path_id in self.visible_paths:
             mapping = self.path_element_mapping.get(path_id, {})
-            if seg in mapping.get('segments', []):
-                        return True
+            for registered_seg in mapping.get('segments', []):
+                # Try ID-based match first (most reliable)
+                if seg_id and registered_seg.get('_element_id') == seg_id:
+                    return True
+                # Fall back to identity check
+                if seg is registered_seg:
+                    return True
+                # Fall back to coordinate matching
+                if self._segments_match(seg, registered_seg):
+                    return True
         return False
 
     def _is_component_registered_any_path(self, comp):
+        """Check if component is registered to any path using ID or coordinate matching."""
+        comp_id = comp.get('_element_id')
         for mapping in self.path_element_mapping.values():
-            if comp in mapping.get('components', []):
-                return True
+            for registered_comp in mapping.get('components', []):
+                # Try ID-based match first
+                if comp_id and registered_comp.get('_element_id') == comp_id:
+                    return True
+                # Fall back to identity check
+                if comp is registered_comp:
+                    return True
+                # Fall back to coordinate/type matching
+                if self._components_match(comp, registered_comp):
+                    return True
         return False
 
     def _is_segment_registered_any_path(self, seg):
+        """Check if segment is registered to any path using ID or coordinate matching."""
+        seg_id = seg.get('_element_id')
         for mapping in self.path_element_mapping.values():
-            if seg in mapping.get('segments', []):
-                return True
+            for registered_seg in mapping.get('segments', []):
+                # Try ID-based match first
+                if seg_id and registered_seg.get('_element_id') == seg_id:
+                    return True
+                # Fall back to identity check
+                if seg is registered_seg:
+                    return True
+                # Fall back to coordinate matching
+                if self._segments_match(seg, registered_seg):
+                    return True
         return False
 
     def _draw_selection(self, painter):
@@ -892,14 +948,18 @@ class DrawingOverlay(QWidget):
         elif hit_seg:
             self._drag_active = True
             self._drag_last_point = point
-            self._hit_target = {'type': 'segment', 'ref': hit_seg.get('segment'), 'endpoint': hit_seg.get('endpoint')}
+            # Extract the raw segment dict from hit result
+            raw_seg = hit_seg.get('segment')
+            self._hit_target = {'type': 'segment', 'ref': raw_seg, 'endpoint': hit_seg.get('endpoint')}
             if self._select_modifiers & Qt.ControlModifier:
-                if hit_seg in self._selected_segments:
-                    self._selected_segments.remove(hit_seg)
+                # Use raw segment dict for selection (consistent format)
+                if raw_seg in self._selected_segments:
+                    self._selected_segments.remove(raw_seg)
                 else:
-                    self._selected_segments.append(hit_seg)
+                    self._selected_segments.append(raw_seg)
             else:
-                self._selected_segments = [hit_seg]
+                # Store raw segment dict (consistent format)
+                self._selected_segments = [raw_seg]
                 self._selected_components.clear()
         else:
             if not (self._select_modifiers & Qt.ControlModifier):
@@ -1045,32 +1105,80 @@ class DrawingOverlay(QWidget):
         return inside
 
     def _update_segments_for_component_move(self, component):
+        """Update all segments connected to a component when it moves.
+        
+        Uses ID-based matching for robust reference tracking, falling back to
+        identity comparison and coordinate matching.
+        """
         try:
             cx, cy = int(component.get('x', 0)), int(component.get('y', 0))
+            comp_id = component.get('_element_id')
+            
             for seg in self.segments:
-                if seg.get('from_component') is component:
+                from_comp = seg.get('from_component')
+                to_comp = seg.get('to_component')
+                
+                # Check if segment start is connected to this component
+                is_from_connected = False
+                if from_comp is not None:
+                    # Try ID-based match first
+                    if comp_id and from_comp.get('_element_id') == comp_id:
+                        is_from_connected = True
+                    # Fall back to identity check
+                    elif from_comp is component:
+                        is_from_connected = True
+                    # Fall back to coordinate/type match
+                    elif self._components_match(from_comp, component):
+                        is_from_connected = True
+                        # Update the reference to use the current component
+                        seg['from_component'] = component
+                
+                if is_from_connected:
                     seg['start_x'] = cx
                     seg['start_y'] = cy
-                if seg.get('to_component') is component:
+                    print(f"DEBUG: Updated segment start to component ({cx}, {cy})")
+                
+                # Check if segment end is connected to this component
+                is_to_connected = False
+                if to_comp is not None:
+                    # Try ID-based match first
+                    if comp_id and to_comp.get('_element_id') == comp_id:
+                        is_to_connected = True
+                    # Fall back to identity check
+                    elif to_comp is component:
+                        is_to_connected = True
+                    # Fall back to coordinate/type match
+                    elif self._components_match(to_comp, component):
+                        is_to_connected = True
+                        # Update the reference to use the current component
+                        seg['to_component'] = component
+                
+                if is_to_connected:
                     seg['end_x'] = cx
                     seg['end_y'] = cy
-                # If not attached but endpoint is close after move, attach and snap
+                    print(f"DEBUG: Updated segment end to component ({cx}, {cy})")
+                
+                # If segment endpoint is not attached, try to attach if close
                 if seg.get('from_component') is None:
                     if self._is_near_point(seg.get('start_x', 0), seg.get('start_y', 0), cx, cy, self._snap_threshold_px):
                         seg['from_component'] = component
                         seg['start_x'] = cx
                         seg['start_y'] = cy
+                        print(f"DEBUG: Attached unconnected segment start to component ({cx}, {cy})")
+                        
                 if seg.get('to_component') is None:
                     if self._is_near_point(seg.get('end_x', 0), seg.get('end_y', 0), cx, cy, self._snap_threshold_px):
                         seg['to_component'] = component
                         seg['end_x'] = cx
                         seg['end_y'] = cy
+                        print(f"DEBUG: Attached unconnected segment end to component ({cx}, {cy})")
+                
                 try:
                     self._recompute_segment_length(seg)
                 except Exception:
                     pass
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"DEBUG: Error in _update_segments_for_component_move: {e}")
 
     def _is_near_point(self, x1: int, y1: int, x2: int, y2: int, threshold: int) -> bool:
         dx, dy = int(x1) - int(x2), int(y1) - int(y2)
@@ -1089,23 +1197,34 @@ class DrawingOverlay(QWidget):
         return best
 
     def _snap_segment_endpoint_to_component(self, seg: dict, endpoint: str, threshold: int) -> None:
+        """Snap a segment endpoint to a nearby component.
+        
+        Args:
+            seg: Segment dict to modify
+            endpoint: 'start' or 'end'
+            threshold: Maximum distance in pixels to snap
+        """
         try:
             if endpoint == 'start':
                 px, py = int(seg.get('start_x', 0)), int(seg.get('start_y', 0))
                 comp = self._find_nearest_component(px, py, threshold)
                 if comp is not None:
+                    old_x, old_y = seg.get('start_x', 0), seg.get('start_y', 0)
                     seg['from_component'] = comp
                     seg['start_x'] = int(comp.get('x', 0))
                     seg['start_y'] = int(comp.get('y', 0))
+                    print(f"DEBUG: Snapped segment start from ({old_x}, {old_y}) to component at ({seg['start_x']}, {seg['start_y']})")
             elif endpoint == 'end':
                 px, py = int(seg.get('end_x', 0)), int(seg.get('end_y', 0))
                 comp = self._find_nearest_component(px, py, threshold)
                 if comp is not None:
+                    old_x, old_y = seg.get('end_x', 0), seg.get('end_y', 0)
                     seg['to_component'] = comp
                     seg['end_x'] = int(comp.get('x', 0))
                     seg['end_y'] = int(comp.get('y', 0))
-        except Exception:
-            pass
+                    print(f"DEBUG: Snapped segment end from ({old_x}, {old_y}) to component at ({seg['end_x']}, {seg['end_y']})")
+        except Exception as e:
+            print(f"DEBUG: Error in _snap_segment_endpoint_to_component: {e}")
 
     def _recompute_segment_length(self, seg: dict) -> None:
         from math import sqrt
@@ -1116,16 +1235,35 @@ class DrawingOverlay(QWidget):
         seg['length_formatted'] = self.scale_manager.format_distance(lr)
 
     def _update_component_base_coordinates(self, component: dict) -> None:
-        """Update base coordinates for a specific component to maintain zoom consistency"""
+        """Update base coordinates for a specific component to maintain zoom consistency.
+        
+        Uses element ID for matching when available, falling back to object identity
+        and coordinate-based matching.
+        """
         try:
             cur_z = self._current_zoom_factor or 1.0
-            comp_id = id(component)  # Use object identity since components might not have stable IDs
+            elem_id = component.get('_element_id')  # Use element ID if available
+            obj_id = id(component)  # Fallback to object identity
             
             # Find and update the component in base cache
             for i, bc in enumerate(self._base_components):
-                if id(bc) == comp_id or self._components_match(bc, component):
+                matched = False
+                # Try element ID match first
+                if elem_id and bc.get('_element_id') == elem_id:
+                    matched = True
+                # Fall back to object identity
+                elif id(bc) == obj_id:
+                    matched = True
+                # Fall back to coordinate/type match
+                elif self._components_match(bc, component):
+                    matched = True
+                
+                if matched:
                     self._base_components[i]['x'] = int(component.get('x', 0) / cur_z)
                     self._base_components[i]['y'] = int(component.get('y', 0) / cur_z)
+                    # Propagate element ID to base cache if not already present
+                    if elem_id and '_element_id' not in self._base_components[i]:
+                        self._base_components[i]['_element_id'] = elem_id
                     if isinstance(component.get('position'), dict):
                         self._base_components[i]['position'] = {
                             'x': int(component['position'].get('x', 0) / cur_z),
@@ -1136,20 +1274,39 @@ class DrawingOverlay(QWidget):
             print(f"DEBUG: Failed to update component base coordinates: {e}")
 
     def _update_segment_base_coordinates(self, segment: dict) -> None:
-        """Update base coordinates for a specific segment to maintain zoom consistency"""
+        """Update base coordinates for a specific segment to maintain zoom consistency.
+        
+        Uses element ID for matching when available, falling back to object identity
+        and coordinate-based matching.
+        """
         try:
             cur_z = self._current_zoom_factor or 1.0
-            seg_id = id(segment)  # Use object identity
+            elem_id = segment.get('_element_id')  # Use element ID if available
+            obj_id = id(segment)  # Fallback to object identity
             
             # Find and update the segment in base cache
             for i, bs in enumerate(self._base_segments):
-                if id(bs) == seg_id or self._segments_match(bs, segment):
+                matched = False
+                # Try element ID match first
+                if elem_id and bs.get('_element_id') == elem_id:
+                    matched = True
+                # Fall back to object identity
+                elif id(bs) == obj_id:
+                    matched = True
+                # Fall back to coordinate match
+                elif self._segments_match(bs, segment):
+                    matched = True
+                
+                if matched:
                     self._base_segments[i]['start_x'] = int(segment.get('start_x', 0) / cur_z)
                     self._base_segments[i]['start_y'] = int(segment.get('start_y', 0) / cur_z)
                     self._base_segments[i]['end_x'] = int(segment.get('end_x', 0) / cur_z)
                     self._base_segments[i]['end_y'] = int(segment.get('end_y', 0) / cur_z)
                     lp = segment.get('length_pixels', 0)
                     self._base_segments[i]['length_pixels'] = lp / cur_z if lp else 0
+                    # Propagate element ID to base cache if not already present
+                    if elem_id and '_element_id' not in self._base_segments[i]:
+                        self._base_segments[i]['_element_id'] = elem_id
                     break
         except Exception as e:
             print(f"DEBUG: Failed to update segment base coordinates: {e}")
@@ -1169,20 +1326,51 @@ class DrawingOverlay(QWidget):
 
     # ---------------------- Utilities ----------------------
     def attach_component_to_nearby_segments(self, component, threshold_px=20):
+        """Attach a newly placed component to any nearby segment endpoints.
+        
+        This allows placing components after segments have been drawn, and the
+        segments will automatically connect to the new component.
+        """
         comp_x = component.get('x', 0)
         comp_y = component.get('y', 0)
+        comp_id = component.get('_element_id', 'unknown')
+        attached_count = 0
+        
         for seg in self.segments:
             start_x = seg.get('start_x', 0)
             start_y = seg.get('start_y', 0)
             end_x = seg.get('end_x', 0)
             end_y = seg.get('end_y', 0)
+            
             start_dist = ((comp_x - start_x) ** 2 + (comp_y - start_y) ** 2) ** 0.5
-            if start_dist <= threshold_px:
+            if start_dist <= threshold_px and seg.get('from_component') is None:
                 seg['from_component'] = component
+                # Also snap the segment endpoint to the component center
+                seg['start_x'] = comp_x
+                seg['start_y'] = comp_y
+                attached_count += 1
+                print(f"DEBUG: Attached component {comp_id} to segment start (was {start_dist:.1f}px away)")
+                try:
+                    self._recompute_segment_length(seg)
+                except Exception:
+                    pass
                 continue
+            
             end_dist = ((comp_x - end_x) ** 2 + (comp_y - end_y) ** 2) ** 0.5
-            if end_dist <= threshold_px:
+            if end_dist <= threshold_px and seg.get('to_component') is None:
                 seg['to_component'] = component
+                # Also snap the segment endpoint to the component center
+                seg['end_x'] = comp_x
+                seg['end_y'] = comp_y
+                attached_count += 1
+                print(f"DEBUG: Attached component {comp_id} to segment end (was {end_dist:.1f}px away)")
+                try:
+                    self._recompute_segment_length(seg)
+                except Exception:
+                    pass
+        
+        if attached_count > 0:
+            print(f"DEBUG: Component {comp_id} attached to {attached_count} segment endpoint(s)")
 
     def draw_grid(self, painter):
         pen = QPen(QColor(200, 200, 200), 1, Qt.DotLine)
@@ -1196,6 +1384,7 @@ class DrawingOverlay(QWidget):
         """Register components and segments as belonging to a saved path.
         
         This prevents them from being cleared by clear_unsaved_elements().
+        Uses element IDs for reliable matching, falling back to coordinate matching.
         """
         if path_id not in self.path_element_mapping:
             self.path_element_mapping[path_id] = {'components': [], 'segments': []}
@@ -1206,37 +1395,65 @@ class DrawingOverlay(QWidget):
         
         # Register components by finding matching objects in our overlay
         for comp in (components or []):
+            # Check direct reference first
             if comp in self.components:
                 registered_components.append(comp)
-            else:
-                # Try to find matching component in overlay
-                for overlay_comp in self.components:
-                    if (overlay_comp.get('x') == comp.get('x') and 
-                        overlay_comp.get('y') == comp.get('y') and
-                        overlay_comp.get('component_type') == comp.get('component_type')):
-                        registered_components.append(overlay_comp)
-                        break
+                continue
+            
+            # Try to find matching component in overlay using element ID or coordinates
+            comp_elem_id = comp.get('_element_id')
+            found = False
+            for overlay_comp in self.components:
+                # Try element ID match first
+                if comp_elem_id and overlay_comp.get('_element_id') == comp_elem_id:
+                    registered_components.append(overlay_comp)
+                    found = True
+                    break
+                # Fall back to coordinate/type match
+                if (overlay_comp.get('x') == comp.get('x') and 
+                    overlay_comp.get('y') == comp.get('y') and
+                    overlay_comp.get('component_type') == comp.get('component_type')):
+                    registered_components.append(overlay_comp)
+                    found = True
+                    break
+            
+            if not found:
+                print(f"DEBUG: Warning - could not find overlay component matching {comp.get('component_type')} at ({comp.get('x')}, {comp.get('y')})")
         
         # Register segments by finding matching objects in our overlay
         for seg in (segments or []):
+            # Check direct reference first
             if seg in self.segments:
                 registered_segments.append(seg)
-            else:
-                # Try to find matching segment in overlay
-                for overlay_seg in self.segments:
-                    if (abs(overlay_seg.get('start_x', 0) - seg.get('start_x', 0)) < 5 and
-                        abs(overlay_seg.get('start_y', 0) - seg.get('start_y', 0)) < 5 and
-                        abs(overlay_seg.get('end_x', 0) - seg.get('end_x', 0)) < 5 and
-                        abs(overlay_seg.get('end_y', 0) - seg.get('end_y', 0)) < 5):
-                        registered_segments.append(overlay_seg)
-                        break
+                continue
+            
+            # Try to find matching segment in overlay using element ID or coordinates
+            seg_elem_id = seg.get('_element_id')
+            found = False
+            for overlay_seg in self.segments:
+                # Try element ID match first
+                if seg_elem_id and overlay_seg.get('_element_id') == seg_elem_id:
+                    registered_segments.append(overlay_seg)
+                    found = True
+                    break
+                # Fall back to coordinate match
+                if self._segments_match(overlay_seg, seg):
+                    registered_segments.append(overlay_seg)
+                    found = True
+                    break
+            
+            if not found:
+                print(f"DEBUG: Warning - could not find overlay segment matching ({seg.get('start_x')}, {seg.get('start_y')}) -> ({seg.get('end_x')}, {seg.get('end_y')})")
         
         self.path_element_mapping[path_id]['components'] = registered_components
         self.path_element_mapping[path_id]['segments'] = registered_segments
         
+        # Log element IDs for debugging
+        comp_elem_ids = [c.get('_element_id', f'obj_{id(c)}') for c in registered_components]
+        seg_elem_ids = [s.get('_element_id', f'obj_{id(s)}') for s in registered_segments]
         print(f"DEBUG: Registered path {path_id} with {len(registered_components)} components and {len(registered_segments)} segments")
-        print(f"DEBUG: Component IDs: {[id(c) for c in registered_components]}")
-        print(f"DEBUG: Segment IDs: {[id(s) for s in registered_segments]}")
+        print(f"DEBUG: Component element IDs: {comp_elem_ids}")
+        print(f"DEBUG: Segment element IDs: {seg_elem_ids}")
         
         self.update()
     
