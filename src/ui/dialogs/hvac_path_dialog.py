@@ -22,6 +22,7 @@ from .hvac_component_dialog import HVACComponentDialog
 from .component_library_dialog import ComponentLibraryDialog
 from .hvac_receiver_dialog import HVACReceiverDialog
 from .hvac_segment_dialog import HVACSegmentDialog
+from help import HelpMixin
 
 
 class ComponentListWidget(QListWidget):
@@ -111,7 +112,7 @@ class PathDiagramText(QPlainTextEdit):
         super().mousePressEvent(event)
 
 
-class HVACPathDialog(QDialog):
+class HVACPathDialog(HelpMixin, QDialog):
     """Dialog for creating and managing HVAC paths"""
     
     path_saved = Signal(HVACPath)  # Emits saved path
@@ -281,10 +282,16 @@ class HVACPathDialog(QDialog):
         # Right side: NC summary + ASCII diagram panel
         diagram_panel = self.create_ascii_diagram_panel()
         self.main_splitter.addWidget(diagram_panel)
-        self.main_splitter.setSizes([650, 250])
+        
+        # Help panel - collapsible right side
+        self.help_panel = self.setup_help_panel("hvac_path")
+        self.main_splitter.addWidget(self.help_panel)
+        
+        self.main_splitter.setSizes([550, 200, 150])
         self.main_splitter.setChildrenCollapsible(False)
         self.main_splitter.setStretchFactor(0, 3)
         self.main_splitter.setStretchFactor(1, 2)
+        self.main_splitter.setStretchFactor(2, 0)
 
         layout.addWidget(self.main_splitter)
         # Give the splitter all extra vertical space

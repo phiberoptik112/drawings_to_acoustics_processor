@@ -512,13 +512,17 @@ class RoomPropertiesDialog(QDialog):
         if space_data['floor_area'] > 0 and space_data['ceiling_height'] > 0:
             space_data['volume'] = space_data['floor_area'] * space_data['ceiling_height']
             
-            # Calculate wall area
-            width_real = self.rectangle_data.get('width_real', 0)
-            height_real = self.rectangle_data.get('height_real', 0)
+            # Calculate wall area - use perimeter_real if available, otherwise calculate from dimensions
+            perimeter = self.rectangle_data.get('perimeter_real')
+            if not perimeter:
+                width_real = self.rectangle_data.get('width_real', 0)
+                height_real = self.rectangle_data.get('height_real', 0)
+                if width_real > 0 and height_real > 0:
+                    perimeter = 2 * (width_real + height_real)
             
-            if width_real > 0 and height_real > 0:
-                perimeter = 2 * (width_real + height_real)
+            if perimeter and perimeter > 0:
                 space_data['wall_area'] = perimeter * space_data['ceiling_height']
+                print(f"DEBUG: Calculated wall_area = {space_data['wall_area']:.2f} sf (perimeter={perimeter:.2f}, height={space_data['ceiling_height']:.2f})")
                 
         # Emit signal and close
         self.space_created.emit(space_data)
@@ -533,12 +537,15 @@ class RoomPropertiesDialog(QDialog):
         if space_data['floor_area'] > 0 and space_data['ceiling_height'] > 0:
             space_data['volume'] = space_data['floor_area'] * space_data['ceiling_height']
             
-            # Calculate wall area
-            width_real = self.rectangle_data.get('width_real', 0)
-            height_real = self.rectangle_data.get('height_real', 0)
+            # Calculate wall area - use perimeter_real if available, otherwise calculate from dimensions
+            perimeter = self.rectangle_data.get('perimeter_real')
+            if not perimeter:
+                width_real = self.rectangle_data.get('width_real', 0)
+                height_real = self.rectangle_data.get('height_real', 0)
+                if width_real > 0 and height_real > 0:
+                    perimeter = 2 * (width_real + height_real)
             
-            if width_real > 0 and height_real > 0:
-                perimeter = 2 * (width_real + height_real)
+            if perimeter and perimeter > 0:
                 space_data['wall_area'] = perimeter * space_data['ceiling_height']
         
         # Show material search dialog

@@ -23,6 +23,7 @@ from calculations.rt60_calculator import RT60Calculator
 from ui.rt60_plot_widget import RT60PlotContainer
 from ui.dialogs.material_search_dialog import MaterialSearchDialog
 from data.materials_database import get_all_materials
+from help import HelpMixin
 
 
 class MaterialSearchWidget(QWidget):
@@ -449,7 +450,7 @@ class MaterialListWidget(QWidget):
         self.update_display()
 
 
-class SpaceEditDialog(QDialog):
+class SpaceEditDialog(HelpMixin, QDialog):
     """Dialog for editing existing space properties"""
     
     # Signal emitted when changes are saved (so parent can refresh)
@@ -511,8 +512,12 @@ class SpaceEditDialog(QDialog):
         self.plot_container.materials_changed.connect(lambda: self.schedule_plot_update())
         main_splitter.addWidget(self.plot_container)
         
-        # Set splitter proportions (60% tabs, 40% plot)
-        main_splitter.setSizes([840, 560])
+        # Help panel - collapsible right side
+        self.help_panel = self.setup_help_panel("space_edit")
+        main_splitter.addWidget(self.help_panel)
+        
+        # Set splitter proportions (55% tabs, 35% plot, 10% help)
+        main_splitter.setSizes([770, 490, 140])
         
         layout.addWidget(main_splitter)
         
@@ -642,7 +647,7 @@ class SpaceEditDialog(QDialog):
         geometry_layout.addRow("Volume:", self.volume_label)
         
         self.wall_area_spin = QDoubleSpinBox()
-        self.wall_area_spin.setRange(1.0, 100000.0)
+        self.wall_area_spin.setRange(0.0, 100000.0)  # Allow 0 for cases where wall area isn't calculated
         self.wall_area_spin.setSuffix(" sf")
         self.wall_area_spin.valueChanged.connect(lambda: self.schedule_plot_update())
         geometry_layout.addRow("Wall Area:", self.wall_area_spin)
@@ -1319,8 +1324,10 @@ class SpaceEditDialog(QDialog):
             self.area_spin.setValue(self.space.floor_area)
         if self.space.ceiling_height:
             self.ceiling_height_spin.setValue(self.space.ceiling_height)
-        if self.space.wall_area:
+        # Load wall_area - use explicit None check since 0 is a valid (if uncommon) value
+        if self.space.wall_area is not None:
             self.wall_area_spin.setValue(self.space.wall_area)
+            print(f"DEBUG: Loaded wall_area = {self.space.wall_area} for space '{self.space.name}'")
             
         # Load acoustic targets
         if self.space.target_rt60:

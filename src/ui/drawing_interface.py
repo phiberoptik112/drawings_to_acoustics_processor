@@ -23,9 +23,10 @@ from ui.dialogs.space_edit_dialog import SpaceEditDialog
 from data.components import STANDARD_COMPONENTS
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 from calculations import RT60Calculator, NoiseCalculator, HVACPathCalculator
+from help import HelpMixin
 
 
-class DrawingInterface(QMainWindow):
+class DrawingInterface(HelpMixin, QMainWindow):
     """Drawing interface for PDF viewing and drawing tools"""
     
     # Signals
@@ -128,8 +129,12 @@ class DrawingInterface(QMainWindow):
         center_panel = self.create_center_panel()
         splitter.addWidget(center_panel)
         
+        # Help panel - collapsible right side
+        self.help_panel = self.setup_help_panel("drawing_interface")
+        splitter.addWidget(self.help_panel)
+        
         # Set splitter proportions
-        splitter.setSizes([300, 1100])
+        splitter.setSizes([300, 1100, 320])
         
         main_layout.addWidget(splitter)
         central_widget.setLayout(main_layout)
@@ -179,6 +184,10 @@ class DrawingInterface(QMainWindow):
         tools_menu.addAction('Calculate All Paths', self.calculate_all_hvac_paths)
         tools_menu.addSeparator()
         tools_menu.addAction('NC Compliance Analysis', self.analyze_nc_compliance)
+        
+        # Help menu
+        help_menu = menubar.addMenu('Help')
+        help_menu.addAction('Toggle Help Panel (F1)', self._toggle_help_panel)
         
     def create_toolbar(self):
         """Create the main toolbar"""

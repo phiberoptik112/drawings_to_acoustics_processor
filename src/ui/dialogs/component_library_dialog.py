@@ -52,9 +52,10 @@ from models.mechanical import MechanicalUnit, NoiseSource
 from models.hvac import SilencerProduct
 from models.rt60_models import AcousticMaterial, SurfaceCategory, RoomSurfaceInstance
 from calculations.hvac_constants import is_valid_cfm_value
+from help import HelpMixin
 
 
-class ComponentLibraryDialog(QDialog):
+class ComponentLibraryDialog(HelpMixin, QDialog):
     """Project-level component library management dialog."""
     
     # Signal emitted when library data changes (so parent can refresh if needed)
@@ -286,7 +287,16 @@ class ComponentLibraryDialog(QDialog):
         tabs.addTab(silencer_tab, "Silencers")
         tabs.addTab(acoustic_tab, "Acoustic Treatment")
 
-        layout.addWidget(tabs, 1)
+        # Create main splitter for tabs and help panel
+        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.addWidget(tabs)
+        
+        # Help panel - collapsible right side
+        self.help_panel = self.setup_help_panel("component_library")
+        main_splitter.addWidget(self.help_panel)
+        main_splitter.setSizes([800, 100])
+        
+        layout.addWidget(main_splitter, 1)
 
         # Close/Save buttons
         close_btns = QHBoxLayout()

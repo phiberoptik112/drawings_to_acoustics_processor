@@ -29,5 +29,8 @@ seaborn>=0.11.0
 # Date/Time utilities
 python-dateutil>=2.8.0
 
+# Markdown parsing for help system
+markdown>=3.4.0
+
 # Development dependencies (optional)
 pytest>=7.0.0

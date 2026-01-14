@@ -382,6 +382,7 @@ class DrawingElementManager:
 		Returns:
 			Dict with 'components' and 'segments' lists for overlay reconstruction
 		"""
+		session = None
 		try:
 			session = self.get_session()
 			
@@ -418,7 +419,8 @@ class DrawingElementManager:
 			return result
 			
 		except Exception as e:
-			session.close()
+			if session is not None:
+				session.close()
 			raise e
 	
 	def save_path_elements(self, drawing_id, project_id, hvac_path_id, components, segments, page_number=1):
@@ -438,6 +440,7 @@ class DrawingElementManager:
 		Returns:
 			Number of elements saved
 		"""
+		session = None
 		try:
 			session = self.get_session()
 			
@@ -475,8 +478,9 @@ class DrawingElementManager:
 			return elements_saved
 			
 		except Exception as e:
-			session.rollback()
-			session.close()
+			if session is not None:
+				session.rollback()
+				session.close()
 			raise e
 	
 	def delete_path_elements(self, hvac_path_id):
@@ -488,6 +492,7 @@ class DrawingElementManager:
 		Returns:
 			Number of elements deleted
 		"""
+		session = None
 		try:
 			session = self.get_session()
 			
@@ -501,8 +506,9 @@ class DrawingElementManager:
 			return deleted
 			
 		except Exception as e:
-			session.rollback()
-			session.close()
+			if session is not None:
+				session.rollback()
+				session.close()
 			raise e
 	
 	def update_element_path_link(self, element_id, hvac_path_id=None, hvac_segment_id=None, hvac_component_id=None):
@@ -517,6 +523,7 @@ class DrawingElementManager:
 		Returns:
 			True if updated, False if element not found
 		"""
+		session = None
 		try:
 			session = self.get_session()
 			
@@ -536,8 +543,9 @@ class DrawingElementManager:
 				return False
 				
 		except Exception as e:
-			session.rollback()
-			session.close()
+			if session is not None:
+				session.rollback()
+				session.close()
 			raise e
 	
 	def get_path_drawings(self, hvac_path_id):
@@ -553,6 +561,7 @@ class DrawingElementManager:
 			List of tuples (drawing_id, page_number, element_count) for each
 			drawing/page combination that has elements for this path
 		"""
+		session = None
 		try:
 			session = self.get_session()
 			
@@ -576,7 +585,8 @@ class DrawingElementManager:
 			return [(r.drawing_id, r.page_number, r.element_count) for r in results]
 			
 		except Exception as e:
-			session.close()
+			if session is not None:
+				session.close()
 			raise e
 	
 	def path_has_elements_on_drawing(self, hvac_path_id, drawing_id, page_number=None):
@@ -590,6 +600,7 @@ class DrawingElementManager:
 		Returns:
 			True if path has elements on this drawing/page, False otherwise
 		"""
+		session = None
 		try:
 			session = self.get_session()
 			
@@ -607,5 +618,6 @@ class DrawingElementManager:
 			return exists
 			
 		except Exception as e:
-			session.close()
+			if session is not None:
+				session.close()
 			raise e

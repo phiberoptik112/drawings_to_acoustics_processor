@@ -159,6 +159,7 @@ class PartitionEditDialog(QDialog):
     
     def load_partition_types(self):
         """Load partition types from project"""
+        session = None
         try:
             session = get_session()
             partition_types = session.query(PartitionType).filter(
@@ -180,10 +181,11 @@ class PartitionEditDialog(QDialog):
                 
                 self.partition_type_combo.addItem(display_text, pt.id)
             
-            session.close()
-            
         except Exception as e:
             print(f"Error loading partition types: {e}")
+        finally:
+            if session is not None:
+                session.close()
     
     def load_partition_data(self):
         """Load existing partition data for editing"""
