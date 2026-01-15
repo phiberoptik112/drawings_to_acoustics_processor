@@ -295,7 +295,7 @@ class PathAnalysisPanel(QWidget):
                     'terminal_noise': result.terminal_noise,
                     'total_attenuation': getattr(result, 'total_attenuation', None) or (result.source_noise - result.terminal_noise),
                     'nc_rating': result.nc_rating,
-                    'target_nc': path.target_space.target_nc if path.target_space else None,
+                    'target_nc': getattr(path.target_space, 'target_nc', None) if path.target_space else None,
                     'source_name': self._get_source_name(path),
                     'receiver_name': path.target_space.name if path.target_space else "Unknown",
                     'path_elements': result.segment_results if hasattr(result, 'segment_results') else [],
@@ -321,14 +321,19 @@ class PathAnalysisPanel(QWidget):
     
     def _get_source_name(self, path: HVACPath) -> str:
         """Get the source component name for a path"""
-        if not path.segments:
+        segments = getattr(path, 'segments', None)
+        if not segments:
             return "Unknown Source"
         
         # Get the first segment's from_component
-        first_segment = min(path.segments, key=lambda s: s.segment_order or 0)
-        if first_segment.from_component:
-            name = first_segment.from_component.name or first_segment.from_component.component_type
-            return name
+        try:
+            first_segment = min(segments, key=lambda s: getattr(s, 'segment_order', 0) or 0)
+            from_comp = getattr(first_segment, 'from_component', None)
+            if from_comp:
+                name = getattr(from_comp, 'name', None) or getattr(from_comp, 'component_type', None)
+                return name or "Unknown Source"
+        except (ValueError, TypeError):
+            pass
         
         return "Unknown Source"
     
@@ -398,23 +403,27 @@ class PathAnalysisPanel(QWidget):
             
             # Get calculation result for this segment
             seg_result = None
+            seg_id = getattr(segment, 'id', None)
             for sr in segment_results:
-                if sr.get('segment_number') == (i + 1) or sr.get('segment_id') == segment.id:
+                if sr.get('segment_number') == (i + 1) or sr.get('segment_id') == seg_id:
                     seg_result = sr
                     break
             
-            # Build segment card
+            # Build segment card with defensive attribute access
             extra_info = {}
-            if segment.duct_shape == 'circular':
-                extra_info['dimensions'] = f"Ø{int(segment.diameter or 0)}\""
+            duct_shape = getattr(segment, 'duct_shape', 'rectangular') or 'rectangular'
+            if duct_shape == 'circular':
+                diameter = getattr(segment, 'diameter', 0) or 0
+                extra_info['dimensions'] = f"Ø{int(diameter)}\""
             else:
-                w = int(segment.duct_width or 0)
-                h = int(segment.duct_height or 0)
+                w = int(getattr(segment, 'duct_width', 0) or 0)
+                h = int(getattr(segment, 'duct_height', 0) or 0)
                 extra_info['dimensions'] = f"{w}\"×{h}\""
             
-            extra_info['length'] = segment.length or 0
-            extra_info['shape'] = segment.duct_shape or ''
-            extra_info['lining'] = bool(segment.lining_type)
+            extra_info['length'] = getattr(segment, 'length', 0) or 0
+            extra_info['shape'] = duct_shape
+            # HVACSegment uses 'insulation' for lining material
+            extra_info['lining'] = bool(getattr(segment, 'insulation', None) or getattr(segment, 'lining_thickness', None))
             
             noise_after = seg_result.get('noise_after', 0) if seg_result else None
             attenuation = seg_result.get('attenuation_dba', 0) if seg_result else None
@@ -426,7 +435,7 @@ class PathAnalysisPanel(QWidget):
                 name=f"Segment {i + 1}",
                 noise_level=noise_after,
                 attenuation=attenuation if attenuation else None,
-                element_id=segment.id,
+                element_id=seg_id,
                 extra_info=extra_info
             )
             self._connect_card_signals(segment_card)
@@ -434,30 +443,33 @@ class PathAnalysisPanel(QWidget):
             self.diagram_layout.addWidget(segment_card)
             
             # Add fittings for this segment
-            if segment.fittings:
-                for fitting in segment.fittings:
-                    self.diagram_layout.addWidget(PathArrow())
-                    
-                    fitting_card = PathElementCard(
-                        element_type=fitting.fitting_type or 'fitting',
-                        name=fitting.fitting_type or 'Fitting',
-                        attenuation=fitting.calculated_attenuation,
-                        element_id=fitting.id,
-                        extra_info={}
-                    )
-                    self._connect_card_signals(fitting_card)
-                    self._element_cards.append(fitting_card)
-                    self.diagram_layout.addWidget(fitting_card)
-            
-            # Add end component if not last segment
-            if segment.to_component and i < len(segments) - 1:
+            fittings = getattr(segment, 'fittings', None) or []
+            for fitting in fittings:
                 self.diagram_layout.addWidget(PathArrow())
                 
-                comp = segment.to_component
+                fitting_type = getattr(fitting, 'fitting_type', None) or 'fitting'
+                fitting_card = PathElementCard(
+                    element_type=fitting_type,
+                    name=fitting_type.replace('_', ' ').title(),
+                    attenuation=getattr(fitting, 'calculated_attenuation', None),
+                    element_id=getattr(fitting, 'id', None),
+                    extra_info={}
+                )
+                self._connect_card_signals(fitting_card)
+                self._element_cards.append(fitting_card)
+                self.diagram_layout.addWidget(fitting_card)
+            
+            # Add end component if not last segment
+            to_comp = getattr(segment, 'to_component', None)
+            if to_comp and i < len(segments) - 1:
+                self.diagram_layout.addWidget(PathArrow())
+                
+                comp_type = getattr(to_comp, 'component_type', None) or 'component'
+                comp_name = getattr(to_comp, 'name', None) or comp_type or 'Component'
                 comp_card = PathElementCard(
-                    element_type=comp.component_type or 'component',
-                    name=comp.name or comp.component_type or 'Component',
-                    element_id=comp.id,
+                    element_type=comp_type,
+                    name=comp_name,
+                    element_id=getattr(to_comp, 'id', None),
                     extra_info={}
                 )
                 self._connect_card_signals(comp_card)
@@ -470,7 +482,7 @@ class PathAnalysisPanel(QWidget):
         # Receiver card
         target_nc = None
         if self.current_path.target_space:
-            target_nc = self.current_path.target_space.target_nc
+            target_nc = getattr(self.current_path.target_space, 'target_nc', None)
         
         receiver_card = PathElementCard(
             element_type="receiver",
@@ -498,12 +510,21 @@ class PathAnalysisPanel(QWidget):
     
     def _get_source_component_id(self) -> Optional[int]:
         """Get the ID of the source component"""
-        if not self.current_path or not self.current_path.segments:
+        if not self.current_path:
             return None
         
-        first_segment = min(self.current_path.segments, key=lambda s: s.segment_order or 0)
-        if first_segment.from_component:
-            return first_segment.from_component.id
+        segments = getattr(self.current_path, 'segments', None)
+        if not segments:
+            return None
+        
+        try:
+            first_segment = min(segments, key=lambda s: getattr(s, 'segment_order', 0) or 0)
+            from_comp = getattr(first_segment, 'from_component', None)
+            if from_comp:
+                return getattr(from_comp, 'id', None)
+        except (ValueError, TypeError):
+            pass
+        
         return None
     
     def _connect_card_signals(self, card: PathElementCard):

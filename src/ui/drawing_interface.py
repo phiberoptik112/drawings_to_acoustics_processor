@@ -4399,15 +4399,18 @@ class DrawingInterface(HelpMixin, QMainWindow):
         if path_id and self.drawing_overlay:
             # Add to visible paths
             self.visible_paths.add(path_id)
-            self.drawing_overlay.set_path_visibility(path_id, True)
+            # Use set_visible_paths which takes a list of path IDs
+            self.drawing_overlay.set_visible_paths(list(self.visible_paths))
             self.drawing_overlay.update()
             
             # Also update the paths list selection
             for i in range(self.paths_list.count()):
                 item = self.paths_list.item(i)
-                if item and item.data(Qt.UserRole) == path_id:
-                    self.paths_list.setCurrentItem(item)
-                    break
+                if item:
+                    item_path = item.data(Qt.UserRole)
+                    if item_path and getattr(item_path, 'id', None) == path_id:
+                        self.paths_list.setCurrentItem(item)
+                        break
     
     def edit_element_from_analysis(self, element_id: object, element_type: str):
         """Open edit dialog for an element (called from analysis panel double-click)"""

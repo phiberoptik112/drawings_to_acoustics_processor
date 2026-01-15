@@ -40,6 +40,9 @@ class FrequencyResponseWidget(QWidget):
         self.selected_frequency = 1000
         self.hover_frequency = None
         
+        # Projected RT60 data (for showing treatment effect)
+        self.projected_rt60 = {}
+        
         # Visual settings
         self.margin = 40
         self.grid_color = QColor(200, 200, 200)
@@ -47,6 +50,7 @@ class FrequencyResponseWidget(QWidget):
         self.target_color = QColor(100, 255, 100)   # Green
         self.problem_color = QColor(255, 200, 100)  # Orange
         self.selected_color = QColor(100, 100, 255) # Blue
+        self.projected_color = QColor(100, 150, 255)  # Light blue for projected
         
         self.setMouseTracking(True)
         
@@ -61,6 +65,16 @@ class FrequencyResponseWidget(QWidget):
         if frequency in self.frequencies:
             self.selected_frequency = frequency
             self.update()
+    
+    def set_projected_rt60(self, projected_rt60: Dict[int, float]):
+        """Set projected RT60 values to display (showing treatment effect)"""
+        self.projected_rt60 = projected_rt60
+        self.update()
+    
+    def clear_projected(self):
+        """Clear projected RT60 display"""
+        self.projected_rt60 = {}
+        self.update()
             
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -130,6 +144,27 @@ class FrequencyResponseWidget(QWidget):
         for i in range(len(points) - 1):
             painter.drawLine(points[i][0], points[i][1], points[i+1][0], points[i+1][1])
             
+        # Draw projected RT60 curve (if available)
+        if self.projected_rt60:
+            painter.setPen(QPen(self.projected_color, 2, Qt.DashDotLine))
+            projected_points = []
+            
+            for i, freq in enumerate(self.frequencies):
+                x = self.margin + (i * width / (len(self.frequencies) - 1))
+                rt60_value = self.projected_rt60.get(freq, 0)
+                y = self.margin + height - (min(rt60_value, max_rt60) / max_rt60 * height)
+                projected_points.append((x, y))
+            
+            # Draw the projected curve
+            for i in range(len(projected_points) - 1):
+                painter.drawLine(projected_points[i][0], projected_points[i][1], 
+                               projected_points[i+1][0], projected_points[i+1][1])
+            
+            # Draw projected data points
+            painter.setBrush(QBrush(self.projected_color))
+            for x, y in projected_points:
+                painter.drawEllipse(int(x) - 3, int(y) - 3, 6, 6)
+        
         # Draw data points and highlight problems
         for i, (freq, (x, y)) in enumerate(zip(self.frequencies, points)):
             current_val = self.current_rt60.get(freq, 0)
@@ -198,6 +233,14 @@ class FrequencyResponseWidget(QWidget):
         painter.drawEllipse(legend_x + 8, legend_y - 4, 8, 8)
         painter.setPen(QPen(Qt.black, 1))
         painter.drawText(legend_x + 25, legend_y + 4, "Problem")
+        
+        # Projected RT60 (only show if we have projected data)
+        if self.projected_rt60:
+            legend_y += 15
+            painter.setPen(QPen(self.projected_color, 2, Qt.DashDotLine))
+            painter.drawLine(legend_x, legend_y, legend_x + 20, legend_y)
+            painter.setPen(QPen(Qt.black, 1))
+            painter.drawText(legend_x + 25, legend_y + 4, "Projected")
         
     def mousePressEvent(self, event):
         """Handle mouse clicks to select frequency"""
@@ -280,6 +323,9 @@ class MaterialListWidget(QListWidget):
                 item.setBackground(QColor(255, 230, 200))  # Orange - fair
             else:
                 item.setBackground(QColor(255, 200, 200))  # Red - poor
+            
+            # Set explicit black text color for readability
+            item.setForeground(QColor(0, 0, 0))
                 
             self.addItem(item)
             

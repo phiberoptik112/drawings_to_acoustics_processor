@@ -79,6 +79,7 @@ class Space(Base):
     floor_material = Column(String(100))
     
     # HVAC noise
+    target_nc = Column(Float)     # Target NC rating for this space
     calculated_nc = Column(Float)  # Calculated NC rating
     
     created_date = Column(DateTime, default=datetime.utcnow)
