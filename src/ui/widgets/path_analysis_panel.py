@@ -51,6 +51,36 @@ class PathAnalysisPanel(QWidget):
         self.setMinimumWidth(300)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         
+        # Ensure light background and dark text for the entire panel
+        self.setStyleSheet("""
+            PathAnalysisPanel {
+                background-color: #f5f5f5;
+            }
+            PathAnalysisPanel QLabel {
+                color: #333;
+            }
+            PathAnalysisPanel QComboBox {
+                background-color: white;
+                color: #333;
+                border: 1px solid #ccc;
+                padding: 4px;
+            }
+            PathAnalysisPanel QComboBox QAbstractItemView {
+                background-color: white;
+                color: #333;
+            }
+            PathAnalysisPanel QPushButton, PathAnalysisPanel QToolButton {
+                background-color: #e0e0e0;
+                color: #333;
+                border: 1px solid #ccc;
+                border-radius: 3px;
+                padding: 4px 8px;
+            }
+            PathAnalysisPanel QPushButton:hover, PathAnalysisPanel QToolButton:hover {
+                background-color: #d0d0d0;
+            }
+        """)
+        
         layout = QVBoxLayout()
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
@@ -100,7 +130,10 @@ class PathAnalysisPanel(QWidget):
         scroll.setStyleSheet("""
             QScrollArea {
                 border: none;
-                background-color: transparent;
+                background-color: #fafafa;
+            }
+            QScrollArea QWidget {
+                background-color: #fafafa;
             }
         """)
         
@@ -348,7 +381,7 @@ class PathAnalysisPanel(QWidget):
         
         placeholder = QLabel(message or "Select a path to view analysis")
         placeholder.setAlignment(Qt.AlignCenter)
-        placeholder.setStyleSheet("color: #999; padding: 40px;")
+        placeholder.setStyleSheet("color: #666; padding: 40px; background-color: transparent;")
         self.diagram_layout.addWidget(placeholder)
         self.diagram_layout.addStretch()
         

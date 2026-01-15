@@ -828,7 +828,7 @@ class SpaceEditDialog(HelpMixin, QDialog):
         rt60_layout = QVBoxLayout()
         
         self.rt60_preview_label = QLabel("Select materials to see RT60 calculation")
-        self.rt60_preview_label.setStyleSheet("font-family: monospace; background-color: #f8f9fa; color: black; padding: 10px; border: 1px solid #dee2e6;")
+        self.rt60_preview_label.setStyleSheet("font-family: monospace; background-color: #2d2d2d; color: #e0e0e0; padding: 10px; border: 1px solid #3a3a3a;")
         self.rt60_preview_label.setWordWrap(True)
         rt60_layout.addWidget(self.rt60_preview_label)
         
@@ -840,7 +840,7 @@ class SpaceEditDialog(HelpMixin, QDialog):
         areas_layout = QVBoxLayout()
         
         self.areas_preview_label = QLabel("Surface areas from space geometry")
-        self.areas_preview_label.setStyleSheet("font-family: monospace; background-color: #f8f9fa; color: black; padding: 10px; border: 1px solid #dee2e6;")
+        self.areas_preview_label.setStyleSheet("font-family: monospace; background-color: #2d2d2d; color: #e0e0e0; padding: 10px; border: 1px solid #3a3a3a;")
         areas_layout.addWidget(self.areas_preview_label)
         
         areas_group.setLayout(areas_layout)
@@ -851,7 +851,7 @@ class SpaceEditDialog(HelpMixin, QDialog):
         materials_layout = QVBoxLayout()
         
         self.materials_preview_label = QLabel("Selected materials and their absorption coefficients")
-        self.materials_preview_label.setStyleSheet("font-family: monospace; background-color: #f8f9fa; color: black; padding: 10px; border: 1px solid #dee2e6;")
+        self.materials_preview_label.setStyleSheet("font-family: monospace; background-color: #2d2d2d; color: #e0e0e0; padding: 10px; border: 1px solid #3a3a3a;")
         materials_layout.addWidget(self.materials_preview_label)
         
         materials_group.setLayout(materials_layout)
@@ -862,7 +862,7 @@ class SpaceEditDialog(HelpMixin, QDialog):
         absorption_layout = QVBoxLayout()
         
         self.absorption_preview_label = QLabel("Total absorption will be calculated from materials and areas")
-        self.absorption_preview_label.setStyleSheet("font-family: monospace; background-color: #f8f9fa; color: black; padding: 10px; border: 1px solid #dee2e6;")
+        self.absorption_preview_label.setStyleSheet("font-family: monospace; background-color: #2d2d2d; color: #e0e0e0; padding: 10px; border: 1px solid #3a3a3a;")
         absorption_layout.addWidget(self.absorption_preview_label)
         
         absorption_group.setLayout(absorption_layout)

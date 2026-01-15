@@ -5,6 +5,9 @@ import sqlite3
 import os
 from typing import Dict, List, Optional, Tuple
 
+# Flag to track if warning has been shown (prevents repeated warnings)
+_database_warning_shown = False
+
 def get_database_path():
     """Get the path to the acoustic materials database
     
@@ -40,20 +43,26 @@ def load_materials_from_database() -> Dict[str, Dict]:
     Note:
         Falls back to get_fallback_materials() if database is not found or error occurs
     """
+    global _database_warning_shown
     db_path = get_database_path()
     materials = {}
     
     try:
         if not os.path.exists(db_path):
-            print(f"Warning: Materials database not found at {db_path}")
-            print(f"  Expected location: {os.path.abspath(db_path)}")
-            print(f"  Using fallback materials ({len(get_fallback_materials())} materials)")
+            # Only show warning once to avoid log spam
+            if not _database_warning_shown:
+                _database_warning_shown = True
+                print(f"Note: Materials database not found at {db_path}")
+                print(f"  Using fallback materials ({len(get_fallback_materials())} materials)")
+                print(f"  (This message will only appear once. To add more materials, place acoustic_materials.db in the materials folder)")
             return get_fallback_materials()
         
         # Check if file is readable
         if not os.access(db_path, os.R_OK):
-            print(f"Warning: Materials database exists but is not readable: {db_path}")
-            print(f"  Using fallback materials")
+            if not _database_warning_shown:
+                _database_warning_shown = True
+                print(f"Note: Materials database exists but is not readable: {db_path}")
+                print(f"  Using fallback materials")
             return get_fallback_materials()
             
         conn = sqlite3.connect(db_path)
@@ -66,8 +75,10 @@ def load_materials_from_database() -> Dict[str, Dict]:
                 WHERE type='table' AND name='acoustic_materials'
             """)
             if not cursor.fetchone():
-                print(f"Warning: Materials database exists but 'acoustic_materials' table not found")
-                print(f"  Using fallback materials")
+                if not _database_warning_shown:
+                    _database_warning_shown = True
+                    print(f"Note: Materials database exists but 'acoustic_materials' table not found")
+                    print(f"  Using fallback materials")
                 return get_fallback_materials()
             
             cursor.execute("""

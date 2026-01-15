@@ -31,10 +31,11 @@ def get_resource_path(relative_path):
         base_path = Path(sys._MEIPASS)
     else:
         # Running from source - use the project root
-        # Get the directory containing this utils.py file (src/)
-        src_dir = Path(__file__).parent
-        # Project root is parent of src/
-        base_path = src_dir.parent
+        # This file is at src/utils/general_utils.py
+        # So we need to go up two levels: utils -> src -> project root
+        utils_dir = Path(__file__).parent  # src/utils/
+        src_dir = utils_dir.parent  # src/
+        base_path = src_dir.parent  # project root
     
     return str(base_path / relative_path)
 
@@ -52,8 +53,11 @@ def get_application_directory():
         return os.path.dirname(sys.executable)
     else:
         # Return the project root directory
-        src_dir = Path(__file__).parent
-        return str(src_dir.parent)
+        # This file is at src/utils/general_utils.py
+        # So we need to go up two levels: utils -> src -> project root
+        utils_dir = Path(__file__).parent  # src/utils/
+        src_dir = utils_dir.parent  # src/
+        return str(src_dir.parent)  # project root
 
 
 def get_user_data_directory():

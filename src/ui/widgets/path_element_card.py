@@ -207,6 +207,11 @@ class PathElementCard(QFrame):
                 background-color: {bg_color};
                 border: {border_width}px solid {border_color};
                 border-radius: 6px;
+                color: #333;
+            }}
+            PathElementCard QLabel {{
+                color: #333;
+                background-color: transparent;
             }}
         """)
     
@@ -277,6 +282,11 @@ class PathResultsSummary(QFrame):
                 background-color: #f5f5f5;
                 border: 1px solid #ddd;
                 border-radius: 4px;
+                color: #333;
+            }
+            PathResultsSummary QLabel {
+                color: #333;
+                background-color: transparent;
             }
         """)
         
