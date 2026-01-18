@@ -45,6 +45,7 @@ class DrawingOverlay(QWidget):
         self.segments: list[dict] = []
         self.measurements: list[dict] = []
         self.visible_paths: dict[int, bool] = {}
+        self.hidden_paths: set[int] = set()  # Paths explicitly hidden by user
         self.path_element_mapping: dict[int, dict] = {}
         
         # Protection flag to prevent clearing during save operations
@@ -148,27 +149,31 @@ class DrawingOverlay(QWidget):
                         'bounds': base_bounds or r.get('bounds')
                     })
 
-                # Components
+                # Components - use saved_zoom if available, else cur_z
                 for c in self.components:
+                    elem_z = c.get('saved_zoom') or cur_z
+                    if elem_z <= 0:
+                        elem_z = 1.0  # Prevent division by zero or negative
                     bc = c.copy()
-                    bc['x'] = int(c.get('x', 0) / cur_z)
-                    bc['y'] = int(c.get('y', 0) / cur_z)
+                    bc['x'] = int(c.get('x', 0) / elem_z)
+                    bc['y'] = int(c.get('y', 0) / elem_z)
                     if isinstance(c.get('position'), dict):
                         bc['position'] = {
-                            'x': int(c['position'].get('x', 0) / cur_z),
-                            'y': int(c['position'].get('y', 0) / cur_z),
+                            'x': int(c['position'].get('x', 0) / elem_z),
+                            'y': int(c['position'].get('y', 0) / elem_z),
                         }
                     self._base_components.append(bc)
 
-                # Segments
+                # Segments - use saved_zoom if available, else cur_z
                 for s in self.segments:
+                    elem_z = s.get('saved_zoom') or cur_z
                     bs = s.copy()
-                    bs['start_x'] = int(s.get('start_x', 0) / cur_z)
-                    bs['start_y'] = int(s.get('start_y', 0) / cur_z)
-                    bs['end_x'] = int(s.get('end_x', 0) / cur_z)
-                    bs['end_y'] = int(s.get('end_y', 0) / cur_z)
+                    bs['start_x'] = int(s.get('start_x', 0) / elem_z)
+                    bs['start_y'] = int(s.get('start_y', 0) / elem_z)
+                    bs['end_x'] = int(s.get('end_x', 0) / elem_z)
+                    bs['end_y'] = int(s.get('end_y', 0) / elem_z)
                     lp = s.get('length_pixels', None)
-                    bs['length_pixels'] = (lp if lp is not None else 0) / cur_z
+                    bs['length_pixels'] = (lp if lp is not None else 0) / elem_z
                     self._base_segments.append(bs)
 
                 # Measurements
@@ -541,6 +546,20 @@ class DrawingOverlay(QWidget):
             # Assign unique element ID if not already present
             if '_element_id' not in element_data:
                 element_data['_element_id'] = self._generate_element_id()
+
+            # Capture stable endpoint identifiers for robust relinking after reload.
+            try:
+                from_comp = element_data.get('from_component')
+                if isinstance(from_comp, dict):
+                    element_data.setdefault('from_element_id', from_comp.get('_element_id'))
+                    element_data.setdefault('from_db_component_id', from_comp.get('db_component_id') or from_comp.get('hvac_component_id'))
+                to_comp = element_data.get('to_component')
+                if isinstance(to_comp, dict):
+                    element_data.setdefault('to_element_id', to_comp.get('_element_id'))
+                    element_data.setdefault('to_db_component_id', to_comp.get('db_component_id') or to_comp.get('hvac_component_id'))
+            except Exception:
+                pass
+
             length_pixels = element_data.get('length_pixels', 0)
             try:
                 length_real = self.scale_manager.pixels_to_real(length_pixels)
@@ -744,6 +763,96 @@ class DrawingOverlay(QWidget):
         self.components = data.get('components', [])
         self.segments = data.get('segments', [])
         self.measurements = data.get('measurements', [])
+
+        # Ensure components have a usable/stable element id for in-memory linking
+        # and relink segment endpoint component references to canonical component dicts.
+        try:
+            # Assign deterministic element IDs when possible (DB-backed), else generate.
+            for comp in (self.components or []):
+                if not isinstance(comp, dict):
+                    continue
+                if comp.get('_element_id'):
+                    continue
+                db_id = comp.get('db_component_id') or comp.get('hvac_component_id')
+                if db_id is not None:
+                    comp['_element_id'] = f"dbcomp_{db_id}"
+                elif comp.get('id') is not None:
+                    comp['_element_id'] = f"de_{comp.get('id')}"
+                else:
+                    comp['_element_id'] = self._generate_element_id()
+
+            # Index components for fast lookup
+            index_by_elem_id: dict[str, dict] = {}
+            index_by_db_id: dict[object, dict] = {}
+            for comp in (self.components or []):
+                if not isinstance(comp, dict):
+                    continue
+                eid = comp.get('_element_id')
+                if eid:
+                    index_by_elem_id[str(eid)] = comp
+                db_id = comp.get('db_component_id') or comp.get('hvac_component_id')
+                if db_id is not None:
+                    index_by_db_id[db_id] = comp
+
+            def _extract_endpoint_ids(seg: dict, key_prefix: str) -> tuple[Optional[str], Optional[object]]:
+                """Return (element_id, db_component_id) for endpoint."""
+                elem_id = seg.get(f"{key_prefix}_element_id")
+                db_id = seg.get(f"{key_prefix}_db_component_id")
+                # Back-compat: pull from embedded component dict if present
+                embedded = seg.get(f"{key_prefix}_component")
+                if isinstance(embedded, dict):
+                    if elem_id is None:
+                        elem_id = embedded.get('_element_id')
+                    if db_id is None:
+                        db_id = embedded.get('db_component_id') or embedded.get('hvac_component_id')
+                # Normalize element id to string to match index
+                elem_id_str = str(elem_id) if elem_id is not None else None
+                return elem_id_str, db_id
+
+            def _resolve_component_for_endpoint(seg: dict, key_prefix: str) -> Optional[dict]:
+                elem_id_str, db_id = _extract_endpoint_ids(seg, key_prefix)
+                if elem_id_str and elem_id_str in index_by_elem_id:
+                    return index_by_elem_id[elem_id_str]
+                if db_id is not None and db_id in index_by_db_id:
+                    return index_by_db_id[db_id]
+                # Last resort: coordinate/type match once at load time
+                embedded = seg.get(f"{key_prefix}_component")
+                if isinstance(embedded, dict):
+                    for c in (self.components or []):
+                        if isinstance(c, dict) and self._components_match(c, embedded):
+                            return c
+                return None
+
+            for seg in (self.segments or []):
+                if not isinstance(seg, dict):
+                    continue
+
+                # Resolve canonical endpoint components
+                from_canon = _resolve_component_for_endpoint(seg, 'from')
+                if from_canon is not None:
+                    seg['from_component'] = from_canon
+                    seg['from_element_id'] = from_canon.get('_element_id')
+                    seg['from_db_component_id'] = from_canon.get('db_component_id') or from_canon.get('hvac_component_id')
+                    # Keep coordinates consistent with the linked component
+                    try:
+                        seg['start_x'] = int(from_canon.get('x', seg.get('start_x', 0)))
+                        seg['start_y'] = int(from_canon.get('y', seg.get('start_y', 0)))
+                    except Exception:
+                        pass
+
+                to_canon = _resolve_component_for_endpoint(seg, 'to')
+                if to_canon is not None:
+                    seg['to_component'] = to_canon
+                    seg['to_element_id'] = to_canon.get('_element_id')
+                    seg['to_db_component_id'] = to_canon.get('db_component_id') or to_canon.get('hvac_component_id')
+                    try:
+                        seg['end_x'] = int(to_canon.get('x', seg.get('end_x', 0)))
+                        seg['end_y'] = int(to_canon.get('y', seg.get('end_y', 0)))
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"DEBUG: Segment/component relink on load failed: {e}")
+
         try:
             for comp in self.components:
                 z = comp.get('saved_zoom') or 1.0
@@ -800,6 +909,8 @@ class DrawingOverlay(QWidget):
                 return
             
             # Preserve elements registered to any saved path; clear only transient ones
+            # NOTE: Use registration matching (IDs/coords) instead of object identity,
+            # because overlay elements can be reloaded into new dict instances.
             keep_components = set()
             keep_segments = set()
             
@@ -821,12 +932,39 @@ class DrawingOverlay(QWidget):
             print(f"DEBUG: Before clearing - {len(self.components)} components, {len(self.segments)} segments")
             print(f"DEBUG: Keeping {len(keep_components)} components, {len(keep_segments)} segments")
             
-            # Filter out unsaved elements
+            # Filter out unsaved elements using registration matching
             original_components_count = len(self.components)
             original_segments_count = len(self.segments)
+            components_before = list(self.components)
+            segments_before = list(self.segments)
             
-            self.components = [c for c in self.components if id(c) in keep_components]
-            self.segments = [s for s in self.segments if id(s) in keep_segments]
+            def _matches_any_segment_endpoint(comp: dict, tol: float = 8.0) -> bool:
+                try:
+                    cx = float(comp.get("x") or 0)
+                    cy = float(comp.get("y") or 0)
+                except Exception:
+                    return False
+                for seg in segments_before:
+                    try:
+                        sx = float(seg.get("start_x") or 0)
+                        sy = float(seg.get("start_y") or 0)
+                        ex = float(seg.get("end_x") or 0)
+                        ey = float(seg.get("end_y") or 0)
+                    except Exception:
+                        continue
+                    if (abs(cx - sx) <= tol and abs(cy - sy) <= tol) or (abs(cx - ex) <= tol and abs(cy - ey) <= tol):
+                        return True
+                return False
+
+            self.components = [
+                c for c in self.components
+                if self._is_component_registered_any_path(c) or _matches_any_segment_endpoint(c)
+            ]
+            self.segments = [s for s in self.segments if self._is_segment_registered_any_path(s)]
+            
+            # Recompute keep counts based on matching (for logging)
+            keep_components = {id(c) for c in self.components}
+            keep_segments = {id(s) for s in self.segments}
             
             print(f"DEBUG: After clearing - {len(self.components)} components ({original_components_count - len(self.components)} removed)")
             print(f"DEBUG: After clearing - {len(self.segments)} segments ({original_segments_count - len(self.segments)} removed)")
@@ -853,21 +991,27 @@ class DrawingOverlay(QWidget):
     
     # ---------------------- Drawing primitives ----------------------
     def draw_components(self, painter):
+        # #region agent log
+        sample_coords = [{'x': c.get('x'), 'y': c.get('y'), 'saved_zoom': c.get('saved_zoom'), 'type': c.get('component_type')} for c in self.components[:3]]
+        import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_overlay.py:draw_components', 'message': 'Drawing components', 'data': {'total_components': len(self.components), 'hidden_paths': list(self.hidden_paths), 'current_zoom': self._current_zoom_factor, 'sample_coords': sample_coords}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'J'}) + '\n')
+        # #endregion
+        drawn_count = 0
+        skipped_count = 0
         for comp in self.components:
-            # Visibility rules
+            # Visibility rules:
+            # - path_only_mode: ONLY show components in visible paths (strict filtering)
+            # - normal mode: show all EXCEPT components in hidden_paths
             if self.path_only_mode:
                 if not self._is_component_in_visible_path(comp):
+                    skipped_count += 1
                     continue
-            else:
-                has_reg = bool(self.path_element_mapping)
-                if has_reg:
-                    is_reg = self._is_component_registered_any_path(comp)
-                    if not self.visible_paths:
-                        if is_reg:
-                            continue
-                    else:
-                        if is_reg and not self._is_component_in_visible_path(comp):
-                            continue
+            elif self.hidden_paths:
+                # Check if this component belongs to a hidden path
+                if self._is_component_in_hidden_path(comp):
+                    skipped_count += 1
+                    continue
+            # Show the component
+            drawn_count += 1
             x = comp.get('x', 0)
             y = comp.get('y', 0)
             comp_type = comp.get('component_type', 'unknown')
@@ -918,22 +1062,28 @@ class DrawingOverlay(QWidget):
                 painter.setPen(QPen(QColor(0, 188, 212, 128), 2, Qt.DashLine))
                 painter.setBrush(Qt.NoBrush)
                 painter.drawEllipse(x - size - 4, y - size - 4, (size + 4) * 2, (size + 4) * 2)
+        # #region agent log
+        import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_overlay.py:draw_components:end', 'message': 'Components draw complete', 'data': {'drawn': drawn_count, 'skipped': skipped_count}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'E'}) + '\n')
+        # #endregion
 
     def draw_segments(self, painter):
+        drawn_count = 0
+        skipped_count = 0
         for seg in self.segments:
+            # Visibility rules (same as components):
+            # - path_only_mode: ONLY show segments in visible paths (strict filtering)
+            # - normal mode: show all EXCEPT segments in hidden_paths
             if self.path_only_mode:
                 if not self._is_segment_in_visible_path(seg):
+                    skipped_count += 1
                     continue
-            else:
-                has_reg = bool(self.path_element_mapping)
-                if has_reg:
-                    is_reg = self._is_segment_registered_any_path(seg)
-                    if not self.visible_paths:
-                        if is_reg:
-                            continue
-                    else:
-                        if is_reg and not self._is_segment_in_visible_path(seg):
-                            continue
+            elif self.hidden_paths:
+                # Check if this segment belongs to a hidden path
+                if self._is_segment_in_hidden_path(seg):
+                    skipped_count += 1
+                    continue
+            # Show the segment
+            drawn_count += 1
             start_x = seg.get('start_x', 0)
             start_y = seg.get('start_y', 0)
             end_x = seg.get('end_x', 0)
@@ -972,6 +1122,9 @@ class DrawingOverlay(QWidget):
             painter.setPen(QPen(Qt.black))
             painter.setFont(QFont("Arial", 8))
             painter.drawText(mid_x - 15, mid_y - 5, length_text)
+        # #region agent log
+        import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_overlay.py:draw_segments:end', 'message': 'Segments draw complete', 'data': {'drawn': drawn_count, 'skipped': skipped_count}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'E'}) + '\n')
+        # #endregion
 
     def draw_measurements(self, painter):
         for meas in self.measurements:
@@ -995,6 +1148,16 @@ class DrawingOverlay(QWidget):
         for path_id in self.visible_paths:
             mapping = self.path_element_mapping.get(path_id, {})
             for registered_comp in mapping.get('components', []):
+                # Skip stale references - registered component must still be in overlay
+                if registered_comp not in self.components:
+                    found_in_overlay = False
+                    for overlay_comp in self.components:
+                        if self._components_match(overlay_comp, registered_comp):
+                            found_in_overlay = True
+                            break
+                    if not found_in_overlay:
+                        continue  # Skip this stale registration
+                
                 # Try ID-based match first (most reliable)
                 if comp_id and registered_comp.get('_element_id') == comp_id:
                     return True
@@ -1012,6 +1175,16 @@ class DrawingOverlay(QWidget):
         for path_id in self.visible_paths:
             mapping = self.path_element_mapping.get(path_id, {})
             for registered_seg in mapping.get('segments', []):
+                # Skip stale references - registered segment must still be in overlay
+                if registered_seg not in self.segments:
+                    found_in_overlay = False
+                    for overlay_seg in self.segments:
+                        if self._segments_match(overlay_seg, registered_seg):
+                            found_in_overlay = True
+                            break
+                    if not found_in_overlay:
+                        continue  # Skip this stale registration
+                
                 # Try ID-based match first (most reliable)
                 if seg_id and registered_seg.get('_element_id') == seg_id:
                     return True
@@ -1023,11 +1196,130 @@ class DrawingOverlay(QWidget):
                     return True
         return False
 
+    def _is_component_in_hidden_path(self, comp):
+        """Check if component should be hidden due to hidden paths.
+
+        Rule: hide only if the component is registered to at least one hidden path
+        AND is not registered to any non-hidden path. This prevents shared
+        components from disappearing when a different path is hidden.
+
+        Uses strict matching (ID or object identity) to avoid false positives
+        where components at similar positions in different paths cause incorrect hiding.
+        """
+        comp_id = comp.get('_element_id')
+        comp_db_id = comp.get('db_component_id') or comp.get('hvac_component_id')
+        hidden_match = False
+        visible_match = False
+
+        for path_id, mapping in self.path_element_mapping.items():
+            for registered_comp in mapping.get('components', []):
+                # Try element ID match first (most reliable)
+                if comp_id and registered_comp.get('_element_id') == comp_id:
+                    if path_id in self.hidden_paths:
+                        hidden_match = True
+                    else:
+                        visible_match = True
+                    continue
+                # Try DB component ID match
+                reg_db_id = registered_comp.get('db_component_id') or registered_comp.get('hvac_component_id')
+                if comp_db_id and reg_db_id and comp_db_id == reg_db_id:
+                    if path_id in self.hidden_paths:
+                        hidden_match = True
+                    else:
+                        visible_match = True
+                    continue
+                # Fall back to identity check (same Python object)
+                if comp is registered_comp:
+                    if path_id in self.hidden_paths:
+                        hidden_match = True
+                    else:
+                        visible_match = True
+
+        should_hide = hidden_match and not visible_match
+        if should_hide:
+            # #region agent log
+            import json as _json
+            try:
+                open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(
+                    _json.dumps({
+                        "sessionId": "debug-session",
+                        "runId": "pre-fix",
+                        "hypothesisId": "H4",
+                        "location": "drawing_overlay.py:_is_component_in_hidden_path",
+                        "message": "component hidden by path rules",
+                        "data": {
+                            "comp_type": comp.get("component_type"),
+                            "comp_x": comp.get("x"),
+                            "comp_y": comp.get("y"),
+                            "comp_db_id": comp.get("db_component_id") or comp.get("hvac_component_id"),
+                            "hidden_paths": list(self.hidden_paths),
+                            "visible_match": visible_match,
+                            "hidden_match": hidden_match
+                        },
+                        "timestamp": __import__("time").time() * 1000
+                    }) + "\n"
+                )
+            except Exception:
+                pass
+            # #endregion
+        return should_hide
+
+    def _is_segment_in_hidden_path(self, seg):
+        """Check if segment should be hidden due to hidden paths.
+
+        Rule: hide only if the segment is registered to at least one hidden path
+        AND is not registered to any non-hidden path. This prevents shared
+        segments from disappearing when a different path is hidden.
+
+        Uses strict matching (ID or object identity) to avoid false positives.
+        """
+        seg_id = seg.get('_element_id')
+        seg_db_id = seg.get('db_segment_id') or seg.get('hvac_segment_id')
+        hidden_match = False
+        visible_match = False
+
+        for path_id, mapping in self.path_element_mapping.items():
+            for registered_seg in mapping.get('segments', []):
+                # Try element ID match first (most reliable)
+                if seg_id and registered_seg.get('_element_id') == seg_id:
+                    if path_id in self.hidden_paths:
+                        hidden_match = True
+                    else:
+                        visible_match = True
+                    continue
+                # Try DB segment ID match
+                reg_db_id = registered_seg.get('db_segment_id') or registered_seg.get('hvac_segment_id')
+                if seg_db_id and reg_db_id and seg_db_id == reg_db_id:
+                    if path_id in self.hidden_paths:
+                        hidden_match = True
+                    else:
+                        visible_match = True
+                    continue
+                # Fall back to identity check (same Python object)
+                if seg is registered_seg:
+                    if path_id in self.hidden_paths:
+                        hidden_match = True
+                    else:
+                        visible_match = True
+
+        return hidden_match and not visible_match
+
     def _is_component_registered_any_path(self, comp):
         """Check if component is registered to any path using ID or coordinate matching."""
         comp_id = comp.get('_element_id')
         for mapping in self.path_element_mapping.values():
             for registered_comp in mapping.get('components', []):
+                # Skip stale references - registered component must still be in overlay
+                if registered_comp not in self.components:
+                    # Check by identity, but if not found, check coordinates as fallback
+                    found_in_overlay = False
+                    for overlay_comp in self.components:
+                        if self._components_match(overlay_comp, registered_comp):
+                            found_in_overlay = True
+                            break
+                    if not found_in_overlay:
+                        continue  # Skip this stale registration
+                
                 # Try ID-based match first
                 if comp_id and registered_comp.get('_element_id') == comp_id:
                     return True
@@ -1044,6 +1336,17 @@ class DrawingOverlay(QWidget):
         seg_id = seg.get('_element_id')
         for mapping in self.path_element_mapping.values():
             for registered_seg in mapping.get('segments', []):
+                # Skip stale references - registered segment must still be in overlay
+                if registered_seg not in self.segments:
+                    # Check by identity, but if not found, check coordinates as fallback
+                    found_in_overlay = False
+                    for overlay_seg in self.segments:
+                        if self._segments_match(overlay_seg, registered_seg):
+                            found_in_overlay = True
+                            break
+                    if not found_in_overlay:
+                        continue  # Skip this stale registration
+                
                 # Try ID-based match first
                 if seg_id and registered_seg.get('_element_id') == seg_id:
                     return True
@@ -1262,70 +1565,94 @@ class DrawingOverlay(QWidget):
         try:
             cx, cy = int(component.get('x', 0)), int(component.get('y', 0))
             comp_id = component.get('_element_id')
+            comp_db_id = component.get('db_component_id') or component.get('hvac_component_id')
+
+            updated_count = 0
             
             for seg in self.segments:
                 from_comp = seg.get('from_component')
                 to_comp = seg.get('to_component')
+                changed = False
+
+                # NOTE: During component drag, we must only move endpoints that are already
+                # connected to the dragged component. Do NOT opportunistically attach new
+                # segment endpoints, and do NOT use coordinate-based matching here (too
+                # permissive and can cause unrelated segments to "snap" to the dragged component).
+
+                # Prefer segment endpoint IDs if present (most stable across reloads).
+                seg_from_elem_id = seg.get('from_element_id')
+                seg_to_elem_id = seg.get('to_element_id')
+                seg_from_db_id = seg.get('from_db_component_id')
+                seg_to_db_id = seg.get('to_db_component_id')
                 
                 # Check if segment start is connected to this component
                 is_from_connected = False
-                if from_comp is not None:
-                    # Try ID-based match first
+                if comp_id and seg_from_elem_id == comp_id:
+                    is_from_connected = True
+                elif comp_db_id and seg_from_db_id == comp_db_id:
+                    is_from_connected = True
+                elif from_comp is not None:
+                    # Try element ID match first
                     if comp_id and from_comp.get('_element_id') == comp_id:
                         is_from_connected = True
-                    # Fall back to identity check
-                    elif from_comp is component:
+                    # Try DB component ID match
+                    else:
+                        from_db_id = from_comp.get('db_component_id') or from_comp.get('hvac_component_id')
+                        if comp_db_id and from_db_id and from_db_id == comp_db_id:
+                            is_from_connected = True
+                    # Fall back to identity check (only if objects are canonical)
+                    if not is_from_connected and from_comp is component:
                         is_from_connected = True
-                    # Fall back to coordinate/type match
-                    elif self._components_match(from_comp, component):
-                        is_from_connected = True
-                        # Update the reference to use the current component
-                        seg['from_component'] = component
                 
                 if is_from_connected:
+                    seg['from_component'] = component
+                    if comp_id:
+                        seg['from_element_id'] = comp_id
+                    if comp_db_id:
+                        seg['from_db_component_id'] = comp_db_id
                     seg['start_x'] = cx
                     seg['start_y'] = cy
                     print(f"DEBUG: Updated segment start to component ({cx}, {cy})")
+                    changed = True
                 
                 # Check if segment end is connected to this component
                 is_to_connected = False
-                if to_comp is not None:
-                    # Try ID-based match first
+                if comp_id and seg_to_elem_id == comp_id:
+                    is_to_connected = True
+                elif comp_db_id and seg_to_db_id == comp_db_id:
+                    is_to_connected = True
+                elif to_comp is not None:
+                    # Try element ID match first
                     if comp_id and to_comp.get('_element_id') == comp_id:
                         is_to_connected = True
-                    # Fall back to identity check
-                    elif to_comp is component:
+                    # Try DB component ID match
+                    else:
+                        to_db_id = to_comp.get('db_component_id') or to_comp.get('hvac_component_id')
+                        if comp_db_id and to_db_id and to_db_id == comp_db_id:
+                            is_to_connected = True
+                    # Fall back to identity check (only if objects are canonical)
+                    if not is_to_connected and to_comp is component:
                         is_to_connected = True
-                    # Fall back to coordinate/type match
-                    elif self._components_match(to_comp, component):
-                        is_to_connected = True
-                        # Update the reference to use the current component
-                        seg['to_component'] = component
                 
                 if is_to_connected:
+                    seg['to_component'] = component
+                    if comp_id:
+                        seg['to_element_id'] = comp_id
+                    if comp_db_id:
+                        seg['to_db_component_id'] = comp_db_id
                     seg['end_x'] = cx
                     seg['end_y'] = cy
                     print(f"DEBUG: Updated segment end to component ({cx}, {cy})")
-                
-                # If segment endpoint is not attached, try to attach if close
-                if seg.get('from_component') is None:
-                    if self._is_near_point(seg.get('start_x', 0), seg.get('start_y', 0), cx, cy, self._snap_threshold_px):
-                        seg['from_component'] = component
-                        seg['start_x'] = cx
-                        seg['start_y'] = cy
-                        print(f"DEBUG: Attached unconnected segment start to component ({cx}, {cy})")
-                        
-                if seg.get('to_component') is None:
-                    if self._is_near_point(seg.get('end_x', 0), seg.get('end_y', 0), cx, cy, self._snap_threshold_px):
-                        seg['to_component'] = component
-                        seg['end_x'] = cx
-                        seg['end_y'] = cy
-                        print(f"DEBUG: Attached unconnected segment end to component ({cx}, {cy})")
+                    changed = True
                 
                 try:
-                    self._recompute_segment_length(seg)
+                    if changed:
+                        self._recompute_segment_length(seg)
                 except Exception:
                     pass
+                if changed:
+                    updated_count += 1
+            print(f"DEBUG: _update_segments_for_component_move updated {updated_count} segment(s) for component move")
         except Exception as e:
             print(f"DEBUG: Error in _update_segments_for_component_move: {e}")
 
@@ -1461,17 +1788,56 @@ class DrawingOverlay(QWidget):
             print(f"DEBUG: Failed to update segment base coordinates: {e}")
 
     def _components_match(self, comp1: dict, comp2: dict) -> bool:
-        """Check if two components represent the same element"""
-        return (comp1.get('component_type') == comp2.get('component_type') and
-                abs(comp1.get('x', 0) - comp2.get('x', 0)) < 5 and
-                abs(comp1.get('y', 0) - comp2.get('y', 0)) < 5)
+        """Check if two components represent the same element.
+        Normalizes coordinates to base (zoom=1.0) before comparison.
+        """
+        if comp1.get('component_type') != comp2.get('component_type'):
+            return False
+        
+        # First try matching by DB component ID
+        db_id1 = comp1.get('db_component_id') or comp1.get('hvac_component_id')
+        db_id2 = comp2.get('db_component_id') or comp2.get('hvac_component_id')
+        if db_id1 and db_id2 and db_id1 == db_id2:
+            return True
+        
+        # Normalize to base coordinates for comparison
+        z1 = comp1.get('saved_zoom') or 1.0
+        z2 = comp2.get('saved_zoom') or 1.0
+        base_x1 = comp1.get('x', 0) / z1
+        base_y1 = comp1.get('y', 0) / z1
+        base_x2 = comp2.get('x', 0) / z2
+        base_y2 = comp2.get('y', 0) / z2
+        
+        return (abs(base_x1 - base_x2) < 5 and abs(base_y1 - base_y2) < 5)
 
     def _segments_match(self, seg1: dict, seg2: dict) -> bool:
-        """Check if two segments represent the same element"""
-        return (abs(seg1.get('start_x', 0) - seg2.get('start_x', 0)) < 5 and
-                abs(seg1.get('start_y', 0) - seg2.get('start_y', 0)) < 5 and
-                abs(seg1.get('end_x', 0) - seg2.get('end_x', 0)) < 5 and
-                abs(seg1.get('end_y', 0) - seg2.get('end_y', 0)) < 5)
+        """Check if two segments represent the same element.
+        Normalizes coordinates to base (zoom=1.0) before comparison.
+        """
+        # First try matching by DB segment ID
+        db_id1 = seg1.get('db_segment_id') or seg1.get('hvac_segment_id')
+        db_id2 = seg2.get('db_segment_id') or seg2.get('hvac_segment_id')
+        if db_id1 and db_id2 and db_id1 == db_id2:
+            return True
+        
+        # Normalize to base coordinates for comparison
+        z1 = seg1.get('saved_zoom') or 1.0
+        z2 = seg2.get('saved_zoom') or 1.0
+        
+        base_sx1 = seg1.get('start_x', 0) / z1
+        base_sy1 = seg1.get('start_y', 0) / z1
+        base_ex1 = seg1.get('end_x', 0) / z1
+        base_ey1 = seg1.get('end_y', 0) / z1
+        
+        base_sx2 = seg2.get('start_x', 0) / z2
+        base_sy2 = seg2.get('start_y', 0) / z2
+        base_ex2 = seg2.get('end_x', 0) / z2
+        base_ey2 = seg2.get('end_y', 0) / z2
+        
+        return (abs(base_sx1 - base_sx2) < 5 and
+                abs(base_sy1 - base_sy2) < 5 and
+                abs(base_ex1 - base_ex2) < 5 and
+                abs(base_ey1 - base_ey2) < 5)
 
     # ---------------------- Utilities ----------------------
     def attach_component_to_nearby_segments(self, component, threshold_px=20):

@@ -185,6 +185,22 @@ class DrawingElement(Base):
 			element.element_name = f"Segment {element_data.get('length_formatted', '')}"
 			element.end_x_position = element_data.get('end_x')
 			element.end_y_position = element_data.get('end_y')
+
+			# Persist stable endpoint IDs instead of embedding full component dicts.
+			# Back-compat: if old payloads include embedded component dicts, extract IDs from them.
+			from_comp = element_data.get('from_component') if isinstance(element_data.get('from_component'), dict) else None
+			to_comp = element_data.get('to_component') if isinstance(element_data.get('to_component'), dict) else None
+
+			from_element_id = element_data.get('from_element_id') or (from_comp.get('_element_id') if from_comp else None)
+			to_element_id = element_data.get('to_element_id') or (to_comp.get('_element_id') if to_comp else None)
+
+			from_db_component_id = element_data.get('from_db_component_id') or (
+				(from_comp.get('db_component_id') or from_comp.get('hvac_component_id')) if from_comp else None
+			)
+			to_db_component_id = element_data.get('to_db_component_id') or (
+				(to_comp.get('db_component_id') or to_comp.get('hvac_component_id')) if to_comp else None
+			)
+
 			element.properties = {
 				'start_x': element_data.get('start_x'),
 				'start_y': element_data.get('start_y'),
@@ -192,8 +208,10 @@ class DrawingElement(Base):
 				'end_y': element_data.get('end_y'),
 				'length_pixels': element_data.get('length_pixels'),
 				'length_formatted': element_data.get('length_formatted'),
-				'from_component': element_data.get('from_component'),
-				'to_component': element_data.get('to_component'),
+				'from_element_id': from_element_id,
+				'to_element_id': to_element_id,
+				'from_db_component_id': from_db_component_id,
+				'to_db_component_id': to_db_component_id,
 				'saved_zoom': saved_zoom
 			}
 		elif element_type == 'measurement':

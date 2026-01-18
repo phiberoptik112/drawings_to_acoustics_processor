@@ -108,6 +108,12 @@ class HVACPathCalculator:
                     )
                     session.add(hvac_comp)
                     session.flush()  # Get ID
+                    # Link back to drawing component data so overlays get DB IDs
+                    try:
+                        comp_data['db_component_id'] = hvac_comp.id
+                        comp_data['hvac_component_id'] = hvac_comp.id
+                    except Exception:
+                        pass
                     
                     # Auto-link with mechanical unit if possible
                     try:
@@ -240,6 +246,12 @@ class HVACPathCalculator:
                             flow_rate=segment_cfm
                         )
                         session.add(hvac_segment)
+                        session.flush()  # Ensure ID is available for linking
+                        try:
+                            seg_data['db_segment_id'] = hvac_segment.id
+                            seg_data['hvac_segment_id'] = hvac_segment.id
+                        except Exception:
+                            pass
                         created_segments.append(hvac_segment)
                     else:
                         # Fallback: if neither endpoint matched by exact equality, try position/type match
@@ -277,6 +289,12 @@ class HVACPathCalculator:
                                 flow_rate=segment_cfm
                             )
                             session.add(hvac_segment)
+                            session.flush()  # Ensure ID is available for linking
+                            try:
+                                seg_data['db_segment_id'] = hvac_segment.id
+                                seg_data['hvac_segment_id'] = hvac_segment.id
+                            except Exception:
+                                pass
                             created_segments.append(hvac_segment)
                         else:
                             if self.debug_export_enabled:
