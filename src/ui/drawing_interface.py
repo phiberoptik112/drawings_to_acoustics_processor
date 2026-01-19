@@ -3049,19 +3049,12 @@ class DrawingInterface(HelpMixin, QMainWindow):
     
     def handle_path_visibility_changed(self, path_id: int, visible: bool):
         """Handle path visibility checkbox change"""
-        print(f"DEBUG: Path {path_id} visibility changed to {visible}")
-        
-        # #region agent log
-        import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_interface.py:handle_path_visibility_changed', 'message': 'Handling visibility change', 'data': {'path_id': path_id, 'visible': visible, 'path_element_mapping_keys': list(self.drawing_overlay.path_element_mapping.keys()) if self.drawing_overlay else [], 'path_has_registered_elements': path_id in self.drawing_overlay.path_element_mapping if self.drawing_overlay else False, 'registered_comp_count': len(self.drawing_overlay.path_element_mapping.get(path_id, {}).get('components', [])) if self.drawing_overlay else 0, 'registered_seg_count': len(self.drawing_overlay.path_element_mapping.get(path_id, {}).get('segments', [])) if self.drawing_overlay else 0}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'A'}) + '\n')
-        # #endregion
-        
         if visible:
             self.visible_paths.add(path_id)
             self.show_path_on_drawing(path_id)
         else:
             self.visible_paths.discard(path_id)
             self.hide_path_on_drawing(path_id)
-        print(f"DEBUG: Drawing overlay visible_paths after change: {list(self.drawing_overlay.visible_paths.keys()) if self.drawing_overlay else 'No overlay'}")
     
     def show_path_on_drawing(self, path_id: int):
         """Show a specific path on the drawing overlay"""
@@ -3082,11 +3075,6 @@ class DrawingInterface(HelpMixin, QMainWindow):
             # Add path to visible paths (this will make path elements visible)
             self.drawing_overlay.visible_paths[path_id] = True
             self.drawing_overlay.update()
-            print(f"DEBUG: Showing path {path_id}, visible paths: {list(self.drawing_overlay.visible_paths.keys())}")
-            
-            # #region agent log
-            import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_interface.py:show_path_on_drawing', 'message': 'Show path called', 'data': {'path_id': path_id, 'visible_paths_after': list(self.drawing_overlay.visible_paths.keys()), 'overlay_components_count': len(self.drawing_overlay.components), 'overlay_segments_count': len(self.drawing_overlay.segments), 'path_mapping_exists': path_id in self.drawing_overlay.path_element_mapping}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'D'}) + '\n')
-            # #endregion
         
     def hide_path_on_drawing(self, path_id: int):
         """Hide a specific path from the drawing overlay"""
@@ -3094,23 +3082,15 @@ class DrawingInterface(HelpMixin, QMainWindow):
             # Remove path from visible paths (this will hide path elements)
             self.drawing_overlay.visible_paths.pop(path_id, None)
             self.drawing_overlay.update()
-            print(f"DEBUG: Hiding path {path_id}, visible paths: {list(self.drawing_overlay.visible_paths.keys())}")
     
     def show_all_paths(self):
         """Show all paths on the drawing"""
-        # #region agent log
-        import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_interface.py:show_all_paths', 'message': 'Show all paths called', 'data': {'paths_count': self.paths_list.count()}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'O'}) + '\n')
-        # #endregion
         for i in range(self.paths_list.count()):
             item = self.paths_list.item(i)
             widget = self.paths_list.itemWidget(item)
             if widget:
                 toggle_btn = widget.findChild(QPushButton)
                 hvac_path = item.data(Qt.UserRole)
-                path_id = hvac_path.id if hvac_path else None
-                # #region agent log
-                import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_interface.py:show_all_paths:item', 'message': 'Processing item', 'data': {'path_id': path_id, 'toggle_btn_found': toggle_btn is not None, 'toggle_checked': toggle_btn.isChecked() if toggle_btn else None}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'O'}) + '\n')
-                # #endregion
                 if toggle_btn and not toggle_btn.isChecked():
                     toggle_btn.setChecked(True)
                     # Directly call toggle_path_visibility instead of emitting
@@ -3119,19 +3099,12 @@ class DrawingInterface(HelpMixin, QMainWindow):
     
     def hide_all_paths(self):
         """Hide all paths from the drawing"""
-        # #region agent log
-        import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_interface.py:hide_all_paths', 'message': 'Hide all paths called', 'data': {'paths_count': self.paths_list.count()}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'O'}) + '\n')
-        # #endregion
         for i in range(self.paths_list.count()):
             item = self.paths_list.item(i)
             widget = self.paths_list.itemWidget(item)
             if widget:
                 toggle_btn = widget.findChild(QPushButton)
                 hvac_path = item.data(Qt.UserRole)
-                path_id = hvac_path.id if hvac_path else None
-                # #region agent log
-                import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_interface.py:hide_all_paths:item', 'message': 'Processing item', 'data': {'path_id': path_id, 'toggle_btn_found': toggle_btn is not None, 'toggle_checked': toggle_btn.isChecked() if toggle_btn else None}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'O'}) + '\n')
-                # #endregion
                 if toggle_btn and toggle_btn.isChecked():
                     toggle_btn.setChecked(False)
                     # Directly call toggle_path_visibility instead of emitting
@@ -3752,10 +3725,6 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         comp_base_x = comp.get('x', 0) / comp_z
                         comp_base_y = comp.get('y', 0) / comp_z
                         
-                        # #region agent log
-                        import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_interface.py:register_existing_path_elements:load_comp', 'message': 'Loading component from DB', 'data': {'x': comp.get('x'), 'y': comp.get('y'), 'base_x': comp_base_x, 'base_y': comp_base_y, 'saved_zoom': comp.get('saved_zoom'), 'component_type': comp.get('component_type'), 'db_id': comp.get('db_component_id') or comp.get('id')}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'L'}) + '\n')
-                        # #endregion
-                        
                         # Add to overlay components if not already there
                         # First try matching by DB ID, then by normalized base coordinates
                         existing = False
@@ -3962,16 +3931,6 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 if not linked_elements_loaded:
                     self.drawing_overlay._base_dirty = True
                     self.drawing_overlay.set_zoom_factor(self.drawing_overlay._current_zoom_factor)
-                    print(f"DEBUG: Updated zoom coordinates for reconstructed elements")
-                
-                # #region agent log
-                import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_interface.py:register_existing_path_elements', 'message': 'Path elements registered', 'data': {'path_id': path_id, 'components_count': len(path_components), 'segments_count': len(path_segments), 'overlay_total_components': len(self.drawing_overlay.components), 'overlay_total_segments': len(self.drawing_overlay.segments)}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'A'}) + '\n')
-                # #endregion
-            else:
-                print(f"DEBUG: No elements found to register for path {path_id}")
-                # #region agent log
-                import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_interface.py:register_existing_path_elements', 'message': 'No elements found for path', 'data': {'path_id': path_id, 'linked_elements_loaded': linked_elements_loaded, 'overlay_total_components': len(self.drawing_overlay.components), 'overlay_total_segments': len(self.drawing_overlay.segments)}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'A'}) + '\n')
-                # #endregion
             
         except Exception as e:
             print(f"Error registering path elements for path {hvac_path.id}: {e}")
@@ -4385,12 +4344,6 @@ class DrawingInterface(HelpMixin, QMainWindow):
         visible=True (checked) means path should be shown
         visible=False (unchecked) means path should be hidden
         """
-        print(f"DEBUG: Toggle path {path_id} visibility: {visible}")
-        
-        # #region agent log
-        import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_interface.py:toggle_path_visibility', 'message': 'Toggle visibility called', 'data': {'path_id': path_id, 'visible': visible, 'button_checked': button.isChecked()}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'C'}) + '\n')
-        # #endregion
-        
         # Update button appearance
         if visible:
             button.setText("👁️")  # Open eye for visible
@@ -4406,10 +4359,6 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 # Add to hidden paths (hide it)
                 self.drawing_overlay.hidden_paths.add(path_id)
             self.drawing_overlay.update()
-            
-            # #region agent log
-            import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_interface.py:toggle_path_visibility', 'message': 'Hidden paths updated', 'data': {'path_id': path_id, 'visible': visible, 'hidden_paths': list(self.drawing_overlay.hidden_paths)}, 'timestamp': __import__('time').time() * 1000, 'sessionId': 'debug-session', 'hypothesisId': 'C'}) + '\n')
-            # #endregion
     
     def force_show_path(self, path_id: int):
         """Force show a path (debug method)"""
