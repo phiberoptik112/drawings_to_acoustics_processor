@@ -2896,6 +2896,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
     # Path visibility methods
     def load_saved_paths(self):
         """Load saved HVAC paths from database and populate the paths list"""
+        # #region agent log
+        import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:load_saved_paths:entry', 'message': 'load_saved_paths called (Refresh button)', 'data': {'overlay_components_count': len(self.drawing_overlay.components) if self.drawing_overlay else 0, 'overlay_zoom': self.drawing_overlay._current_zoom_factor if self.drawing_overlay else None}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H4,H5'}) + '\n')
+        # #endregion
         session = None
         try:
             session = get_session()
@@ -2920,14 +2923,48 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 
                 # Remove path-linked elements from overlay to prevent duplicates on refresh
                 # Keep elements that don't have path associations (user-drawn elements)
+
+                # Collect all path component positions for proximity-based filtering (defensive)
+                path_component_positions = set()
+                for hvac_path in hvac_paths:
+                    for seg in hvac_path.segments:
+                        if seg.from_component:
+                            path_component_positions.add(
+                                (seg.from_component.x_position or 0, seg.from_component.y_position or 0)
+                            )
+                        if seg.to_component:
+                            path_component_positions.add(
+                                (seg.to_component.x_position or 0, seg.to_component.y_position or 0)
+                            )
+
+                def is_near_path_position(comp):
+                    """Check if component is near any path component position."""
+                    comp_zoom = comp.get('saved_zoom') or 1.0
+                    if comp_zoom <= 0:
+                        comp_zoom = 1.0
+                    comp_x = comp.get('x', 0) / comp_zoom
+                    comp_y = comp.get('y', 0) / comp_zoom
+                    tol = 15.0  # pixels tolerance
+                    for px, py in path_component_positions:
+                        if abs(comp_x - (px or 0)) < tol and abs(comp_y - (py or 0)) < tol:
+                            return True
+                    return False
+
+                # Remove components that either have path IDs OR are near path positions
+                _comp_count_before = len(self.drawing_overlay.components)
+                _comp_samples_before = [{'x': c.get('x'), 'y': c.get('y'), 'saved_zoom': c.get('saved_zoom'), 'hvac_path_id': c.get('hvac_path_id')} for c in self.drawing_overlay.components[:5]]
                 self.drawing_overlay.components = [
-                    c for c in self.drawing_overlay.components 
-                    if not c.get('hvac_path_id') and not c.get('db_path_id')
+                    c for c in self.drawing_overlay.components
+                    if not (c.get('hvac_path_id') or c.get('db_path_id') or is_near_path_position(c))
                 ]
                 self.drawing_overlay.segments = [
-                    s for s in self.drawing_overlay.segments 
+                    s for s in self.drawing_overlay.segments
                     if not s.get('hvac_path_id') and not s.get('db_path_id')
                 ]
+                
+                # #region agent log
+                import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:load_saved_paths:filter', 'message': 'Components filtered', 'data': {'before': _comp_count_before, 'after': len(self.drawing_overlay.components), 'removed': _comp_count_before - len(self.drawing_overlay.components), 'samples_before': _comp_samples_before, 'path_positions_count': len(path_component_positions)}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H4'}) + '\n')
+                # #endregion
                 
                 # Mark base cache as dirty since we modified component/segment lists
                 self.drawing_overlay._base_dirty = True
@@ -3010,6 +3047,11 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 widget.mouseDoubleClickEvent = _row_dbl_click
             
             session.close()
+            
+            # #region agent log
+            _final_comp_samples = [{'x': c.get('x'), 'y': c.get('y'), 'saved_zoom': c.get('saved_zoom')} for c in self.drawing_overlay.components[:5]] if self.drawing_overlay else []
+            import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:load_saved_paths:exit', 'message': 'load_saved_paths completed', 'data': {'final_component_count': len(self.drawing_overlay.components) if self.drawing_overlay else 0, 'final_comp_samples': _final_comp_samples, 'overlay_zoom': self.drawing_overlay._current_zoom_factor if self.drawing_overlay else None}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H1,H2,H4'}) + '\n')
+            # #endregion
             
             # Refresh analysis panel path list
             if hasattr(self, 'analysis_panel') and self.analysis_panel:
@@ -3690,6 +3732,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
             path_id = hvac_path.id
             path_components = []
             path_segments = []
+            # #region agent log
+            import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:register_existing_path_elements:entry', 'message': f'Registering path {path_id}', 'data': {'path_id': path_id, 'path_name': hvac_path.name, 'overlay_components_before': len(self.drawing_overlay.components), 'overlay_zoom': self.drawing_overlay._current_zoom_factor}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H2,H3'}) + '\n')
+            # #endregion
             
             # Get current drawing context for filtering
             current_drawing_id = self.drawing.id if self.drawing else None
@@ -3733,19 +3778,29 @@ class DrawingInterface(HelpMixin, QMainWindow):
                             # Match by DB component ID first (most reliable)
                             existing_db_id = existing_comp.get('db_component_id') or existing_comp.get('hvac_component_id')
                             if comp_db_id and existing_db_id and comp_db_id == existing_db_id:
+                                # Ensure the existing component has all necessary IDs
+                                existing_comp['db_component_id'] = comp_db_id
+                                existing_comp['hvac_component_id'] = comp_db_id
+                                existing_comp['db_path_id'] = hvac_path.id
+                                existing_comp['hvac_path_id'] = hvac_path.id
                                 path_components.append(existing_comp)
                                 existing = True
                                 break
-                            
+
                             # Fall back to normalized coordinate comparison
                             exist_z = existing_comp.get('saved_zoom') or 1.0
                             exist_base_x = existing_comp.get('x', 0) / exist_z
                             exist_base_y = existing_comp.get('y', 0) / exist_z
-                            
+
                             # Use tolerance of 5 pixels at base zoom for comparison
-                            if (abs(exist_base_x - comp_base_x) < 5 and 
+                            if (abs(exist_base_x - comp_base_x) < 5 and
                                 abs(exist_base_y - comp_base_y) < 5 and
                                 existing_comp.get('component_type') == comp.get('component_type')):
+                                # Ensure the existing component has all necessary IDs
+                                existing_comp['db_component_id'] = comp_db_id
+                                existing_comp['hvac_component_id'] = comp_db_id
+                                existing_comp['db_path_id'] = hvac_path.id
+                                existing_comp['hvac_path_id'] = hvac_path.id
                                 path_components.append(existing_comp)
                                 existing = True
                                 break
@@ -3758,6 +3813,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
                             comp['saved_zoom'] = current_z
                             self.drawing_overlay.components.append(comp)
                             path_components.append(comp)
+                            # #region agent log
+                            import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:register_existing_path_elements:add_comp', 'message': 'Added new component to overlay', 'data': {'base_x': comp_base_x, 'base_y': comp_base_y, 'scaled_x': comp['x'], 'scaled_y': comp['y'], 'saved_zoom': comp['saved_zoom'], 'overlay_zoom': current_z}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H2'}) + '\n')
+                            # #endregion
                     
                     for seg in db_segments:
                         # Ensure segment has required fields for overlay rendering
@@ -3843,33 +3901,61 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 for i, segment in enumerate(hvac_path.segments):
                     if segment.from_component:
                         db_comp = segment.from_component
-                        
-                        # Look for matching component in drawing elements
+
+                        # Look for matching component in drawing elements with fuzzy tolerance
                         found = False
+                        tol = 12.0  # pixels tolerance (matching segment logic)
+                        db_x = db_comp.x_position or 0
+                        db_y = db_comp.y_position or 0
+
                         for comp in drawing_components:
-                            if (comp.get('x') == db_comp.x_position and
-                                comp.get('y') == db_comp.y_position and
+                            # Normalize overlay component to base coordinates
+                            comp_zoom = comp.get('saved_zoom') or 1.0
+                            if comp_zoom <= 0:
+                                comp_zoom = 1.0
+                            comp_base_x = comp.get('x', 0) / comp_zoom
+                            comp_base_y = comp.get('y', 0) / comp_zoom
+
+                            if (abs(comp_base_x - db_x) <= tol and
+                                abs(comp_base_y - db_y) <= tol and
                                 comp.get('component_type') == db_comp.component_type):
                                 if comp not in path_components:
                                     path_components.append(comp)
-                                    # Attach DB id for edit lookups
+                                    # Add ALL required IDs for visibility matching and filtering
                                     comp['db_component_id'] = db_comp.id
+                                    comp['hvac_component_id'] = db_comp.id
+                                    comp['db_path_id'] = hvac_path.id
+                                    comp['hvac_path_id'] = hvac_path.id
                                 found = True
                                 break
                     
                     if segment.to_component:
                         db_comp = segment.to_component
-                        
-                        # Look for matching component in drawing elements
+
+                        # Look for matching component in drawing elements with fuzzy tolerance
                         found = False
+                        tol = 12.0  # pixels tolerance (matching segment logic)
+                        db_x = db_comp.x_position or 0
+                        db_y = db_comp.y_position or 0
+
                         for comp in drawing_components:
-                            if (comp.get('x') == db_comp.x_position and
-                                comp.get('y') == db_comp.y_position and
+                            # Normalize overlay component to base coordinates
+                            comp_zoom = comp.get('saved_zoom') or 1.0
+                            if comp_zoom <= 0:
+                                comp_zoom = 1.0
+                            comp_base_x = comp.get('x', 0) / comp_zoom
+                            comp_base_y = comp.get('y', 0) / comp_zoom
+
+                            if (abs(comp_base_x - db_x) <= tol and
+                                abs(comp_base_y - db_y) <= tol and
                                 comp.get('component_type') == db_comp.component_type):
                                 if comp not in path_components:
                                     path_components.append(comp)
-                                    # Attach DB id for edit lookups
+                                    # Add ALL required IDs for visibility matching and filtering
                                     comp['db_component_id'] = db_comp.id
+                                    comp['hvac_component_id'] = db_comp.id
+                                    comp['db_path_id'] = hvac_path.id
+                                    comp['hvac_path_id'] = hvac_path.id
                                 found = True
                                 break
                     
@@ -3929,6 +4015,10 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 # If elements were reconstructed from DB (not linked elements), update zoom coordinates
                 # This ensures elements with base zoom coordinates (saved_zoom=1.0) are properly scaled
                 if not linked_elements_loaded:
+                    # #region agent log
+                    _sample_coords_before = [{'x': c.get('x'), 'y': c.get('y'), 'saved_zoom': c.get('saved_zoom')} for c in path_components[:3]]
+                    import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:register_existing_path_elements:zoom_update', 'message': 'About to call set_zoom_factor after registration (POTENTIAL DOUBLE-SCALE)', 'data': {'path_id': path_id, 'linked_elements_loaded': linked_elements_loaded, 'sample_coords_before': _sample_coords_before, 'current_zoom': self.drawing_overlay._current_zoom_factor}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H2'}) + '\n')
+                    # #endregion
                     self.drawing_overlay._base_dirty = True
                     self.drawing_overlay.set_zoom_factor(self.drawing_overlay._current_zoom_factor)
             
@@ -3975,7 +4065,11 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                 break
                         
                         if existing_comp:
-                            # Use existing component
+                            # Use existing component, but ensure it has all DB IDs
+                            existing_comp['db_component_id'] = db_comp.id
+                            existing_comp['hvac_component_id'] = db_comp.id
+                            existing_comp['db_path_id'] = hvac_path.id
+                            existing_comp['hvac_path_id'] = hvac_path.id
                             path_components.append(existing_comp)
                         else:
                             # Create new visual element
@@ -3992,6 +4086,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
                             }
                             path_components.append(comp_visual)
                             self.drawing_overlay.components.append(comp_visual)
+                            # #region agent log
+                            import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:_reconstruct_path_visuals_from_db:new_comp', 'message': 'Created NEW component from DB (saved_zoom=1.0)', 'data': {'db_x': db_comp.x_position, 'db_y': db_comp.y_position, 'comp_type': db_comp.component_type, 'overlay_zoom': self.drawing_overlay._current_zoom_factor}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H3'}) + '\n')
+                            # #endregion
                         seen_comp_ids.add(db_comp.id)
                 
                 # Reconstruct segment visual - only if BOTH endpoints are on this drawing
