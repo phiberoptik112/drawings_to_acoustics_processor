@@ -2509,6 +2509,17 @@ class DrawingOverlay(QWidget):
         """
         import time
         registration_start_time = time.time()
+
+        def _same_page(a: dict, b: dict) -> bool:
+            """Only match elements on the same page when both are known."""
+            try:
+                a_page = a.get('page_number')
+                b_page = b.get('page_number')
+            except Exception:
+                return True
+            if a_page is None or b_page is None:
+                return True
+            return a_page == b_page
         
         # #region agent log
         import json
@@ -2557,6 +2568,8 @@ class DrawingOverlay(QWidget):
             if comp_elem_id:
                 print(f"  -> STRATEGY 2: Searching by element ID '{comp_elem_id}'")
                 for overlay_idx, overlay_comp in enumerate(self.components):
+                    if not _same_page(overlay_comp, comp):
+                        continue
                     if overlay_comp.get('_element_id') == comp_elem_id:
                         registered_components.append(overlay_comp)
                         found = True
@@ -2574,6 +2587,8 @@ class DrawingOverlay(QWidget):
                 print(f"  -> STRATEGY 3: Coordinate/type matching")
                 match_attempts = 0
                 for overlay_idx, overlay_comp in enumerate(self.components):
+                    if not _same_page(overlay_comp, comp):
+                        continue
                     match_attempts += 1
                     if self._components_match(overlay_comp, comp):
                         registered_components.append(overlay_comp)
@@ -2619,6 +2634,8 @@ class DrawingOverlay(QWidget):
             if seg_elem_id:
                 print(f"  -> STRATEGY 2: Searching by element ID '{seg_elem_id}'")
                 for overlay_idx, overlay_seg in enumerate(self.segments):
+                    if not _same_page(overlay_seg, seg):
+                        continue
                     if overlay_seg.get('_element_id') == seg_elem_id:
                         registered_segments.append(overlay_seg)
                         found = True
@@ -2635,6 +2652,8 @@ class DrawingOverlay(QWidget):
                 print(f"  -> STRATEGY 3: Coordinate matching")
                 match_attempts = 0
                 for overlay_idx, overlay_seg in enumerate(self.segments):
+                    if not _same_page(overlay_seg, seg):
+                        continue
                     match_attempts += 1
                     if self._segments_match(overlay_seg, seg):
                         registered_segments.append(overlay_seg)

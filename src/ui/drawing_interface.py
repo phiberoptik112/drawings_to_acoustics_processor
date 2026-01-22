@@ -3224,7 +3224,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
     def hide_path_on_drawing(self, path_id: int):
         """Hide a specific path from the drawing overlay"""
         if self.drawing_overlay:
-            # Remove path from visible paths (this will hide path elements)
+            # Mark hidden for normal mode and remove from visible for path-only mode
+            self.drawing_overlay.hidden_paths.add(path_id)
             self.drawing_overlay.visible_paths.pop(path_id, None)
             self.drawing_overlay.update()
     
@@ -3911,6 +3912,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                 existing_comp['hvac_component_id'] = comp_db_id
                                 existing_comp['db_path_id'] = hvac_path.id
                                 existing_comp['hvac_path_id'] = hvac_path.id
+                                if existing_comp.get('page_number') is None:
+                                    existing_comp['page_number'] = comp.get('page_number') or current_page
                                 path_components.append(existing_comp)
                                 existing = True
                                 break
@@ -3929,6 +3932,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                 existing_comp['hvac_component_id'] = comp_db_id
                                 existing_comp['db_path_id'] = hvac_path.id
                                 existing_comp['hvac_path_id'] = hvac_path.id
+                                if existing_comp.get('page_number') is None:
+                                    existing_comp['page_number'] = comp.get('page_number') or current_page
                                 path_components.append(existing_comp)
                                 existing = True
                                 break
@@ -3939,6 +3944,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                             comp['x'] = int(comp_base_x * current_z)
                             comp['y'] = int(comp_base_y * current_z)
                             comp['saved_zoom'] = current_z
+                            if comp.get('page_number') is None:
+                                comp['page_number'] = current_page
                             # Note: page_number should come from DrawingElement.to_dict() if available
                             # Don't override with current_page as that would be wrong for multi-page
                             self.drawing_overlay.components.append(comp)
@@ -3975,6 +3982,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                             # Match by DB segment ID first
                             existing_db_id = existing_seg.get('db_segment_id') or existing_seg.get('hvac_segment_id')
                             if seg_db_id and existing_db_id and seg_db_id == existing_db_id:
+                                if existing_seg.get('page_number') is None:
+                                    existing_seg['page_number'] = seg.get('page_number') or current_page
                                 path_segments.append(existing_seg)
                                 existing = True
                                 break
@@ -3990,6 +3999,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                 abs(exist_base_sy - seg_base_sy) < 5 and
                                 abs(exist_base_ex - seg_base_ex) < 5 and
                                 abs(exist_base_ey - seg_base_ey) < 5):
+                                if existing_seg.get('page_number') is None:
+                                    existing_seg['page_number'] = seg.get('page_number') or current_page
                                 path_segments.append(existing_seg)
                                 existing = True
                                 break
@@ -4002,6 +4013,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                             seg['end_x'] = int(seg_base_ex * current_z)
                             seg['end_y'] = int(seg_base_ey * current_z)
                             seg['saved_zoom'] = current_z
+                            if seg.get('page_number') is None:
+                                seg['page_number'] = current_page
                             # Note: page_number should come from DrawingElement.to_dict() if available
                             # Don't override with current_page as that would be wrong for multi-page
                             self.drawing_overlay.segments.append(seg)
@@ -4055,6 +4068,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                     comp['hvac_component_id'] = db_comp.id
                                     comp['db_path_id'] = hvac_path.id
                                     comp['hvac_path_id'] = hvac_path.id
+                                    if comp.get('page_number') is None:
+                                        comp['page_number'] = current_page
                                 found = True
                                 break
                     
@@ -4085,6 +4100,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                     comp['hvac_component_id'] = db_comp.id
                                     comp['db_path_id'] = hvac_path.id
                                     comp['hvac_path_id'] = hvac_path.id
+                                    if comp.get('page_number') is None:
+                                        comp['page_number'] = current_page
                                 found = True
                                 break
                     
@@ -4110,6 +4127,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                     # Attach DB ids for edit lookups
                                     seg['db_segment_id'] = segment.id
                                     seg['db_path_id'] = hvac_path.id
+                                    if seg.get('page_number') is None:
+                                        seg['page_number'] = current_page
                                     # Also synchronize overlay label length with DB value
                                     try:
                                         seg['length_real'] = float(getattr(segment, 'length', 0) or 0)
@@ -4399,6 +4418,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
             for comp in (components or []):
                 comp['hvac_path_id'] = hvac_path_id
                 comp['db_path_id'] = hvac_path_id
+                if comp.get('page_number') is None:
+                    comp['page_number'] = self.current_page_number
                 # Also try to link to specific component ID if available
                 db_comp_id = comp.get('db_component_id')
                 if db_comp_id:
@@ -4407,6 +4428,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
             for seg in (segments or []):
                 seg['hvac_path_id'] = hvac_path_id
                 seg['db_path_id'] = hvac_path_id
+                if seg.get('page_number') is None:
+                    seg['page_number'] = self.current_page_number
                 # Also try to link to specific segment ID if available
                 db_seg_id = seg.get('db_segment_id')
                 if db_seg_id:
@@ -4677,15 +4700,12 @@ class DrawingInterface(HelpMixin, QMainWindow):
         else:
             button.setText("👁️‍🗨️")  # Closed eye for hidden
             
-        # Update hidden_paths in overlay
-        if self.drawing_overlay:
-            if visible:
-                # Remove from hidden paths (show it)
-                self.drawing_overlay.hidden_paths.discard(path_id)
-            else:
-                # Add to hidden paths (hide it)
-                self.drawing_overlay.hidden_paths.add(path_id)
-            self.drawing_overlay.update()
+        # Route through standard helpers to keep hidden/visible
+        # state consistent for normal and path-only modes.
+        if visible:
+            self.show_path_on_drawing(path_id)
+        else:
+            self.hide_path_on_drawing(path_id)
     
     def force_show_path(self, path_id: int):
         """Force show a path (debug method)"""
