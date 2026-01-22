@@ -49,6 +49,8 @@ def ensure_hvac_schema():
                 ("selected_product_id", "INTEGER"),
                 # Junction preference for BRANCH_TAKEOFF_90 selection
                 ("branch_takeoff_choice", "TEXT"),
+                # Page number for multi-page PDF support
+                ("page_number", "INTEGER DEFAULT 1"),
             ],
         )
 

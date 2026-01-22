@@ -57,6 +57,9 @@ class DrawingOverlay(QWidget):
         self.path_only_mode = False
         self._highlighted_path_id: Optional[int] = None
         
+        # Page tracking for multi-page PDF support
+        self.current_page = 1
+        
         # Element highlighting for analysis panel integration
         self._highlighted_element_id: Optional[object] = None
         self._highlighted_element_type: Optional[str] = None
@@ -121,10 +124,6 @@ class DrawingOverlay(QWidget):
                 return
             z = zoom_factor
 
-            # #region agent log
-            import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_overlay.py:set_zoom_factor:entry', 'message': 'set_zoom_factor called', 'data': {'new_zoom': zoom_factor, 'current_zoom': self._current_zoom_factor, 'base_dirty': self._base_dirty, 'num_components': len(self.components), 'num_base_components': len(self._base_components)}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H1,H2,H3'}) + '\n')
-            # #endregion
-
             # Build base caches when dirty/empty
             if self._base_dirty or not (self._base_rectangles or self._base_polygons or self._base_components or self._base_segments or self._base_measurements):
                 cur_z = self._current_zoom_factor or 1.0
@@ -134,51 +133,48 @@ class DrawingOverlay(QWidget):
                 self._base_segments = []
                 self._base_measurements = []
 
-                # Rectangles
+                # Rectangles - FIX: Use round() instead of int() to minimize cumulative truncation drift
                 for r in self.rectangles:
                     b = r.get('bounds')
                     if isinstance(b, dict):
                         base_bounds = {
-                            'x': int(b.get('x', 0) / cur_z),
-                            'y': int(b.get('y', 0) / cur_z),
-                            'width': int(b.get('width', 0) / cur_z),
-                            'height': int(b.get('height', 0) / cur_z),
+                            'x': round(b.get('x', 0) / cur_z),
+                            'y': round(b.get('y', 0) / cur_z),
+                            'width': round(b.get('width', 0) / cur_z),
+                            'height': round(b.get('height', 0) / cur_z),
                         }
                     elif isinstance(b, QRect):
                         base_bounds = {
-                            'x': int(b.x() / cur_z),
-                            'y': int(b.y() / cur_z),
-                            'width': int(b.width() / cur_z),
-                            'height': int(b.height() / cur_z),
+                            'x': round(b.x() / cur_z),
+                            'y': round(b.y() / cur_z),
+                            'width': round(b.width() / cur_z),
+                            'height': round(b.height() / cur_z),
                         }
                     else:
                         base_bounds = None
 
                     self._base_rectangles.append({
                         **r,
-                        'x': int(r.get('x', 0) / cur_z),
-                        'y': int(r.get('y', 0) / cur_z),
-                        'width': int(r.get('width', 0) / cur_z),
-                        'height': int(r.get('height', 0) / cur_z),
+                        'x': round(r.get('x', 0) / cur_z),
+                        'y': round(r.get('y', 0) / cur_z),
+                        'width': round(r.get('width', 0) / cur_z),
+                        'height': round(r.get('height', 0) / cur_z),
                         'bounds': base_bounds or r.get('bounds')
                     })
 
                 # Components - use saved_zoom if available, else cur_z
-                # #region agent log
-                _comp_samples_before = [{'x': c.get('x'), 'y': c.get('y'), 'saved_zoom': c.get('saved_zoom'), 'type': c.get('component_type')} for c in self.components[:3]] if self.components else []
-                import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_overlay.py:set_zoom_factor:base_rebuild', 'message': 'Rebuilding base cache from current coords', 'data': {'cur_z_for_division': cur_z, 'sample_components_before': _comp_samples_before}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H1,H3'}) + '\n')
-                # #endregion
                 for c in self.components:
                     elem_z = c.get('saved_zoom') or cur_z
                     if elem_z <= 0:
                         elem_z = 1.0  # Prevent division by zero or negative
                     bc = c.copy()
-                    bc['x'] = int(c.get('x', 0) / elem_z)
-                    bc['y'] = int(c.get('y', 0) / elem_z)
+                    # FIX: Use round() instead of int() to minimize cumulative truncation drift
+                    bc['x'] = round(c.get('x', 0) / elem_z)
+                    bc['y'] = round(c.get('y', 0) / elem_z)
                     if isinstance(c.get('position'), dict):
                         bc['position'] = {
-                            'x': int(c['position'].get('x', 0) / elem_z),
-                            'y': int(c['position'].get('y', 0) / elem_z),
+                            'x': round(c['position'].get('x', 0) / elem_z),
+                            'y': round(c['position'].get('y', 0) / elem_z),
                         }
                     self._base_components.append(bc)
 
@@ -186,39 +182,40 @@ class DrawingOverlay(QWidget):
                 for s in self.segments:
                     elem_z = s.get('saved_zoom') or cur_z
                     bs = s.copy()
-                    bs['start_x'] = int(s.get('start_x', 0) / elem_z)
-                    bs['start_y'] = int(s.get('start_y', 0) / elem_z)
-                    bs['end_x'] = int(s.get('end_x', 0) / elem_z)
-                    bs['end_y'] = int(s.get('end_y', 0) / elem_z)
+                    # FIX: Use round() instead of int() to minimize cumulative truncation drift
+                    bs['start_x'] = round(s.get('start_x', 0) / elem_z)
+                    bs['start_y'] = round(s.get('start_y', 0) / elem_z)
+                    bs['end_x'] = round(s.get('end_x', 0) / elem_z)
+                    bs['end_y'] = round(s.get('end_y', 0) / elem_z)
                     lp = s.get('length_pixels', None)
                     bs['length_pixels'] = (lp if lp is not None else 0) / elem_z
                     self._base_segments.append(bs)
 
-                # Measurements
+                # Measurements - FIX: Use round() instead of int() to minimize cumulative truncation drift
                 for m in self.measurements:
                     bm = m.copy()
-                    bm['start_x'] = int(m.get('start_x', 0) / cur_z)
-                    bm['start_y'] = int(m.get('start_y', 0) / cur_z)
-                    bm['end_x'] = int(m.get('end_x', 0) / cur_z)
-                    bm['end_y'] = int(m.get('end_y', 0) / cur_z)
+                    bm['start_x'] = round(m.get('start_x', 0) / cur_z)
+                    bm['start_y'] = round(m.get('start_y', 0) / cur_z)
+                    bm['end_x'] = round(m.get('end_x', 0) / cur_z)
+                    bm['end_y'] = round(m.get('end_y', 0) / cur_z)
                     lp = m.get('length_pixels', None)
                     bm['length_pixels'] = (lp if lp is not None else 0) / cur_z
                     self._base_measurements.append(bm)
 
-                # Polygons
+                # Polygons - FIX: Use round() instead of int() to minimize cumulative truncation drift
                 for poly in self.polygons:
                     bp = poly.copy()
                     pts = []
                     for p in poly.get('points', []) or []:
-                        pts.append({'x': int(p.get('x', 0) / cur_z), 'y': int(p.get('y', 0) / cur_z)})
+                        pts.append({'x': round(p.get('x', 0) / cur_z), 'y': round(p.get('y', 0) / cur_z)})
                     bp['points'] = pts
                     b = poly.get('bounds')
                     if isinstance(b, dict):
                         bp['bounds'] = {
-                            'x': int(b.get('x', 0) / cur_z),
-                            'y': int(b.get('y', 0) / cur_z),
-                            'width': int(b.get('width', 0) / cur_z),
-                            'height': int(b.get('height', 0) / cur_z),
+                            'x': round(b.get('x', 0) / cur_z),
+                            'y': round(b.get('y', 0) / cur_z),
+                            'width': round(b.get('width', 0) / cur_z),
+                            'height': round(b.get('height', 0) / cur_z),
                         }
                     self._base_polygons.append(bp)
 
@@ -227,45 +224,47 @@ class DrawingOverlay(QWidget):
                 dx, dy = x2 - x1, y2 - y1
                 return (dx * dx + dy * dy) ** 0.5
 
-            # Project base → current
+            # Project base → current - FIX: Use round() instead of int() to minimize cumulative truncation drift
             for i, br in enumerate(self._base_rectangles):
                 if i < len(self.rectangles):
                     r = self.rectangles[i]
-                    r['x'] = int(br.get('x', 0) * z)
-                    r['y'] = int(br.get('y', 0) * z)
-                    r['width'] = int(br.get('width', 0) * z)
-                    r['height'] = int(br.get('height', 0) * z)
+                    r['x'] = round(br.get('x', 0) * z)
+                    r['y'] = round(br.get('y', 0) * z)
+                    r['width'] = round(br.get('width', 0) * z)
+                    r['height'] = round(br.get('height', 0) * z)
                     b = br.get('bounds')
                     if isinstance(b, dict):
                         from PySide6.QtCore import QRect as _QRect
                         r['bounds'] = _QRect(
-                            int(b.get('x', 0) * z),
-                            int(b.get('y', 0) * z),
-                            int(b.get('width', 0) * z),
-                            int(b.get('height', 0) * z),
+                            round(b.get('x', 0) * z),
+                            round(b.get('y', 0) * z),
+                            round(b.get('width', 0) * z),
+                            round(b.get('height', 0) * z),
                         )
 
             for i, bc in enumerate(self._base_components):
                 if i < len(self.components):
                     c = self.components[i]
-                    _old_x, _old_y = c.get('x'), c.get('y')
-                    c['x'] = int(bc.get('x', 0) * z)
-                    c['y'] = int(bc.get('y', 0) * z)
+                    # Use round() instead of int() to minimize cumulative truncation drift
+                    c['x'] = round(bc.get('x', 0) * z)
+                    c['y'] = round(bc.get('y', 0) * z)
+                    # Update saved_zoom to match current zoom after scaling
+                    # This ensures base cache rebuilds use correct divisor
+                    c['saved_zoom'] = z
                     if isinstance(c.get('position'), dict) and isinstance(bc.get('position'), dict):
-                        c['position']['x'] = int(bc['position'].get('x', 0) * z)
-                        c['position']['y'] = int(bc['position'].get('y', 0) * z)
-                    # #region agent log
-                    if i < 3:
-                        import json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(json.dumps({'location': 'drawing_overlay.py:set_zoom_factor:projection', 'message': f'Component {i} coords after projection', 'data': {'old_x': _old_x, 'old_y': _old_y, 'base_x': bc.get('x'), 'base_y': bc.get('y'), 'new_x': c['x'], 'new_y': c['y'], 'zoom': z, 'drift_x': c['x'] - _old_x if _old_x else 0, 'drift_y': c['y'] - _old_y if _old_y else 0}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H1'}) + '\n')
-                    # #endregion
+                        c['position']['x'] = round(bc['position'].get('x', 0) * z)
+                        c['position']['y'] = round(bc['position'].get('y', 0) * z)
 
             for i, bs in enumerate(self._base_segments):
                 if i < len(self.segments):
                     s = self.segments[i]
-                    s['start_x'] = int(bs.get('start_x', 0) * z)
-                    s['start_y'] = int(bs.get('start_y', 0) * z)
-                    s['end_x'] = int(bs.get('end_x', 0) * z)
-                    s['end_y'] = int(bs.get('end_y', 0) * z)
+                    # FIX: Use round() instead of int() to minimize cumulative truncation drift
+                    s['start_x'] = round(bs.get('start_x', 0) * z)
+                    s['start_y'] = round(bs.get('start_y', 0) * z)
+                    s['end_x'] = round(bs.get('end_x', 0) * z)
+                    s['end_y'] = round(bs.get('end_y', 0) * z)
+                    # FIX H4: Update saved_zoom to match current zoom after scaling
+                    s['saved_zoom'] = z
                     lp = _len_px(s['start_x'], s['start_y'], s['end_x'], s['end_y'])
                     s['length_pixels'] = lp
                     try:
@@ -278,10 +277,13 @@ class DrawingOverlay(QWidget):
             for i, bm in enumerate(self._base_measurements):
                 if i < len(self.measurements):
                     m = self.measurements[i]
-                    m['start_x'] = int(bm.get('start_x', 0) * z)
-                    m['start_y'] = int(bm.get('start_y', 0) * z)
-                    m['end_x'] = int(bm.get('end_x', 0) * z)
-                    m['end_y'] = int(bm.get('end_y', 0) * z)
+                    # FIX: Use round() instead of int() to minimize cumulative truncation drift
+                    m['start_x'] = round(bm.get('start_x', 0) * z)
+                    m['start_y'] = round(bm.get('start_y', 0) * z)
+                    m['end_x'] = round(bm.get('end_x', 0) * z)
+                    m['end_y'] = round(bm.get('end_y', 0) * z)
+                    # FIX H4: Update saved_zoom to match current zoom after scaling
+                    m['saved_zoom'] = z
                     lp = _len_px(m['start_x'], m['start_y'], m['end_x'], m['end_y'])
                     m['length_pixels'] = lp
                     try:
@@ -291,7 +293,7 @@ class DrawingOverlay(QWidget):
                     except Exception:
                         pass
 
-            # Polygons
+            # Polygons - FIX: Use round() instead of int() to minimize cumulative truncation drift
             for i, bp in enumerate(self._base_polygons):
                 if i < len(self.polygons):
                     p = self.polygons[i]
@@ -299,14 +301,14 @@ class DrawingOverlay(QWidget):
                     if isinstance(b, dict):
                         from PySide6.QtCore import QRect as _QRect
                         p['bounds'] = _QRect(
-                            int(b.get('x', 0) * z),
-                            int(b.get('y', 0) * z),
-                            int(b.get('width', 0) * z),
-                            int(b.get('height', 0) * z),
+                            round(b.get('x', 0) * z),
+                            round(b.get('y', 0) * z),
+                            round(b.get('width', 0) * z),
+                            round(b.get('height', 0) * z),
                         )
                     scaled_pts = []
                     for pt in bp.get('points', []) or []:
-                        scaled_pts.append({'x': int(pt.get('x', 0) * z), 'y': int(pt.get('y', 0) * z)})
+                        scaled_pts.append({'x': round(pt.get('x', 0) * z), 'y': round(pt.get('y', 0) * z)})
                     p['points'] = scaled_pts
 
             self._current_zoom_factor = zoom_factor
@@ -556,6 +558,9 @@ class DrawingOverlay(QWidget):
             # Assign unique element ID if not already present
             if '_element_id' not in element_data:
                 element_data['_element_id'] = self._generate_element_id()
+            # Assign page_number for multi-page PDF support
+            if 'page_number' not in element_data:
+                element_data['page_number'] = self.current_page
             self.components.append(element_data)
             self.update_segment_tool_components()
             try:
@@ -569,6 +574,9 @@ class DrawingOverlay(QWidget):
             # Assign unique element ID if not already present
             if '_element_id' not in element_data:
                 element_data['_element_id'] = self._generate_element_id()
+            # Assign page_number for multi-page PDF support
+            if 'page_number' not in element_data:
+                element_data['page_number'] = self.current_page
 
             # Capture stable endpoint identifiers for robust relinking after reload.
             try:
@@ -740,6 +748,10 @@ class DrawingOverlay(QWidget):
         self._base_components = []
         self._base_segments = []
         self._base_measurements = []
+        
+        # Mark base cache as dirty so coordinates are properly recalculated
+        # when elements are loaded at a different zoom than they were saved at
+        self._base_dirty = True
 
         # Rectangles
         rectangles = data.get('rectangles', [])
@@ -1237,9 +1249,22 @@ class DrawingOverlay(QWidget):
     
     # ---------------------- Drawing primitives ----------------------
     def draw_components(self, painter):
+        # #region agent log
+        import json
+        try:
+            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"location": "drawing_overlay.py:draw_components", "message": "Drawing components", "data": {"total_components": len(self.components), "hidden_paths": list(self.hidden_paths), "path_only_mode": self.path_only_mode, "visible_paths": list(self.visible_paths.keys()), "current_page": self.current_page, "path_element_mapping_keys": list(self.path_element_mapping.keys())}, "timestamp": __import__('time').time()*1000, "sessionId": "debug-session", "hypothesisId": "A,B,C"}) + '\n')
+        except: pass
+        # #endregion
         drawn_count = 0
         skipped_count = 0
+        page_skipped = 0
         for comp in self.components:
+            # Skip components that belong to a different page
+            comp_page = comp.get('page_number')
+            if comp_page is not None and comp_page != self.current_page:
+                page_skipped += 1
+                continue
             # Visibility rules:
             # - path_only_mode: ONLY show components in visible paths (strict filtering)
             # - normal mode: show all EXCEPT components in hidden_paths
@@ -1257,6 +1282,13 @@ class DrawingOverlay(QWidget):
             x = comp.get('x', 0)
             y = comp.get('y', 0)
             comp_type = comp.get('component_type', 'unknown')
+            # #region agent log
+            import json
+            try:
+                with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                    f.write(json.dumps({"location": "drawing_overlay.py:draw_components:draw", "message": "Drawing single component", "data": {"x": x, "y": y, "type": comp_type, "db_comp_id": comp.get('db_component_id'), "hvac_comp_id": comp.get('hvac_component_id'), "db_path_id": comp.get('db_path_id'), "hvac_path_id": comp.get('hvac_path_id'), "saved_zoom": comp.get('saved_zoom'), "_element_id": comp.get('_element_id')}, "timestamp": __import__('time').time()*1000, "sessionId": "debug-session", "hypothesisId": "A,C"}) + '\n')
+            except: pass
+            # #endregion
             
             # Check for highlighting from analysis panel
             is_highlighted = self._is_element_highlighted(comp, 'component')
@@ -1308,7 +1340,21 @@ class DrawingOverlay(QWidget):
     def draw_segments(self, painter):
         drawn_count = 0
         skipped_count = 0
+        page_skipped = 0
+        # #region agent log
+        import json, time
+        try:
+            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                seg_details = [{"start_x": s.get('start_x'), "start_y": s.get('start_y'), "db_seg_id": s.get('db_segment_id'), "hvac_path_id": s.get('hvac_path_id'), "page_number": s.get('page_number')} for s in self.segments[:5]]
+                f.write(json.dumps({"location": "drawing_overlay.py:draw_segments", "message": "Drawing segments", "data": {"total_segments": len(self.segments), "hidden_paths": list(self.hidden_paths), "path_only_mode": self.path_only_mode, "visible_paths": list(self.visible_paths), "current_page": self.current_page, "segment_sample": seg_details}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "F"}) + '\n')
+        except: pass
+        # #endregion
         for seg in self.segments:
+            # Skip segments that belong to a different page
+            seg_page = seg.get('page_number')
+            if seg_page is not None and seg_page != self.current_page:
+                page_skipped += 1
+                continue
             # Visibility rules (same as components):
             # - path_only_mode: ONLY show segments in visible paths (strict filtering)
             # - normal mode: show all EXCEPT segments in hidden_paths
@@ -1450,6 +1496,13 @@ class DrawingOverlay(QWidget):
         comp_elem_id = comp.get('_element_id')
         hidden_match = False
         visible_match = False
+        # #region agent log
+        import json
+        try:
+            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"location": "drawing_overlay.py:_is_component_in_hidden_path:start", "message": "Checking if component is in hidden path", "data": {"comp_x": comp.get('x'), "comp_y": comp.get('y'), "comp_type": comp.get('component_type'), "comp_db_id": comp_db_id, "comp_elem_id": comp_elem_id, "comp_db_path_id": comp.get('db_path_id'), "comp_hvac_path_id": comp.get('hvac_path_id'), "hidden_paths": list(self.hidden_paths), "path_mapping_keys": list(self.path_element_mapping.keys())}, "timestamp": __import__('time').time()*1000, "sessionId": "debug-session", "hypothesisId": "C,D"}) + '\n')
+        except: pass
+        # #endregion
 
         for path_id, mapping in self.path_element_mapping.items():
             for registered_comp in mapping.get('components', []):
@@ -1475,6 +1528,13 @@ class DrawingOverlay(QWidget):
                         visible_match = True
 
         should_hide = hidden_match and not visible_match
+        # #region agent log
+        import json
+        try:
+            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"location": "drawing_overlay.py:_is_component_in_hidden_path:result", "message": "Hidden path check result", "data": {"comp_x": comp.get('x'), "comp_y": comp.get('y'), "comp_type": comp.get('component_type'), "comp_db_id": comp_db_id, "hidden_match": hidden_match, "visible_match": visible_match, "should_hide": should_hide}, "timestamp": __import__('time').time()*1000, "sessionId": "debug-session", "hypothesisId": "C,D"}) + '\n')
+        except: pass
+        # #endregion
         return should_hide
 
     def _is_segment_in_hidden_path(self, seg):
@@ -1950,15 +2010,16 @@ class DrawingOverlay(QWidget):
                     matched = True
                 
                 if matched:
-                    self._base_components[i]['x'] = int(component.get('x', 0) / cur_z)
-                    self._base_components[i]['y'] = int(component.get('y', 0) / cur_z)
+                    # FIX: Use round() instead of int() to minimize cumulative truncation drift
+                    self._base_components[i]['x'] = round(component.get('x', 0) / cur_z)
+                    self._base_components[i]['y'] = round(component.get('y', 0) / cur_z)
                     # Propagate element ID to base cache if not already present
                     if elem_id and '_element_id' not in self._base_components[i]:
                         self._base_components[i]['_element_id'] = elem_id
                     if isinstance(component.get('position'), dict):
                         self._base_components[i]['position'] = {
-                            'x': int(component['position'].get('x', 0) / cur_z),
-                            'y': int(component['position'].get('y', 0) / cur_z),
+                            'x': round(component['position'].get('x', 0) / cur_z),
+                            'y': round(component['position'].get('y', 0) / cur_z),
                         }
                     break
         except Exception as e:
@@ -1989,10 +2050,11 @@ class DrawingOverlay(QWidget):
                     matched = True
                 
                 if matched:
-                    self._base_segments[i]['start_x'] = int(segment.get('start_x', 0) / cur_z)
-                    self._base_segments[i]['start_y'] = int(segment.get('start_y', 0) / cur_z)
-                    self._base_segments[i]['end_x'] = int(segment.get('end_x', 0) / cur_z)
-                    self._base_segments[i]['end_y'] = int(segment.get('end_y', 0) / cur_z)
+                    # FIX: Use round() instead of int() to minimize cumulative truncation drift
+                    self._base_segments[i]['start_x'] = round(segment.get('start_x', 0) / cur_z)
+                    self._base_segments[i]['start_y'] = round(segment.get('start_y', 0) / cur_z)
+                    self._base_segments[i]['end_x'] = round(segment.get('end_x', 0) / cur_z)
+                    self._base_segments[i]['end_y'] = round(segment.get('end_y', 0) / cur_z)
                     lp = segment.get('length_pixels', 0)
                     self._base_segments[i]['length_pixels'] = lp / cur_z if lp else 0
                     # Propagate element ID to base cache if not already present
@@ -2447,6 +2509,15 @@ class DrawingOverlay(QWidget):
         """
         import time
         registration_start_time = time.time()
+        
+        # #region agent log
+        import json
+        try:
+            comp_details = [{"x": c.get('x'), "y": c.get('y'), "type": c.get('component_type'), "db_id": c.get('db_component_id'), "elem_id": c.get('_element_id'), "saved_zoom": c.get('saved_zoom')} for c in (components or [])[:5]]
+            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"location": "drawing_overlay.py:register_path_elements:start", "message": "Registering path elements in overlay", "data": {"path_id": path_id, "num_input_components": len(components or []), "num_input_segments": len(segments or []), "num_overlay_components": len(self.components), "num_overlay_segments": len(self.segments), "sample_input_comps": comp_details}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "C"}) + '\n')
+        except: pass
+        # #endregion
 
         print(f"\n=== PATH ELEMENT REGISTRATION DEBUG: Path {path_id} ===\n")
         print(f"DEBUG: Registering {len(components or [])} components and {len(segments or [])} segments")

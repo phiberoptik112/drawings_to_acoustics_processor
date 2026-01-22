@@ -22,6 +22,9 @@ class HVACComponent(Base):
     x_position = Column(Float, nullable=False)
     y_position = Column(Float, nullable=False)
     
+    # Page number for multi-page PDFs (nullable for backward compatibility with existing data)
+    page_number = Column(Integer, default=1)
+    
     # Acoustic properties
     noise_level = Column(Float)  # Base noise level in dB(A)
     cfm = Column(Float)  # Air flow rate in CFM
@@ -63,6 +66,7 @@ class HVACComponent(Base):
             'id': self.id,
             'project_id': self.project_id,
             'drawing_id': self.drawing_id,
+            'page_number': self.page_number,
             'name': self.name,
             'component_type': self.component_type,
             'x_position': self.x_position,

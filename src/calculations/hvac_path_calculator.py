@@ -96,6 +96,7 @@ class HVACPathCalculator:
                     hvac_comp = HVACComponent(
                         project_id=project_id,
                         drawing_id=comp_data.get('drawing_id', 0),
+                        page_number=comp_data.get('page_number', 1),  # Store page for multi-page PDFs
                         name=f"{component_type.upper()}-{len(db_components)+1}",
                         component_type=component_type,
                         x_position=comp_data.get('x', 0),

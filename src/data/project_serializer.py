@@ -711,6 +711,7 @@ class ProjectImporter:
             component = HVACComponent(
                 project_id=project_id,
                 drawing_id=self._get_new_id('drawing', c_data.get('drawing_id')),
+                page_number=c_data.get('page_number', 1),  # Store page for multi-page PDFs
                 name=c_data['name'],
                 component_type=c_data['component_type'],
                 x_position=c_data['x_position'],

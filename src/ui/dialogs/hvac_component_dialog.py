@@ -23,10 +23,11 @@ class HVACComponentDialog(QDialog):
     
     component_saved = Signal(HVACComponent)  # Emits saved component
     
-    def __init__(self, parent=None, project_id=None, drawing_id=None, component=None):
+    def __init__(self, parent=None, project_id=None, drawing_id=None, page_number=1, component=None):
         super().__init__(parent)
         self.project_id = project_id
         self.drawing_id = drawing_id
+        self.page_number = page_number  # Page number for multi-page PDFs
         self.component = component  # Existing component for editing
         self.is_editing = component is not None
         # Track a selected Mechanical Unit from the chooser so we can persist on save
@@ -766,6 +767,7 @@ class HVACComponentDialog(QDialog):
         return HVACComponent(
             project_id=self.project_id,
             drawing_id=self.drawing_id,
+            page_number=self.page_number,  # Store page for multi-page PDFs
             name=name,
             component_type=self.type_combo.currentText(),
             x_position=self.x_spin.value(),

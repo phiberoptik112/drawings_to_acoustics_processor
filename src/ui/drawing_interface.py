@@ -458,6 +458,7 @@ class DrawingInterface(HelpMixin, QMainWindow):
         # Drawing overlay
         self.drawing_overlay = DrawingOverlay()
         self.drawing_overlay.set_scale_manager(self.scale_manager)
+        self.drawing_overlay.current_page = self.current_page_number  # Initialize page
         
         # Stack overlay on top of PDF viewer
         # Create a container widget
@@ -745,6 +746,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
         
         # Clear overlay elements for new page
         if self.drawing_overlay:
+            # Update overlay's current page for proper filtering
+            self.drawing_overlay.current_page = self.current_page_number
             self.drawing_overlay.clear_all_elements()
             self.elements_list.clear()
             self.update_elements_display()
@@ -754,6 +757,10 @@ class DrawingInterface(HelpMixin, QMainWindow):
         
         # Load elements for the new page
         self.load_saved_elements()
+        
+        # Re-register HVAC paths for the new page
+        # This ensures path-linked elements are loaded after page change
+        self._register_hvac_paths_for_current_page()
         
         # Update status bar
         self.status_bar.showMessage(f"Page {self.current_page_number} - Loaded page-specific elements", 3000)
@@ -985,8 +992,16 @@ class DrawingInterface(HelpMixin, QMainWindow):
             # Clean up orphaned elements - those marked converted_to_space but Space no longer exists
             overlay_data = self._cleanup_orphaned_space_elements(overlay_data)
             
+            # Filter out components/segments that duplicate positions of already-existing overlay elements
+            # This prevents loading old elements that were saved without proper hvac_path_id linkage
+            overlay_data = self._filter_duplicate_hvac_elements(overlay_data)
+            
             if any(overlay_data.values()):  # If there are any elements
                 self.drawing_overlay.load_elements_data(overlay_data)
+                
+                # Recalculate coordinates at current zoom level after loading
+                # This ensures elements saved at different zoom levels display correctly
+                self.drawing_overlay.set_zoom_factor(self.drawing_overlay._current_zoom_factor)
                 
                 # Rebuild elements list
                 self.rebuild_elements_list(overlay_data)
@@ -1112,6 +1127,97 @@ class DrawingInterface(HelpMixin, QMainWindow):
         except Exception as e:
             print(f"Error cleaning up orphaned space elements: {e}")
             return overlay_data  # Return original data on error
+
+    def _filter_duplicate_hvac_elements(self, overlay_data):
+        """Filter out components and segments that duplicate HVAC path elements.
+        
+        This handles legacy data where DrawingElements were saved without proper
+        hvac_path_id linkage. It compares positions with existing overlay components
+        (which come from HVAC path registration) and removes duplicates.
+        """
+        try:
+            if not self.drawing_overlay:
+                return overlay_data
+            
+            existing_overlay_comps = self.drawing_overlay.components or []
+            existing_overlay_segs = self.drawing_overlay.segments or []
+            
+            # Get positions of existing overlay components (from path registration)
+            existing_positions = set()
+            tolerance = 15.0  # pixels
+            
+            for comp in existing_overlay_comps:
+                # Normalize to base zoom for comparison
+                z = comp.get('saved_zoom') or 1.0
+                if z <= 0:
+                    z = 1.0
+                x = comp.get('x', 0) / z
+                y = comp.get('y', 0) / z
+                comp_type = comp.get('component_type', 'unknown')
+                existing_positions.add((round(x), round(y), comp_type))
+            
+            # Filter components - remove those at same position as existing
+            filtered_components = []
+            for comp in overlay_data.get('components', []):
+                z = comp.get('saved_zoom') or 1.0
+                if z <= 0:
+                    z = 1.0
+                x = comp.get('x', 0) / z
+                y = comp.get('y', 0) / z
+                comp_type = comp.get('component_type', 'unknown')
+                
+                # Check if this position matches any existing component
+                is_duplicate = False
+                for ex_x, ex_y, ex_type in existing_positions:
+                    if abs(x - ex_x) <= tolerance and abs(y - ex_y) <= tolerance and comp_type == ex_type:
+                        is_duplicate = True
+                        print(f"DEBUG: Filtering duplicate component at ({x:.0f}, {y:.0f}) type={comp_type}")
+                        break
+                
+                if not is_duplicate:
+                    filtered_components.append(comp)
+            
+            # Similarly filter segments
+            existing_seg_positions = set()
+            for seg in existing_overlay_segs:
+                z = seg.get('saved_zoom') or 1.0
+                if z <= 0:
+                    z = 1.0
+                sx = seg.get('start_x', 0) / z
+                sy = seg.get('start_y', 0) / z
+                ex = seg.get('end_x', 0) / z
+                ey = seg.get('end_y', 0) / z
+                existing_seg_positions.add((round(sx), round(sy), round(ex), round(ey)))
+            
+            filtered_segments = []
+            for seg in overlay_data.get('segments', []):
+                z = seg.get('saved_zoom') or 1.0
+                if z <= 0:
+                    z = 1.0
+                sx = seg.get('start_x', 0) / z
+                sy = seg.get('start_y', 0) / z
+                ex = seg.get('end_x', 0) / z
+                ey = seg.get('end_y', 0) / z
+                
+                is_duplicate = False
+                for e_sx, e_sy, e_ex, e_ey in existing_seg_positions:
+                    if (abs(sx - e_sx) <= tolerance and abs(sy - e_sy) <= tolerance and
+                        abs(ex - e_ex) <= tolerance and abs(ey - e_ey) <= tolerance):
+                        is_duplicate = True
+                        print(f"DEBUG: Filtering duplicate segment ({sx:.0f},{sy:.0f})->({ex:.0f},{ey:.0f})")
+                        break
+                
+                if not is_duplicate:
+                    filtered_segments.append(seg)
+            
+            overlay_data['components'] = filtered_components
+            overlay_data['segments'] = filtered_segments
+            
+            return overlay_data
+            
+        except Exception as e:
+            print(f"Error filtering duplicate HVAC elements: {e}")
+            return overlay_data
 
     def load_space_rectangles(self):
         """Load space rectangles from RoomBoundary records in the database for current page"""
@@ -1816,9 +1922,10 @@ class DrawingInterface(HelpMixin, QMainWindow):
     def create_hvac_path_from_components(self, components, segments):
         """Create HVAC path from a list of connected components"""
         try:
-            # Add drawing ID to components
+            # Add drawing ID and page number to components
             for comp in components:
                 comp['drawing_id'] = self.drawing.id
+                comp['page_number'] = self.current_page_number
             
             # Filter segments that connect to any components in our path
             # Be permissive: include a segment if EITHER endpoint is in the path's component set.
@@ -2896,9 +3003,6 @@ class DrawingInterface(HelpMixin, QMainWindow):
     # Path visibility methods
     def load_saved_paths(self):
         """Load saved HVAC paths from database and populate the paths list"""
-        # #region agent log
-        import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:load_saved_paths:entry', 'message': 'load_saved_paths called (Refresh button)', 'data': {'overlay_components_count': len(self.drawing_overlay.components) if self.drawing_overlay else 0, 'overlay_zoom': self.drawing_overlay._current_zoom_factor if self.drawing_overlay else None}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H4,H5'}) + '\n')
-        # #endregion
         session = None
         try:
             session = get_session()
@@ -2951,8 +3055,6 @@ class DrawingInterface(HelpMixin, QMainWindow):
                     return False
 
                 # Remove components that either have path IDs OR are near path positions
-                _comp_count_before = len(self.drawing_overlay.components)
-                _comp_samples_before = [{'x': c.get('x'), 'y': c.get('y'), 'saved_zoom': c.get('saved_zoom'), 'hvac_path_id': c.get('hvac_path_id')} for c in self.drawing_overlay.components[:5]]
                 self.drawing_overlay.components = [
                     c for c in self.drawing_overlay.components
                     if not (c.get('hvac_path_id') or c.get('db_path_id') or is_near_path_position(c))
@@ -2961,10 +3063,6 @@ class DrawingInterface(HelpMixin, QMainWindow):
                     s for s in self.drawing_overlay.segments
                     if not s.get('hvac_path_id') and not s.get('db_path_id')
                 ]
-                
-                # #region agent log
-                import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:load_saved_paths:filter', 'message': 'Components filtered', 'data': {'before': _comp_count_before, 'after': len(self.drawing_overlay.components), 'removed': _comp_count_before - len(self.drawing_overlay.components), 'samples_before': _comp_samples_before, 'path_positions_count': len(path_component_positions)}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H4'}) + '\n')
-                # #endregion
                 
                 # Mark base cache as dirty since we modified component/segment lists
                 self.drawing_overlay._base_dirty = True
@@ -3048,11 +3146,6 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
             session.close()
             
-            # #region agent log
-            _final_comp_samples = [{'x': c.get('x'), 'y': c.get('y'), 'saved_zoom': c.get('saved_zoom')} for c in self.drawing_overlay.components[:5]] if self.drawing_overlay else []
-            import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:load_saved_paths:exit', 'message': 'load_saved_paths completed', 'data': {'final_component_count': len(self.drawing_overlay.components) if self.drawing_overlay else 0, 'final_comp_samples': _final_comp_samples, 'overlay_zoom': self.drawing_overlay._current_zoom_factor if self.drawing_overlay else None}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H1,H2,H4'}) + '\n')
-            # #endregion
-            
             # Refresh analysis panel path list
             if hasattr(self, 'analysis_panel') and self.analysis_panel:
                 self.analysis_panel.refresh_paths()
@@ -3099,9 +3192,19 @@ class DrawingInterface(HelpMixin, QMainWindow):
             self.hide_path_on_drawing(path_id)
     
     def show_path_on_drawing(self, path_id: int):
-        """Show a specific path on the drawing overlay"""
+        """Show a specific path on the drawing overlay.
+        
+        This method ensures the path is visible by:
+        1. Removing it from hidden_paths (if it was hidden)
+        2. Adding it to visible_paths
+        3. Only re-registering elements if not already registered AND not just hidden
+        """
         if self.drawing_overlay:
+            # First, remove from hidden paths if present (this handles show after hide)
+            self.drawing_overlay.hidden_paths.discard(path_id)
+            
             # Only register path elements if not already registered
+            # AND path elements don't already exist in the overlay
             if path_id not in self.drawing_overlay.path_element_mapping:
                 try:
                     from models import get_session
@@ -3533,7 +3636,7 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         pass
                 print("DEBUG[DrawingInterface]: Opening HVACComponentDialog for component id=", getattr(comp, 'id', None),
                       " name=", getattr(comp, 'name', None))
-                dlg = HVACComponentDialog(self, self.project_id, self.drawing.id if self.drawing else None, comp)
+                dlg = HVACComponentDialog(self, self.project_id, self.drawing.id if self.drawing else None, self.current_page_number, comp)
                 try:
                     # Keep the drawing overlay in sync when a component is saved from the dialog
                     dlg.component_saved.connect(self._on_component_saved)
@@ -3717,6 +3820,34 @@ class DrawingInterface(HelpMixin, QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to calculate path noise:\n{str(e)}")
     
+    def _register_hvac_paths_for_current_page(self):
+        """Re-register HVAC paths after page change to load path-linked elements.
+        
+        This is called after changing pages to ensure path elements are loaded
+        for the new page.
+        """
+        if not self.project_id or not self.drawing_overlay:
+            return
+            
+        try:
+            from models.hvac import HVACPath
+            session = get_session()
+            
+            # Query HVAC paths for this project
+            hvac_paths = session.query(HVACPath).filter(
+                HVACPath.project_id == self.project_id
+            ).all()
+            
+            # Register each path's elements
+            for hvac_path in hvac_paths:
+                self.register_existing_path_elements(hvac_path)
+                
+            session.close()
+            print(f"DEBUG: Registered {len(hvac_paths)} HVAC paths for page {self.current_page_number}")
+            
+        except Exception as e:
+            print(f"DEBUG: Error registering HVAC paths for page: {e}")
+    
     def register_existing_path_elements(self, hvac_path):
         """Register existing path elements in the drawing overlay for show/hide functionality.
         
@@ -3732,9 +3863,6 @@ class DrawingInterface(HelpMixin, QMainWindow):
             path_id = hvac_path.id
             path_components = []
             path_segments = []
-            # #region agent log
-            import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:register_existing_path_elements:entry', 'message': f'Registering path {path_id}', 'data': {'path_id': path_id, 'path_name': hvac_path.name, 'overlay_components_before': len(self.drawing_overlay.components), 'overlay_zoom': self.drawing_overlay._current_zoom_factor}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H2,H3'}) + '\n')
-            # #endregion
             
             # Get current drawing context for filtering
             current_drawing_id = self.drawing.id if self.drawing else None
@@ -3811,11 +3939,10 @@ class DrawingInterface(HelpMixin, QMainWindow):
                             comp['x'] = int(comp_base_x * current_z)
                             comp['y'] = int(comp_base_y * current_z)
                             comp['saved_zoom'] = current_z
+                            # Note: page_number should come from DrawingElement.to_dict() if available
+                            # Don't override with current_page as that would be wrong for multi-page
                             self.drawing_overlay.components.append(comp)
                             path_components.append(comp)
-                            # #region agent log
-                            import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:register_existing_path_elements:add_comp', 'message': 'Added new component to overlay', 'data': {'base_x': comp_base_x, 'base_y': comp_base_y, 'scaled_x': comp['x'], 'scaled_y': comp['y'], 'saved_zoom': comp['saved_zoom'], 'overlay_zoom': current_z}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H2'}) + '\n')
-                            # #endregion
                     
                     for seg in db_segments:
                         # Ensure segment has required fields for overlay rendering
@@ -3875,6 +4002,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                             seg['end_x'] = int(seg_base_ex * current_z)
                             seg['end_y'] = int(seg_base_ey * current_z)
                             seg['saved_zoom'] = current_z
+                            # Note: page_number should come from DrawingElement.to_dict() if available
+                            # Don't override with current_page as that would be wrong for multi-page
                             self.drawing_overlay.segments.append(seg)
                             path_segments.append(seg)
                     
@@ -4015,10 +4144,6 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 # If elements were reconstructed from DB (not linked elements), update zoom coordinates
                 # This ensures elements with base zoom coordinates (saved_zoom=1.0) are properly scaled
                 if not linked_elements_loaded:
-                    # #region agent log
-                    _sample_coords_before = [{'x': c.get('x'), 'y': c.get('y'), 'saved_zoom': c.get('saved_zoom')} for c in path_components[:3]]
-                    import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:register_existing_path_elements:zoom_update', 'message': 'About to call set_zoom_factor after registration (POTENTIAL DOUBLE-SCALE)', 'data': {'path_id': path_id, 'linked_elements_loaded': linked_elements_loaded, 'sample_coords_before': _sample_coords_before, 'current_zoom': self.drawing_overlay._current_zoom_factor}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H2'}) + '\n')
-                    # #endregion
                     self.drawing_overlay._base_dirty = True
                     self.drawing_overlay.set_zoom_factor(self.drawing_overlay._current_zoom_factor)
             
@@ -4032,7 +4157,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
         position-based matching fails. It creates new overlay elements from the
         HVACComponent and HVACSegment positions stored in the database.
         
-        Only reconstructs elements for components on the current drawing.
+        Only reconstructs elements for components on the current drawing AND page.
+        Since HVACComponent doesn't store page_number, we use DrawingElement records
+        to determine which page each component belongs to.
         
         Args:
             hvac_path: HVACPath object with segments and components
@@ -4046,14 +4173,67 @@ class DrawingInterface(HelpMixin, QMainWindow):
         
         # Get current drawing context
         current_drawing_id = self.drawing.id if self.drawing else None
+        current_page = self.current_page_number
+        
+        # Build a set of hvac_component_ids that have DrawingElements on the current page
+        # This is the source of truth for which components belong to which page
+        components_on_current_page = set()
+        # Also build a set of hvac_segment_ids that have DrawingElements on the current page
+        segments_on_current_page = set()
+        try:
+            from models.drawing_elements import DrawingElement
+            session = get_session()
+            # Query DrawingElements for components on the current drawing/page
+            comp_elements = session.query(DrawingElement.hvac_component_id).filter(
+                DrawingElement.hvac_path_id == hvac_path.id,
+                DrawingElement.drawing_id == current_drawing_id,
+                DrawingElement.page_number == current_page,
+                DrawingElement.hvac_component_id.isnot(None)
+            ).all()
+            components_on_current_page = {e[0] for e in comp_elements if e[0] is not None}
+            
+            # Query DrawingElements for segments on the current drawing/page
+            seg_elements = session.query(DrawingElement.hvac_segment_id).filter(
+                DrawingElement.hvac_path_id == hvac_path.id,
+                DrawingElement.drawing_id == current_drawing_id,
+                DrawingElement.page_number == current_page,
+                DrawingElement.hvac_segment_id.isnot(None)
+            ).all()
+            segments_on_current_page = {e[0] for e in seg_elements if e[0] is not None}
+            
+            session.close()
+            print(f"DEBUG: Found {len(components_on_current_page)} component IDs and {len(segments_on_current_page)} segment IDs on page {current_page} for path {hvac_path.id}")
+                
+        except Exception as e:
+            print(f"DEBUG: Could not query DrawingElements for page filtering: {e}")
         
         try:
             for segment in hvac_path.segments:
-                # Reconstruct component visuals - only for components on this drawing
+                # Reconstruct component visuals - only for components on this drawing AND page
                 for db_comp in [segment.from_component, segment.to_component]:
                     if db_comp and db_comp.id not in seen_comp_ids:
+                        # #region agent log
+                        import json, time
+                        try:
+                            on_current_page = db_comp.id in components_on_current_page if components_on_current_page else True
+                            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({"location": "drawing_interface.py:_reconstruct_path_visuals_from_db:check_comp", "message": "Checking component for reconstruction", "data": {"db_comp_id": db_comp.id, "db_comp_drawing_id": db_comp.drawing_id, "db_comp_x": db_comp.x_position, "db_comp_y": db_comp.y_position, "db_comp_type": db_comp.component_type, "current_drawing_id": current_drawing_id, "current_page": current_page, "on_current_page": on_current_page, "will_skip_drawing": current_drawing_id and db_comp.drawing_id != current_drawing_id, "will_skip_page": components_on_current_page and db_comp.id not in components_on_current_page}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "B,E"}) + '\n')
+                        except: pass
+                        # #endregion
                         # Skip components that are not on the current drawing
                         if current_drawing_id and db_comp.drawing_id != current_drawing_id:
+                            continue
+                        
+                        # Skip components that are not on the current page
+                        # First check if HVACComponent has page_number set (newer data)
+                        comp_page = getattr(db_comp, 'page_number', None)
+                        if comp_page is not None and comp_page != current_page:
+                            print(f"DEBUG: Skipping component {db_comp.id} - page_number {comp_page} != current page {current_page}")
+                            continue
+                        
+                        # Fallback: check DrawingElement records for page info (older data)
+                        if comp_page is None and components_on_current_page and db_comp.id not in components_on_current_page:
+                            print(f"DEBUG: Skipping component {db_comp.id} - not in DrawingElements on page {current_page}")
                             continue
                             
                         # Check if this component already exists in overlay by DB ID
@@ -4073,6 +4253,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                             path_components.append(existing_comp)
                         else:
                             # Create new visual element
+                            # Get page_number from HVACComponent if available, otherwise from DrawingElement check
+                            comp_page = getattr(db_comp, 'page_number', None)
                             comp_visual = {
                                 'type': 'component',
                                 'x': db_comp.x_position,
@@ -4083,15 +4265,15 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                 'db_path_id': hvac_path.id,
                                 'hvac_path_id': hvac_path.id,
                                 'saved_zoom': 1.0,  # DB coordinates are at base zoom
+                                # Always set page_number - use DB value if available, else current_page
+                                # This prevents elements from appearing on all pages
+                                'page_number': comp_page if comp_page is not None else current_page,
                             }
                             path_components.append(comp_visual)
                             self.drawing_overlay.components.append(comp_visual)
-                            # #region agent log
-                            import json as _json; open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a').write(_json.dumps({'location': 'drawing_interface.py:_reconstruct_path_visuals_from_db:new_comp', 'message': 'Created NEW component from DB (saved_zoom=1.0)', 'data': {'db_x': db_comp.x_position, 'db_y': db_comp.y_position, 'comp_type': db_comp.component_type, 'overlay_zoom': self.drawing_overlay._current_zoom_factor}, 'timestamp': __import__('time').time()*1000, 'sessionId': 'debug-session', 'hypothesisId': 'H3'}) + '\n')
-                            # #endregion
                         seen_comp_ids.add(db_comp.id)
                 
-                # Reconstruct segment visual - only if BOTH endpoints are on this drawing
+                # Reconstruct segment visual - only if BOTH endpoints are on this drawing AND page
                 if segment.from_component and segment.to_component:
                     from_comp = segment.from_component
                     to_comp = segment.to_component
@@ -4100,6 +4282,32 @@ class DrawingInterface(HelpMixin, QMainWindow):
                     if current_drawing_id:
                         if from_comp.drawing_id != current_drawing_id or to_comp.drawing_id != current_drawing_id:
                             continue
+                    
+                    # CRITICAL: If we have DrawingElement records for some components but NOT for
+                    # the segment endpoints, skip this segment - it belongs to a different page
+                    if components_on_current_page:
+                        if from_comp.id not in components_on_current_page or to_comp.id not in components_on_current_page:
+                            print(f"DEBUG: Skipping segment {segment.id} - endpoints not on page {current_page}")
+                            # #region agent log
+                            import json, time
+                            try:
+                                with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({"location": "drawing_interface.py:reconstruct_segment_skip", "message": "Skipping segment - wrong page (endpoints)", "data": {"seg_id": segment.id, "current_page": current_page, "from_comp_id": from_comp.id, "to_comp_id": to_comp.id, "components_on_page": list(components_on_current_page)[:10]}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "F"}) + '\n')
+                            except: pass
+                            # #endregion
+                            continue
+                    
+                    # Also skip if segment's DrawingElement is not on the current page
+                    if segments_on_current_page and segment.id not in segments_on_current_page:
+                        print(f"DEBUG: Skipping segment {segment.id} - not in DrawingElements on page {current_page}")
+                        # #region agent log
+                        import json, time
+                        try:
+                            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({"location": "drawing_interface.py:reconstruct_segment_skip", "message": "Skipping segment - wrong page (DrawingElement)", "data": {"seg_id": segment.id, "current_page": current_page, "segments_on_page": list(segments_on_current_page)[:10]}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "F"}) + '\n')
+                        except: pass
+                        # #endregion
+                        continue
                     
                     # Check if this segment already exists in overlay by DB ID
                     existing_seg = None
@@ -4114,6 +4322,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         path_segments.append(existing_seg)
                     else:
                         # Create new visual element
+                        # Get page_number from endpoint components if available
+                        seg_page = getattr(from_comp, 'page_number', None) or getattr(to_comp, 'page_number', None)
                         seg_visual = {
                             'type': 'segment',
                             'start_x': from_comp.x_position,
@@ -4136,6 +4346,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
                             'hvac_path_id': hvac_path.id,
                             'length_real': segment.length,
                             'saved_zoom': 1.0,  # DB coordinates are at base zoom
+                            # Always set page_number - use endpoint value if available, else current_page
+                            # This prevents segments from appearing on all pages
+                            'page_number': seg_page if seg_page is not None else current_page,
                         }
                         
                         # Format length for display
@@ -4145,6 +4358,13 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         except Exception:
                             seg_visual['length_formatted'] = f"{segment.length:.1f} ft" if segment.length else "0 ft"
                         
+                        # #region agent log
+                        import json, time
+                        try:
+                            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({"location": "drawing_interface.py:reconstruct_segment_add", "message": "Adding reconstructed segment", "data": {"seg_id": segment.id, "current_page": current_page, "start_x": seg_visual['start_x'], "start_y": seg_visual['start_y'], "end_x": seg_visual['end_x'], "end_y": seg_visual['end_y'], "hvac_path_id": hvac_path.id}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "F"}) + '\n')
+                        except: pass
+                        # #endregion
                         path_segments.append(seg_visual)
                         self.drawing_overlay.segments.append(seg_visual)
             
@@ -4441,6 +4661,16 @@ class DrawingInterface(HelpMixin, QMainWindow):
         visible=True (checked) means path should be shown
         visible=False (unchecked) means path should be hidden
         """
+        # #region agent log
+        import json, time
+        try:
+            mapping = self.drawing_overlay.path_element_mapping.get(path_id, {}) if self.drawing_overlay else {}
+            reg_comps = mapping.get('components', [])
+            reg_segs = mapping.get('segments', [])
+            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"location": "drawing_interface.py:toggle_path_visibility", "message": "Toggling path visibility", "data": {"path_id": path_id, "visible": visible, "hidden_paths_before": list(self.drawing_overlay.hidden_paths) if self.drawing_overlay else [], "num_registered_comps": len(reg_comps), "num_registered_segs": len(reg_segs), "sample_reg_comps": [{"x": c.get('x'), "y": c.get('y'), "type": c.get('component_type'), "db_id": c.get('db_component_id')} for c in reg_comps[:3]], "total_overlay_comps": len(self.drawing_overlay.components) if self.drawing_overlay else 0}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "C,D"}) + '\n')
+        except: pass
+        # #endregion
         # Update button appearance
         if visible:
             button.setText("👁️")  # Open eye for visible
@@ -4715,6 +4945,7 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         self,
                         project_id=self.project_id,
                         drawing_id=self.drawing_id,
+                        page_number=self.current_page_number,
                         component=component
                     )
                     if dialog.exec() == QDialog.Accepted:

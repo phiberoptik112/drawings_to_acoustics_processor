@@ -277,7 +277,12 @@ class DrawingElementManager:
 			raise e
 			
 	def load_elements(self, drawing_id, page_number=1):
-		"""Load drawing elements for overlay reconstruction for a specific page"""
+		"""Load drawing elements for overlay reconstruction for a specific page.
+		
+		Note: Components and segments that have hvac_path_id set are SKIPPED here
+		because they are already managed through HVAC path registration. Loading them
+		here would create duplicates that don't respond to path visibility controls.
+		"""
 		try:
 			session = self.get_session()
 			
@@ -303,8 +308,15 @@ class DrawingElementManager:
 				elif element.element_type == 'polygon':
 					overlay_data['polygons'].append(element_dict)
 				elif element.element_type == 'component':
+					# Skip components that have hvac_path_id - they are managed by path registration
+					# Loading them here would create duplicates that don't respond to visibility controls
+					if element.hvac_path_id is not None:
+						continue
 					overlay_data['components'].append(element_dict)
 				elif element.element_type == 'segment':
+					# Skip segments that have hvac_path_id - they are managed by path registration
+					if element.hvac_path_id is not None:
+						continue
 					overlay_data['segments'].append(element_dict)
 				elif element.element_type == 'measurement':
 					overlay_data['measurements'].append(element_dict)
