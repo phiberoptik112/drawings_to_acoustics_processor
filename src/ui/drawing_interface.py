@@ -2026,8 +2026,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 # Update status bar
                 self.status_bar.showMessage(f"Created HVAC path '{hvac_path.name}' with {len(components)} components", 5000)
                 
-                # Refresh paths list to show new path
-                self.load_saved_paths()
+                # Add path to UI list without clearing existing registrations
+                # (on_path_saved already registered the elements, don't destroy that)
+                self.add_single_path_to_ui(hvac_path)
                 # Notify listeners (e.g., project dashboard HVAC tab)
                 try:
                     self.paths_updated.emit()
@@ -3028,28 +3029,38 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 # Remove path-linked elements from overlay to prevent duplicates on refresh
                 # Keep elements that don't have path associations (user-drawn elements)
 
-                # Collect all path component positions for proximity-based filtering (defensive)
+                # Collect all path component positions WITH page numbers for proximity-based filtering
+                # This prevents cross-page contamination where components on different pages
+                # with similar positions are incorrectly matched
                 path_component_positions = set()
                 for hvac_path in hvac_paths:
                     for seg in hvac_path.segments:
                         if seg.from_component:
-                            path_component_positions.add(
-                                (seg.from_component.x_position or 0, seg.from_component.y_position or 0)
-                            )
+                            path_component_positions.add((
+                                seg.from_component.x_position or 0,
+                                seg.from_component.y_position or 0,
+                                seg.from_component.page_number or 1  # Include page number
+                            ))
                         if seg.to_component:
-                            path_component_positions.add(
-                                (seg.to_component.x_position or 0, seg.to_component.y_position or 0)
-                            )
+                            path_component_positions.add((
+                                seg.to_component.x_position or 0,
+                                seg.to_component.y_position or 0,
+                                seg.to_component.page_number or 1  # Include page number
+                            ))
 
                 def is_near_path_position(comp):
-                    """Check if component is near any path component position."""
+                    """Check if component is near any path component position ON THE SAME PAGE."""
                     comp_zoom = comp.get('saved_zoom') or 1.0
                     if comp_zoom <= 0:
                         comp_zoom = 1.0
                     comp_x = comp.get('x', 0) / comp_zoom
                     comp_y = comp.get('y', 0) / comp_zoom
+                    comp_page = comp.get('page_number') or self.current_page_number
                     tol = 15.0  # pixels tolerance
-                    for px, py in path_component_positions:
+                    for px, py, p_page in path_component_positions:
+                        # Only match positions on the SAME page to avoid cross-page contamination
+                        if p_page != comp_page:
+                            continue
                         if abs(comp_x - (px or 0)) < tol and abs(comp_y - (py or 0)) < tol:
                             return True
                     return False
@@ -3154,6 +3165,83 @@ class DrawingInterface(HelpMixin, QMainWindow):
             if session is not None:
                 session.close()
             QMessageBox.warning(self, "Error", f"Failed to load saved paths:\n{str(e)}")
+    
+    def add_single_path_to_ui(self, hvac_path):
+        """Add a single newly-created path to the UI list without clearing existing registrations.
+        
+        This is used after path creation to avoid the destructive reload behavior of load_saved_paths().
+        The path elements should already be registered via on_path_saved signal handler.
+        """
+        try:
+            # Update summary label
+            current_count = self.paths_list.count()
+            calculated = 0
+            for i in range(current_count):
+                item = self.paths_list.item(i)
+                if item:
+                    path_data = item.data(Qt.UserRole)
+                    if path_data and getattr(path_data, 'calculated_noise', None):
+                        calculated += 1
+            if hvac_path.calculated_noise:
+                calculated += 1
+            self.paths_summary_label.setText(f"{current_count + 1} paths ({calculated} calculated)")
+            
+            # Add to visible_paths set
+            self.visible_paths.add(hvac_path.id)
+            
+            # Create list item widget (same code as in load_saved_paths)
+            item = QListWidgetItem()
+            widget = QWidget()
+            layout = QHBoxLayout(widget)
+            layout.setContentsMargins(5, 2, 5, 2)
+            
+            path_label = QLabel(self.format_path_display_name(hvac_path))
+            path_label.setToolTip(self.format_path_tooltip(hvac_path))
+            path_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            
+            toggle_btn = QPushButton("👁️")
+            toggle_btn.setMaximumWidth(35)
+            toggle_btn.setMaximumHeight(25)
+            toggle_btn.setToolTip("Click to hide/show this path on drawing")
+            toggle_btn.setCheckable(True)
+            toggle_btn.setChecked(True)
+            toggle_btn.setStyleSheet("""
+                QPushButton { border: 1px solid #888; border-radius: 3px; padding: 2px; }
+                QPushButton:checked { background-color: #4CAF50; border: 1px solid #45a049; }
+            """)
+            toggle_btn.clicked.connect(lambda checked, pid=hvac_path.id, btn=toggle_btn: 
+                                       self.toggle_path_visibility(pid, checked, btn))
+            
+            layout.addWidget(path_label)
+            layout.addStretch()
+            layout.addWidget(toggle_btn)
+            
+            # Allow double-clicking the row to open the editor
+            def _row_dbl_click(event, p=hvac_path):
+                try:
+                    if event.button() == Qt.LeftButton:
+                        self.open_path_editor(p)
+                        event.accept()
+                        return
+                except Exception:
+                    pass
+                QWidget.mouseDoubleClickEvent(widget, event)
+            widget.mouseDoubleClickEvent = _row_dbl_click
+            
+            item.setData(Qt.UserRole, hvac_path)
+            self.paths_list.addItem(item)
+            self.paths_list.setItemWidget(item, widget)
+            
+            # Refresh analysis panel
+            if hasattr(self, 'analysis_panel') and self.analysis_panel:
+                self.analysis_panel.refresh_paths()
+                
+            print(f"DEBUG: Added path {hvac_path.id} to UI list without clearing registrations")
+            
+        except Exception as e:
+            print(f"ERROR: Failed to add single path to UI: {e}")
+            # Fall back to full reload if something goes wrong
+            self.load_saved_paths()
     
     def format_path_display_name(self, hvac_path):
         """Format the display name for a path in the list"""
@@ -4049,8 +4137,14 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         tol = 12.0  # pixels tolerance (matching segment logic)
                         db_x = db_comp.x_position or 0
                         db_y = db_comp.y_position or 0
+                        db_page = db_comp.page_number or 1  # Get page from database
 
                         for comp in drawing_components:
+                            # Skip components on different pages to avoid cross-page contamination
+                            comp_page = comp.get('page_number')
+                            if comp_page is not None and comp_page != db_page:
+                                continue
+                            
                             # Normalize overlay component to base coordinates
                             comp_zoom = comp.get('saved_zoom') or 1.0
                             if comp_zoom <= 0:
@@ -4068,8 +4162,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                     comp['hvac_component_id'] = db_comp.id
                                     comp['db_path_id'] = hvac_path.id
                                     comp['hvac_path_id'] = hvac_path.id
+                                    # Use database page_number, not current_page
                                     if comp.get('page_number') is None:
-                                        comp['page_number'] = current_page
+                                        comp['page_number'] = db_page
                                 found = True
                                 break
                     
@@ -4081,8 +4176,14 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         tol = 12.0  # pixels tolerance (matching segment logic)
                         db_x = db_comp.x_position or 0
                         db_y = db_comp.y_position or 0
+                        db_page = db_comp.page_number or 1  # Get page from database
 
                         for comp in drawing_components:
+                            # Skip components on different pages to avoid cross-page contamination
+                            comp_page = comp.get('page_number')
+                            if comp_page is not None and comp_page != db_page:
+                                continue
+                            
                             # Normalize overlay component to base coordinates
                             comp_zoom = comp.get('saved_zoom') or 1.0
                             if comp_zoom <= 0:
@@ -4100,8 +4201,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                     comp['hvac_component_id'] = db_comp.id
                                     comp['db_path_id'] = hvac_path.id
                                     comp['hvac_path_id'] = hvac_path.id
+                                    # Use database page_number, not current_page
                                     if comp.get('page_number') is None:
-                                        comp['page_number'] = current_page
+                                        comp['page_number'] = db_page
                                 found = True
                                 break
                     
@@ -4113,7 +4215,15 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         fy = float(segment.from_component.y_position or 0.0)
                         tx = float(segment.to_component.x_position or 0.0)
                         ty = float(segment.to_component.y_position or 0.0)
+                        # Get page from the segment's components (use from_component's page)
+                        seg_db_page = segment.from_component.page_number or 1
+                        
                         for seg in drawing_segments:
+                            # Skip segments on different pages to avoid cross-page contamination
+                            seg_page = seg.get('page_number')
+                            if seg_page is not None and seg_page != seg_db_page:
+                                continue
+                            
                             # Check if this segment connects the same components (within tolerance)
                             from_comp = seg.get('from_component')
                             to_comp = seg.get('to_component')
@@ -4127,8 +4237,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                     # Attach DB ids for edit lookups
                                     seg['db_segment_id'] = segment.id
                                     seg['db_path_id'] = hvac_path.id
+                                    # Use database page_number, not current_page
                                     if seg.get('page_number') is None:
-                                        seg['page_number'] = current_page
+                                        seg['page_number'] = seg_db_page
                                     # Also synchronize overlay label length with DB value
                                     try:
                                         seg['length_real'] = float(getattr(segment, 'length', 0) or 0)
