@@ -312,6 +312,9 @@ class DrawingOverlay(QWidget):
                     p['points'] = scaled_pts
 
             self._current_zoom_factor = zoom_factor
+            # Pass zoom factor to tools for coordinate tracking (e.g., ComponentTool saved_zoom)
+            if hasattr(self, 'tool_manager') and self.tool_manager:
+                self.tool_manager.set_zoom_factor(zoom_factor)
             self.update_segment_tool_components()
             self.update()
         except Exception as e:
@@ -561,6 +564,9 @@ class DrawingOverlay(QWidget):
             # Assign page_number for multi-page PDF support
             if 'page_number' not in element_data:
                 element_data['page_number'] = self.current_page
+            # Ensure saved_zoom is set for coordinate normalization during path matching
+            if 'saved_zoom' not in element_data or element_data.get('saved_zoom') is None:
+                element_data['saved_zoom'] = self._current_zoom_factor
             self.components.append(element_data)
             self.update_segment_tool_components()
             try:
@@ -824,8 +830,13 @@ class DrawingOverlay(QWidget):
                 print(f"  - DB ID: {db_id}")
                 print(f"  - Component ID: {comp_id}")
 
+                # Ensure saved_zoom is set BEFORE any continue statements
+                if 'saved_zoom' not in comp or comp.get('saved_zoom') is None:
+                    comp['saved_zoom'] = self._current_zoom_factor
+                    print(f"  -> ASSIGNED saved_zoom: {self._current_zoom_factor}")
+
                 if existing_elem_id:
-                    print(f"  -> SKIPPED: Already has element_id '{existing_elem_id}'")
+                    print(f"  -> SKIPPED element_id: Already has '{existing_elem_id}'")
                     continue
 
                 if db_id is not None:

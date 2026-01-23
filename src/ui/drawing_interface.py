@@ -4399,8 +4399,34 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                 # This prevents elements from appearing on all pages
                                 'page_number': comp_page if comp_page is not None else current_page,
                             }
-                            path_components.append(comp_visual)
-                            self.drawing_overlay.components.append(comp_visual)
+                            
+                            # DEFENSIVE: Check for existing component at same position before appending
+                            # This prevents duplicate components when matching fails due to coordinate mismatch
+                            is_duplicate = False
+                            for existing in self.drawing_overlay.components:
+                                # Normalize both to base coordinates for comparison
+                                exist_zoom = existing.get('saved_zoom') or 1.0
+                                exist_x = existing.get('x', 0) / exist_zoom if exist_zoom > 0 else existing.get('x', 0)
+                                exist_y = existing.get('y', 0) / exist_zoom if exist_zoom > 0 else existing.get('y', 0)
+                                comp_x = db_comp.x_position
+                                comp_y = db_comp.y_position
+                                
+                                if (abs(exist_x - comp_x) < 15 and 
+                                    abs(exist_y - comp_y) < 15 and 
+                                    existing.get('component_type') == db_comp.component_type):
+                                    # Update existing component with DB IDs instead of creating duplicate
+                                    existing['db_component_id'] = db_comp.id
+                                    existing['hvac_component_id'] = db_comp.id
+                                    existing['db_path_id'] = hvac_path.id
+                                    existing['hvac_path_id'] = hvac_path.id
+                                    path_components.append(existing)
+                                    is_duplicate = True
+                                    print(f"DEBUG: Found existing component at similar position, updated with DB IDs instead of creating duplicate")
+                                    break
+                            
+                            if not is_duplicate:
+                                path_components.append(comp_visual)
+                                self.drawing_overlay.components.append(comp_visual)
                         seen_comp_ids.add(db_comp.id)
                 
                 # Reconstruct segment visual - only if BOTH endpoints are on this drawing AND page
@@ -4495,8 +4521,39 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                 f.write(json.dumps({"location": "drawing_interface.py:reconstruct_segment_add", "message": "Adding reconstructed segment", "data": {"seg_id": segment.id, "current_page": current_page, "start_x": seg_visual['start_x'], "start_y": seg_visual['start_y'], "end_x": seg_visual['end_x'], "end_y": seg_visual['end_y'], "hvac_path_id": hvac_path.id}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "F"}) + '\n')
                         except: pass
                         # #endregion
-                        path_segments.append(seg_visual)
-                        self.drawing_overlay.segments.append(seg_visual)
+                        
+                        # DEFENSIVE: Check for existing segment at same position before appending
+                        is_seg_duplicate = False
+                        for existing_seg in self.drawing_overlay.segments:
+                            # Normalize both to base coordinates for comparison
+                            exist_zoom = existing_seg.get('saved_zoom') or 1.0
+                            if exist_zoom <= 0:
+                                exist_zoom = 1.0
+                            exist_sx = existing_seg.get('start_x', 0) / exist_zoom
+                            exist_sy = existing_seg.get('start_y', 0) / exist_zoom
+                            exist_ex = existing_seg.get('end_x', 0) / exist_zoom
+                            exist_ey = existing_seg.get('end_y', 0) / exist_zoom
+                            
+                            seg_sx = seg_visual['start_x']
+                            seg_sy = seg_visual['start_y']
+                            seg_ex = seg_visual['end_x']
+                            seg_ey = seg_visual['end_y']
+                            
+                            if (abs(exist_sx - seg_sx) < 15 and abs(exist_sy - seg_sy) < 15 and
+                                abs(exist_ex - seg_ex) < 15 and abs(exist_ey - seg_ey) < 15):
+                                # Update existing segment with DB IDs instead of creating duplicate
+                                existing_seg['db_segment_id'] = segment.id
+                                existing_seg['hvac_segment_id'] = segment.id
+                                existing_seg['db_path_id'] = hvac_path.id
+                                existing_seg['hvac_path_id'] = hvac_path.id
+                                path_segments.append(existing_seg)
+                                is_seg_duplicate = True
+                                print(f"DEBUG: Found existing segment at similar position, updated with DB IDs instead of creating duplicate")
+                                break
+                        
+                        if not is_seg_duplicate:
+                            path_segments.append(seg_visual)
+                            self.drawing_overlay.segments.append(seg_visual)
             
             print(f"DEBUG: Reconstructed {len(path_components)} components and {len(path_segments)} segments from DB for path {hvac_path.id}")
             

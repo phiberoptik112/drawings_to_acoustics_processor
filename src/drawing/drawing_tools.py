@@ -164,10 +164,15 @@ class ComponentTool(DrawingTool):
         self.component_size = 24  # Size in pixels
         self.pen = QPen(QColor(220, 100, 50), 2, Qt.SolidLine)
         self.brush = QBrush(QColor(220, 100, 50, 100))
+        self.current_zoom_factor = 1.0  # Track zoom for saved_zoom field
         
     def set_component_type(self, component_type):
         """Set the type of component to place"""
         self.component_type = component_type
+    
+    def set_zoom_factor(self, zoom_factor):
+        """Set the current zoom factor for coordinate tracking"""
+        self.current_zoom_factor = zoom_factor if zoom_factor and zoom_factor > 0 else 1.0
         
     def start(self, point):
         """Place component immediately on click"""
@@ -187,7 +192,8 @@ class ComponentTool(DrawingTool):
                 'position': {
                     'x': point.x(),
                     'y': point.y()
-                }
+                },
+                'saved_zoom': self.current_zoom_factor  # Track zoom level for coordinate normalization
             }
             self.finished.emit(result)
             
@@ -837,6 +843,11 @@ class DrawingToolManager(QObject):
         """Set available segments for segment tool"""
         if ToolType.SEGMENT in self.tools:
             self.tools[ToolType.SEGMENT].set_available_segments(segments)
+    
+    def set_zoom_factor(self, zoom_factor):
+        """Set zoom factor for tools that need coordinate tracking (e.g., ComponentTool)"""
+        if ToolType.COMPONENT in self.tools:
+            self.tools[ToolType.COMPONENT].set_zoom_factor(zoom_factor)
             
     def get_current_tool(self):
         """Get the current active tool"""
