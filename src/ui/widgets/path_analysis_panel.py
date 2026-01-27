@@ -9,7 +9,7 @@ from typing import Optional, Dict, List, Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QScrollArea, QFrame, QSizePolicy, QSplitter,
-    QToolButton, QMessageBox
+    QToolButton, QMessageBox, QTabWidget
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
@@ -19,6 +19,7 @@ from models.hvac import HVACPath, HVACSegment, HVACComponent
 from sqlalchemy.orm import selectinload
 
 from .path_element_card import PathElementCard, PathArrow, PathResultsSummary
+from .path_sequence_widget import PathSequenceWidget
 
 
 class PathAnalysisPanel(QWidget):
@@ -51,13 +52,19 @@ class PathAnalysisPanel(QWidget):
         self.setMinimumWidth(300)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         
-        # Ensure light background and dark text for the entire panel
+        # Ensure light background and dark text for the entire panel and all child widgets
         self.setStyleSheet("""
             PathAnalysisPanel {
                 background-color: #f5f5f5;
+                color: #333;
+            }
+            PathAnalysisPanel QWidget {
+                background-color: #f5f5f5;
+                color: #333;
             }
             PathAnalysisPanel QLabel {
                 color: #333;
+                background-color: transparent;
             }
             PathAnalysisPanel QComboBox {
                 background-color: white;
@@ -68,6 +75,11 @@ class PathAnalysisPanel(QWidget):
             PathAnalysisPanel QComboBox QAbstractItemView {
                 background-color: white;
                 color: #333;
+                selection-background-color: #bbdefb;
+                selection-color: #333;
+            }
+            PathAnalysisPanel QComboBox::drop-down {
+                border: none;
             }
             PathAnalysisPanel QPushButton, PathAnalysisPanel QToolButton {
                 background-color: #e0e0e0;
@@ -78,6 +90,21 @@ class PathAnalysisPanel(QWidget):
             }
             PathAnalysisPanel QPushButton:hover, PathAnalysisPanel QToolButton:hover {
                 background-color: #d0d0d0;
+            }
+            PathAnalysisPanel QPushButton:disabled {
+                background-color: #f0f0f0;
+                color: #999;
+            }
+            PathAnalysisPanel QFrame {
+                background-color: #f5f5f5;
+                color: #333;
+            }
+            PathAnalysisPanel QScrollArea {
+                background-color: #fafafa;
+            }
+            PathAnalysisPanel QScrollArea QWidget {
+                background-color: #fafafa;
+                color: #333;
             }
         """)
         
@@ -118,10 +145,44 @@ class PathAnalysisPanel(QWidget):
         
         layout.addLayout(selector_layout)
         
-        # Main content area with scroll
+        # Main content area with tabs
         self.content_widget = QWidget()
         content_layout = QVBoxLayout()
         content_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Tab widget for diagram and reordering views
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #ccc;
+                background-color: #fafafa;
+                color: #333;
+            }
+            QTabWidget QWidget {
+                background-color: #fafafa;
+                color: #333;
+            }
+            QTabBar::tab {
+                background-color: #e0e0e0;
+                color: #333;
+                padding: 6px 12px;
+                border: 1px solid #ccc;
+                border-bottom: none;
+            }
+            QTabBar::tab:selected {
+                background-color: #fafafa;
+                color: #333;
+            }
+            QTabBar::tab:hover {
+                background-color: #d0d0d0;
+                color: #333;
+            }
+        """)
+        
+        # Diagram tab
+        diagram_widget = QWidget()
+        diagram_tab_layout = QVBoxLayout()
+        diagram_tab_layout.setContentsMargins(0, 0, 0, 0)
         
         # Scrollable diagram area
         scroll = QScrollArea()
@@ -134,6 +195,11 @@ class PathAnalysisPanel(QWidget):
             }
             QScrollArea QWidget {
                 background-color: #fafafa;
+                color: #333;
+            }
+            QScrollArea QLabel {
+                color: #333;
+                background-color: transparent;
             }
         """)
         
@@ -143,8 +209,53 @@ class PathAnalysisPanel(QWidget):
         self.diagram_layout.setSpacing(0)
         self.diagram_container.setLayout(self.diagram_layout)
         scroll.setWidget(self.diagram_container)
+        diagram_tab_layout.addWidget(scroll, 1)
+        diagram_widget.setLayout(diagram_tab_layout)
         
-        content_layout.addWidget(scroll, 1)
+        self.tabs.addTab(diagram_widget, "Diagram")
+        
+        # Reorder tab
+        reorder_widget = QWidget()
+        reorder_tab_layout = QVBoxLayout()
+        reorder_tab_layout.setContentsMargins(4, 4, 4, 4)
+        
+        # Sequence widget
+        self.path_sequence_widget = PathSequenceWidget()
+        self.path_sequence_widget.sequence_changed.connect(self._on_sequence_changed)
+        self.path_sequence_widget.element_selected.connect(self._on_sequence_element_selected)
+        self.path_sequence_widget.element_double_clicked.connect(self._on_sequence_element_double_clicked)
+        reorder_tab_layout.addWidget(self.path_sequence_widget, 1)
+        
+        # Save order button
+        save_layout = QHBoxLayout()
+        save_layout.addStretch()
+        
+        self.save_order_btn = QPushButton("💾 Save Order")
+        self.save_order_btn.setToolTip("Save the new element order to the database")
+        self.save_order_btn.setEnabled(False)
+        self.save_order_btn.clicked.connect(self._save_element_order)
+        self.save_order_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1976D2;
+                color: white;
+                padding: 6px 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #1565C0;
+            }
+            QPushButton:disabled {
+                background-color: #ccc;
+                color: #666;
+            }
+        """)
+        save_layout.addWidget(self.save_order_btn)
+        reorder_tab_layout.addLayout(save_layout)
+        
+        reorder_widget.setLayout(reorder_tab_layout)
+        self.tabs.addTab(reorder_widget, "Reorder")
+        
+        content_layout.addWidget(self.tabs, 1)
         
         # Results summary (always visible at bottom)
         self.results_summary = PathResultsSummary()
@@ -168,6 +279,9 @@ class PathAnalysisPanel(QWidget):
         
         self.content_widget.setLayout(content_layout)
         layout.addWidget(self.content_widget, 1)
+        
+        # Track if sequence has been modified
+        self._sequence_modified = False
         
         self.setLayout(layout)
         
@@ -354,6 +468,34 @@ class PathAnalysisPanel(QWidget):
     
     def _get_source_name(self, path: HVACPath) -> str:
         """Get the source component name for a path"""
+        # Try to use stored element sequence to find the first component
+        sequence = None
+        if hasattr(path, 'get_element_sequence'):
+            try:
+                sequence = path.get_element_sequence()
+            except Exception:
+                pass
+        elif hasattr(path, 'element_sequence') and path.element_sequence:
+            import json
+            try:
+                sequence = json.loads(path.element_sequence)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        
+        if sequence:
+            # Find first component in sequence and get its name
+            for item in sequence:
+                if item.get('type') == 'component':
+                    comp_id = item.get('id')
+                    # Find the component in segments
+                    for seg in path.segments:
+                        for comp in [seg.from_component, seg.to_component]:
+                            if comp and comp.id == comp_id:
+                                name = getattr(comp, 'name', None) or getattr(comp, 'component_type', None)
+                                return name or "Unknown Source"
+                    break
+        
+        # Fall back to first segment's from_component
         segments = getattr(path, 'segments', None)
         if not segments:
             return "Unknown Source"
@@ -400,6 +542,9 @@ class PathAnalysisPanel(QWidget):
         """Build the visual path diagram with calculation results"""
         self._clear_diagram()
         
+        # Update sequence widget
+        self._update_sequence_widget()
+        
         if not self.calculation_results:
             self._show_placeholder("No calculation results")
             return
@@ -426,8 +571,8 @@ class PathAnalysisPanel(QWidget):
         self._element_cards.append(source_card)
         self.diagram_layout.addWidget(source_card)
         
-        # Segments and intermediate components
-        segments = sorted(self.current_path.segments, key=lambda s: s.segment_order or 0)
+        # Use stored element sequence if available, otherwise fall back to segment_order
+        segments = self._get_ordered_segments()
         segment_results = self.calculation_results.get('path_elements', [])
         
         for i, segment in enumerate(segments):
@@ -541,11 +686,71 @@ class PathAnalysisPanel(QWidget):
             'target_nc': target_nc,
         })
     
+    def _get_ordered_segments(self) -> List[HVACSegment]:
+        """Get segments in their proper order using stored sequence or segment_order"""
+        if not self.current_path or not self.current_path.segments:
+            return []
+        
+        # Try to use stored element sequence
+        sequence = None
+        if hasattr(self.current_path, 'get_element_sequence'):
+            try:
+                sequence = self.current_path.get_element_sequence()
+            except Exception:
+                pass
+        elif hasattr(self.current_path, 'element_sequence') and self.current_path.element_sequence:
+            import json
+            try:
+                sequence = json.loads(self.current_path.element_sequence)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        
+        if sequence:
+            # Build segment order from sequence
+            segment_ids = [item['id'] for item in sequence if item.get('type') == 'segment']
+            segment_map = {seg.id: seg for seg in self.current_path.segments}
+            
+            ordered = []
+            for seg_id in segment_ids:
+                if seg_id in segment_map:
+                    ordered.append(segment_map[seg_id])
+            
+            # Add any remaining segments not in the sequence
+            for seg in self.current_path.segments:
+                if seg not in ordered:
+                    ordered.append(seg)
+            
+            return ordered
+        
+        # Fall back to segment_order
+        return sorted(self.current_path.segments, key=lambda s: s.segment_order or 0)
+    
     def _get_source_component_id(self) -> Optional[int]:
         """Get the ID of the source component"""
         if not self.current_path:
             return None
         
+        # Try to use stored element sequence to find the first component
+        sequence = None
+        if hasattr(self.current_path, 'get_element_sequence'):
+            try:
+                sequence = self.current_path.get_element_sequence()
+            except Exception:
+                pass
+        elif hasattr(self.current_path, 'element_sequence') and self.current_path.element_sequence:
+            import json
+            try:
+                sequence = json.loads(self.current_path.element_sequence)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        
+        if sequence:
+            # Find first component in sequence
+            for item in sequence:
+                if item.get('type') == 'component':
+                    return item.get('id')
+        
+        # Fall back to first segment's from_component
         segments = getattr(self.current_path, 'segments', None)
         if not segments:
             return None
@@ -626,6 +831,124 @@ class PathAnalysisPanel(QWidget):
                 f"Terminal: {self.calculation_results.get('terminal_noise', 0):.1f} dB(A)\n"
                 f"NC Rating: NC-{self.calculation_results.get('nc_rating', 0):.0f}"
             )
+    
+    def _update_sequence_widget(self):
+        """Update the path sequence widget with current path data"""
+        if not hasattr(self, 'path_sequence_widget') or not self.current_path:
+            return
+        
+        # Build component data
+        components_data = []
+        component_map = {}
+        
+        for seg in self.current_path.segments:
+            for comp in [seg.from_component, seg.to_component]:
+                if comp and comp.id not in component_map:
+                    component_map[comp.id] = {
+                        'id': comp.id,
+                        'name': getattr(comp, 'name', None) or f"Component {comp.id}",
+                        'component_type': getattr(comp, 'component_type', 'unknown'),
+                        'noise_level': getattr(comp, 'noise_level', None),
+                    }
+                    components_data.append(component_map[comp.id])
+        
+        # Build segment data
+        segments_data = []
+        for seg in self.current_path.segments:
+            segments_data.append({
+                'id': seg.id,
+                'from_component_id': seg.from_component_id,
+                'to_component_id': seg.to_component_id,
+                'length': getattr(seg, 'length', 0) or 0,
+                'duct_shape': getattr(seg, 'duct_shape', 'rectangular'),
+                'segment_order': getattr(seg, 'segment_order', 0),
+            })
+        
+        # Get existing sequence if available
+        sequence = None
+        if hasattr(self.current_path, 'get_element_sequence'):
+            sequence = self.current_path.get_element_sequence()
+        elif hasattr(self.current_path, 'element_sequence') and self.current_path.element_sequence:
+            import json
+            try:
+                sequence = json.loads(self.current_path.element_sequence)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        
+        self.path_sequence_widget.set_data(components_data, segments_data, sequence)
+        self._sequence_modified = False
+        self.save_order_btn.setEnabled(False)
+    
+    def _on_sequence_changed(self, sequence: List[Dict]):
+        """Handle sequence changes from the reorder widget"""
+        self._sequence_modified = True
+        self.save_order_btn.setEnabled(True)
+        
+        # Store the new sequence for potential saving
+        self._pending_sequence = sequence
+    
+    def _on_sequence_element_selected(self, element_type: str, element_id: int):
+        """Handle element selection in sequence widget"""
+        self.element_select_requested.emit(element_id, element_type)
+    
+    def _on_sequence_element_double_clicked(self, element_type: str, element_id: int):
+        """Handle element double-click to open edit dialog"""
+        self.edit_element_requested.emit(element_id, element_type)
+    
+    def _save_element_order(self):
+        """Save the modified element order to the database"""
+        if not self.current_path_id or not hasattr(self, '_pending_sequence'):
+            return
+        
+        try:
+            session = get_session()
+            
+            # Get the path
+            path = session.query(HVACPath).filter(HVACPath.id == self.current_path_id).first()
+            if not path:
+                session.close()
+                QMessageBox.warning(self, "Error", "Path not found in database.")
+                return
+            
+            # Get the new sequence
+            sequence = self._pending_sequence
+            
+            # Update segment_order based on the new sequence
+            segment_order_map = {}
+            segment_index = 1
+            for item in sequence:
+                if item.get('type') == 'segment':
+                    segment_order_map[item['id']] = segment_index
+                    segment_index += 1
+            
+            # Update segments in the database
+            for seg in path.segments:
+                if seg.id in segment_order_map:
+                    seg.segment_order = segment_order_map[seg.id]
+            
+            # Save the element sequence
+            if hasattr(path, 'set_element_sequence'):
+                path.set_element_sequence(sequence)
+            else:
+                import json
+                path.element_sequence = json.dumps(sequence)
+            
+            session.commit()
+            session.close()
+            
+            self._sequence_modified = False
+            self.save_order_btn.setEnabled(False)
+            
+            # Reload the path to refresh the diagram
+            self._load_path(self.current_path_id)
+            
+            QMessageBox.information(self, "Success", "Element order saved successfully.")
+            
+        except Exception as e:
+            print(f"DEBUG: Error saving element order: {e}")
+            import traceback
+            traceback.print_exc()
+            QMessageBox.critical(self, "Error", f"Failed to save element order:\n{str(e)}")
     
     def _export_analysis(self):
         """Export path analysis"""

@@ -1918,6 +1918,86 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         path_components.append(segment_to)
         
         return path_components
+
+    def order_segments_by_connectivity(self, segments, components):
+        """
+        Order segments by connectivity, traversing from source to terminal.
+        Returns segments in traversal order for proper path sequence.
+        """
+        if not segments:
+            return []
+        
+        # Get unique identifier for component
+        def get_component_id(comp):
+            if not comp:
+                return None
+            return comp.get('id', f"{comp.get('x', 0)}_{comp.get('y', 0)}")
+        
+        # Build adjacency: from_component_id -> segment
+        from_map = {}
+        to_set = set()
+        
+        for seg in segments:
+            from_comp = seg.get('from_component')
+            to_comp = seg.get('to_component')
+            from_id = get_component_id(from_comp)
+            to_id = get_component_id(to_comp)
+            
+            if from_id:
+                from_map[from_id] = seg
+            if to_id:
+                to_set.add(to_id)
+        
+        # Find start component (a 'from' that is never a 'to')
+        start_id = None
+        for seg in segments:
+            from_comp = seg.get('from_component')
+            from_id = get_component_id(from_comp)
+            if from_id and from_id not in to_set:
+                start_id = from_id
+                break
+        
+        # Fall back to first segment's from_component if no clear start
+        if not start_id and segments:
+            from_comp = segments[0].get('from_component')
+            start_id = get_component_id(from_comp)
+        
+        if not start_id:
+            return segments  # Can't determine order, return as-is
+        
+        # Traverse chain from start
+        ordered = []
+        visited = set()
+        current_id = start_id
+        
+        max_iterations = len(segments) + 2
+        iterations = 0
+        
+        while current_id and iterations < max_iterations:
+            iterations += 1
+            
+            seg = from_map.get(current_id)
+            if not seg:
+                break
+            
+            # Prevent loops
+            seg_id = id(seg)
+            if seg_id in visited:
+                break
+            visited.add(seg_id)
+            
+            ordered.append(seg)
+            
+            # Move to next component
+            to_comp = seg.get('to_component')
+            current_id = get_component_id(to_comp)
+        
+        # Add any remaining segments not yet in ordered list
+        for seg in segments:
+            if seg not in ordered:
+                ordered.append(seg)
+        
+        return ordered
     
     def create_hvac_path_from_components(self, components, segments):
         """Create HVAC path from a list of connected components"""
@@ -1960,6 +2040,10 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 print(f"DEBUG: Segment {i} filter include={include}")
             print(f"DEBUG: path_segments after filter: {len(path_segments)}")
             
+            # Order segments by connectivity for proper path sequence
+            ordered_segments = self.order_segments_by_connectivity(path_segments, components)
+            print(f"DEBUG: Ordered {len(ordered_segments)} segments by connectivity")
+            
             # Open HVAC path dialog with drawing data
             from ui.dialogs.hvac_path_dialog import HVACPathDialog
             dialog = HVACPathDialog(self, self.project_id)
@@ -1998,7 +2082,7 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         self.drawing_overlay.enable_clearing()
             
             dialog.path_saved.connect(on_path_saved)
-            dialog.set_drawing_data(components, path_segments, self.drawing.id)
+            dialog.set_drawing_data(components, ordered_segments, self.drawing.id)
             
             if dialog.exec() == QDialog.Accepted:
                 hvac_path = dialog.path
@@ -2007,7 +2091,7 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 # We no longer prompt to remove them after saving.
                 path_info = f"Successfully created HVAC path: {hvac_path.name}\n\n"
                 path_info += f"Components: {len(components)}\n"
-                path_info += f"Segments: {len(path_segments)}\n"
+                path_info += f"Segments: {len(ordered_segments)}\n"
                 
                 if hvac_path.calculated_noise:
                     path_info += f"Terminal Noise: {hvac_path.calculated_noise:.1f} dB(A)\n"

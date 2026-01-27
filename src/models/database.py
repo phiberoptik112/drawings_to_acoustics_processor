@@ -183,6 +183,17 @@ def initialize_database(db_path=None):
 	except Exception as e:
 		print(f"Warning: Partition schema migration failed: {e}")
 	
+	# New: path element sequence column for ordering
+	try:
+		from .migrate_path_element_sequence import migrate_path_element_sequence_schema
+		session = SessionLocal()
+		try:
+			migrate_path_element_sequence_schema(session)
+		finally:
+			session.close()
+	except Exception as e:
+		print(f"Warning: Path element sequence schema migration failed: {e}")
+	
 	return db_path
 
 
