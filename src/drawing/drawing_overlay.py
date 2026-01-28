@@ -1167,6 +1167,9 @@ class DrawingOverlay(QWidget):
         self._base_components.clear()
         self._base_segments.clear()
         self._base_measurements.clear()
+        # Clear path element mapping to avoid stale references after page changes.
+        # Callers (page change, orphan cleanup) re-register paths after reloading elements.
+        self.path_element_mapping.clear()
         self._base_dirty = True
         self.update()
     
@@ -1204,16 +1207,22 @@ class DrawingOverlay(QWidget):
             # Filter out unsaved elements using registration matching
             original_components_count = len(self.components)
             original_segments_count = len(self.segments)
-            components_before = list(self.components)
-            segments_before = list(self.segments)
+            
+            # IMPORTANT: Filter segments FIRST, then components.
+            # This ensures _matches_any_segment_endpoint only checks against segments
+            # that will actually be kept, avoiding orphaned components.
+            self.segments = [s for s in self.segments if self._is_segment_registered_any_path(s)]
             
             def _matches_any_segment_endpoint(comp: dict, tol: float = 8.0) -> bool:
+                """Check if component is near any endpoint of a KEPT segment."""
                 try:
                     cx = float(comp.get("x") or 0)
                     cy = float(comp.get("y") or 0)
                 except Exception:
                     return False
-                for seg in segments_before:
+                # Use self.segments (already filtered) to avoid keeping components
+                # attached to segments that will be removed
+                for seg in self.segments:
                     try:
                         sx = float(seg.get("start_x") or 0)
                         sy = float(seg.get("start_y") or 0)
@@ -1229,7 +1238,6 @@ class DrawingOverlay(QWidget):
                 c for c in self.components
                 if self._is_component_registered_any_path(c) or _matches_any_segment_endpoint(c)
             ]
-            self.segments = [s for s in self.segments if self._is_segment_registered_any_path(s)]
             
             # Recompute keep counts based on matching (for logging)
             keep_components = {id(c) for c in self.components}
@@ -1238,7 +1246,12 @@ class DrawingOverlay(QWidget):
             print(f"DEBUG: After clearing - {len(self.components)} components ({original_components_count - len(self.components)} removed)")
             print(f"DEBUG: After clearing - {len(self.segments)} segments ({original_segments_count - len(self.segments)} removed)")
 
-            # Do not touch rectangles/polygons; measurements have their own clearer
+            # NOTE: Rectangles and polygons are intentionally NOT cleared here.
+            # Rectangles represent room boundaries associated with Space objects (not HVAC paths).
+            # Polygons are similarly used for acoustic spaces. These elements have separate
+            # lifecycle management through the Space/Room system.
+            # Use clear_all_elements() or clear individual element types if full clearing is needed.
+            # Measurements also have their own dedicated clear_measurements() method.
             self._base_components.clear()
             self._base_segments.clear()
             self._base_dirty = True
