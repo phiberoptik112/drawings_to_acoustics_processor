@@ -156,7 +156,7 @@ class SelectionTool(DrawingTool):
             painter.drawRect(rect)
 
 class ComponentTool(DrawingTool):
-    """Tool for placing HVAC components"""
+    """Tool for placing HVAC components with duplicate detection visual feedback"""
     
     def __init__(self, component_type="ahu"):
         super().__init__()
@@ -166,6 +166,12 @@ class ComponentTool(DrawingTool):
         self.brush = QBrush(QColor(220, 100, 50, 100))
         self.current_zoom_factor = 1.0  # Track zoom for saved_zoom field
         
+        # Duplicate checking state for visual feedback
+        self.duplicate_check_callback = None  # Set by drawing_overlay
+        self.current_page = 1
+        self.is_near_visible_path_component = False  # Red - will be blocked
+        self.is_near_hidden_path_component = False   # Yellow - allowed but warning
+        
     def set_component_type(self, component_type):
         """Set the type of component to place"""
         self.component_type = component_type
@@ -173,6 +179,39 @@ class ComponentTool(DrawingTool):
     def set_zoom_factor(self, zoom_factor):
         """Set the current zoom factor for coordinate tracking"""
         self.current_zoom_factor = zoom_factor if zoom_factor and zoom_factor > 0 else 1.0
+    
+    def set_duplicate_checker(self, callback, current_page):
+        """Set the callback for real-time duplicate detection.
+        
+        Args:
+            callback: Function(x, y, comp_type, page) -> dict with 'near_visible', 'near_hidden'
+            current_page: Current page number for page-aware duplicate checking
+        """
+        self.duplicate_check_callback = callback
+        self.current_page = current_page
+    
+    def update(self, point):
+        """Update tool state on mouse move - includes duplicate checking"""
+        super().update(point)
+        
+        # Check for duplicates at current hover position
+        if self.current_point and self.duplicate_check_callback:
+            try:
+                result = self.duplicate_check_callback(
+                    self.current_point.x(),
+                    self.current_point.y(),
+                    self.component_type,
+                    self.current_page
+                )
+                self.is_near_visible_path_component = result.get('near_visible', False)
+                self.is_near_hidden_path_component = result.get('near_hidden', False)
+            except Exception as e:
+                print(f"DEBUG: ComponentTool duplicate check error: {e}")
+                self.is_near_visible_path_component = False
+                self.is_near_hidden_path_component = False
+        else:
+            self.is_near_visible_path_component = False
+            self.is_near_hidden_path_component = False
         
     def start(self, point):
         """Place component immediately on click"""
@@ -198,10 +237,30 @@ class ComponentTool(DrawingTool):
             self.finished.emit(result)
             
     def draw_preview(self, painter):
-        """Draw component preview"""
+        """Draw component preview with duplicate detection visual feedback.
+        
+        Colors:
+        - RED: Near visible path component (will be blocked)
+        - YELLOW: Near hidden path component (allowed but warning)
+        - NORMAL (orange): Clear to place
+        """
         if self.current_point:
-            painter.setPen(self.pen)
-            painter.setBrush(self.brush)
+            # Choose color based on duplicate status
+            if self.is_near_visible_path_component:
+                # RED: Will be blocked - near visible path component
+                pen = QPen(QColor(255, 0, 0), 3, Qt.SolidLine)
+                brush = QBrush(QColor(255, 0, 0, 120))
+            elif self.is_near_hidden_path_component:
+                # YELLOW: Allowed but near hidden path component
+                pen = QPen(QColor(255, 200, 0), 2, Qt.DashLine)
+                brush = QBrush(QColor(255, 200, 0, 100))
+            else:
+                # NORMAL: Clear to place
+                pen = self.pen
+                brush = self.brush
+            
+            painter.setPen(pen)
+            painter.setBrush(brush)
             
             # Draw component as circle or square based on type
             x, y = self.current_point.x(), self.current_point.y()
@@ -213,8 +272,9 @@ class ComponentTool(DrawingTool):
                 painter.drawRect(rect)
             elif self.component_type == 'elbow':
                 # Draw as L-shaped elbow for direction changes
-                painter.setPen(QPen(QColor(100, 100, 100), 3, Qt.SolidLine))
-                painter.setBrush(QBrush(QColor(100, 100, 100, 50)))
+                if not self.is_near_visible_path_component and not self.is_near_hidden_path_component:
+                    painter.setPen(QPen(QColor(100, 100, 100), 3, Qt.SolidLine))
+                    painter.setBrush(QBrush(QColor(100, 100, 100, 50)))
                 
                 # Draw L-shape
                 half_size = size // 2
@@ -229,8 +289,9 @@ class ComponentTool(DrawingTool):
                 painter.drawEllipse(x - 3, y + half_size - 3, 6, 6)  # Bottom connection
             elif self.component_type == 'branch':
                 # Draw as T-shaped branch for flow distribution
-                painter.setPen(QPen(QColor(150, 75, 0), 3, Qt.SolidLine))
-                painter.setBrush(QBrush(QColor(150, 75, 0, 50)))
+                if not self.is_near_visible_path_component and not self.is_near_hidden_path_component:
+                    painter.setPen(QPen(QColor(150, 75, 0), 3, Qt.SolidLine))
+                    painter.setBrush(QBrush(QColor(150, 75, 0, 50)))
                 
                 # Draw T-shape
                 half_size = size // 2
@@ -246,6 +307,11 @@ class ComponentTool(DrawingTool):
             else:
                 # Draw as circle for terminals
                 painter.drawEllipse(x - size//2, y - size//2, size, size)
+            
+            # Add warning icon for blocked duplicates
+            if self.is_near_visible_path_component:
+                painter.setPen(QPen(Qt.white, 2))
+                painter.drawText(x - 8, y + 6, "⚠")
                 
             # Add label
             painter.setPen(QPen(Qt.black))

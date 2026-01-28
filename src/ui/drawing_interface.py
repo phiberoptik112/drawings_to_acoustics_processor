@@ -495,6 +495,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
             # Connect hover signals for analysis panel integration
             self.drawing_overlay.element_hovered.connect(self.on_drawing_element_hovered)
             self.drawing_overlay.element_unhovered.connect(self.on_drawing_element_unhovered)
+            # Handle placement blocked signal (duplicate near visible path)
+            self.drawing_overlay.placement_blocked.connect(self.handle_placement_blocked)
             
         self.scale_manager.scale_changed.connect(self.scale_updated)
         
@@ -748,6 +750,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
         if self.drawing_overlay:
             # Update overlay's current page for proper filtering
             self.drawing_overlay.current_page = self.current_page_number
+            # Update component tool duplicate checker with new page number
+            self.drawing_overlay.setup_component_tool_duplicate_checker()
             self.drawing_overlay.clear_all_elements()
             self.elements_list.clear()
             self.update_elements_display()
@@ -879,6 +883,48 @@ class DrawingInterface(HelpMixin, QMainWindow):
         self.status_bar.showMessage("Started new path - continue adding components and segments", 3000)
         
         print(f"DEBUG: Started new path with {element_data.get('type', 'unknown')}")
+    
+    def handle_placement_blocked(self, block_info):
+        """Handle when component placement is blocked due to proximity to visible path component.
+        
+        Shows a warning dialog explaining why placement was blocked and how to proceed.
+        """
+        comp_type = block_info.get('component_type', 'component')
+        path_id = block_info.get('path_id')
+        location = block_info.get('location', (0, 0))
+        
+        # Get path name for the message
+        path_name = "an existing path"
+        if path_id:
+            from models.database import get_session
+            from models.hvac import HVACPath
+            session = get_session()
+            try:
+                hvac_path = session.query(HVACPath).filter(HVACPath.id == path_id).first()
+                if hvac_path:
+                    path_name = f"'{hvac_path.name}'" if hvac_path.name else f"Path {path_id}"
+            except Exception as e:
+                print(f"DEBUG: Error getting path name: {e}")
+            finally:
+                session.close()
+        
+        # Show informative warning dialog
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Cannot Place Component")
+        msg.setText(f"A {comp_type.upper()} component cannot be placed at this location.")
+        msg.setInformativeText(
+            f"This location is too close to an existing component in {path_name}, "
+            f"which is currently visible.\n\n"
+            f"To place a component here:\n"
+            f"• Move to a different location (at least 5 pixels away), or\n"
+            f"• Hide {path_name} using the eye icon (👁️) in the paths list, then try again\n\n"
+            f"Location: ({location[0]:.0f}, {location[1]:.0f})"
+        )
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec()
+        
+        print(f"DEBUG: Showed placement blocked dialog for {comp_type} near path {path_id}")
             
     def measurement_taken(self, length_real, length_formatted):
         """Handle measurement taken"""

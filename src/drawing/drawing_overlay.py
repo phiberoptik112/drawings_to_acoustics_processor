@@ -17,6 +17,7 @@ class DrawingOverlay(QWidget):
     space_clicked = Signal(dict)              # Emitted when a saved space is clicked
     element_hovered = Signal(object, str)     # Emitted when hovering over an element (id, type)
     element_unhovered = Signal()              # Emitted when leaving an element
+    placement_blocked = Signal(dict)          # Emitted when placement is blocked (duplicate near visible path)
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -96,6 +97,8 @@ class DrawingOverlay(QWidget):
         self.tool_manager.set_tool(tool_type)
         if tool_type == ToolType.SEGMENT:
             self.update_segment_tool_components()
+        if tool_type == ToolType.COMPONENT:
+            self.setup_component_tool_duplicate_checker()
         if tool_type != ToolType.SELECT:
             self._clear_selection()
         
@@ -116,6 +119,24 @@ class DrawingOverlay(QWidget):
             self.tool_manager.set_available_components(self.components)
 
         self.tool_manager.set_available_segments(self.segments)
+    
+    def setup_component_tool_duplicate_checker(self):
+        """Set up the component tool with duplicate detection callback.
+        
+        This enables real-time visual feedback (red/yellow preview) when the user
+        hovers over locations near existing components.
+        """
+        try:
+            if hasattr(self.tool_manager, 'tools'):
+                from drawing.drawing_tools import ToolType
+                if ToolType.COMPONENT in self.tool_manager.tools:
+                    comp_tool = self.tool_manager.tools[ToolType.COMPONENT]
+                    comp_tool.set_duplicate_checker(
+                        self.check_component_placement_status,
+                        self.current_page
+                    )
+        except Exception as e:
+            print(f"DEBUG: Error setting up component tool duplicate checker: {e}")
 
     def set_zoom_factor(self, zoom_factor: float):
         """Recompute on-screen coordinates from base geometry at given zoom."""
@@ -558,6 +579,36 @@ class DrawingOverlay(QWidget):
             self._base_dirty = True
             
         elif element_type == 'component':
+            # ===== PLACEMENT VALIDATION: Check for duplicates near visible/hidden paths =====
+            x = element_data.get('x', 0)
+            y = element_data.get('y', 0)
+            comp_type = element_data.get('component_type', '')
+            current_page = element_data.get('page_number', self.current_page)
+            
+            placement_status = self.check_component_placement_status(x, y, comp_type, current_page)
+            
+            if placement_status['near_visible']:
+                # BLOCK placement - too close to component in visible path
+                print(f"DEBUG: BLOCKED component placement at ({x}, {y}) - too close to visible path component")
+                self.placement_blocked.emit({
+                    'type': 'component',
+                    'reason': 'near_visible_path',
+                    'component_type': comp_type,
+                    'location': (x, y),
+                    'existing_component': placement_status['existing_component'],
+                    'path_id': placement_status['path_id']
+                })
+                return  # Don't add component to list
+            
+            if placement_status['near_hidden']:
+                # ALLOW placement but mark for potential future linking
+                print(f"DEBUG: ALLOWED component at ({x}, {y}) - near hidden path component (marked for linking)")
+                element_data['_near_hidden_path_id'] = placement_status['path_id']
+                existing_comp = placement_status['existing_component']
+                if existing_comp:
+                    element_data['_near_hidden_comp_id'] = existing_comp.get('db_component_id') or existing_comp.get('hvac_component_id')
+            # ===== END PLACEMENT VALIDATION =====
+            
             # Assign unique element ID if not already present
             if '_element_id' not in element_data:
                 element_data['_element_id'] = self._generate_element_id()
@@ -1297,8 +1348,11 @@ class DrawingOverlay(QWidget):
                     skipped_count += 1
                     continue
             elif self.hidden_paths:
-                # Check if this component belongs to a hidden path
-                if self._is_component_in_hidden_path(comp):
+                # ONLY filter components that are EXPLICITLY registered to a hidden path
+                # (have hvac_path_id or db_path_id). New components without path registration
+                # should ALWAYS render, even if near a hidden path component.
+                comp_path_id = comp.get('hvac_path_id') or comp.get('db_path_id')
+                if comp_path_id and comp_path_id in self.hidden_paths:
                     skipped_count += 1
                     continue
             # Show the component
@@ -1387,8 +1441,11 @@ class DrawingOverlay(QWidget):
                     skipped_count += 1
                     continue
             elif self.hidden_paths:
-                # Check if this segment belongs to a hidden path
-                if self._is_segment_in_hidden_path(seg):
+                # ONLY filter segments that are EXPLICITLY registered to a hidden path
+                # (have hvac_path_id or db_path_id). New segments without path registration
+                # should ALWAYS render, even if near a hidden path segment.
+                seg_path_id = seg.get('hvac_path_id') or seg.get('db_path_id')
+                if seg_path_id and seg_path_id in self.hidden_paths:
                     skipped_count += 1
                     continue
             # Show the segment
@@ -1602,6 +1659,80 @@ class DrawingOverlay(QWidget):
                         visible_match = True
 
         return hidden_match and not visible_match
+
+    def check_component_placement_status(self, x: float, y: float, 
+                                          comp_type: str, 
+                                          current_page: int,
+                                          tolerance: float = 5.0) -> dict:
+        """
+        Check if placing a component at this location would be near existing components.
+        Used for real-time visual feedback and placement validation.
+        
+        Args:
+            x: X coordinate at current zoom
+            y: Y coordinate at current zoom
+            comp_type: Component type (ahu, diffuser, etc.)
+            current_page: Current page number
+            tolerance: Distance threshold in base pixels (default 5.0)
+            
+        Returns:
+            dict with:
+            - 'near_visible': bool - True if near a visible path component (should block)
+            - 'near_hidden': bool - True if near a hidden path component (show warning)
+            - 'existing_component': dict | None - The existing component if any
+            - 'path_id': int | None - Path ID of existing component
+        """
+        # Normalize coordinates to base zoom
+        base_x = x / self._current_zoom_factor if self._current_zoom_factor > 0 else x
+        base_y = y / self._current_zoom_factor if self._current_zoom_factor > 0 else y
+        
+        for comp in self.components:
+            # Skip different pages
+            comp_page = comp.get('page_number')
+            if comp_page is not None and comp_page != current_page:
+                continue
+            # Skip different types
+            if comp.get('component_type') != comp_type:
+                continue
+            
+            # Normalize and check distance
+            comp_zoom = comp.get('saved_zoom') or 1.0
+            if comp_zoom <= 0:
+                comp_zoom = 1.0
+            comp_x = comp.get('x', 0) / comp_zoom
+            comp_y = comp.get('y', 0) / comp_zoom
+            
+            dx = abs(base_x - comp_x)
+            dy = abs(base_y - comp_y)
+            
+            if dx <= tolerance and dy <= tolerance:
+                # Found nearby component - check its path visibility
+                path_id = comp.get('hvac_path_id') or comp.get('db_path_id')
+                
+                if path_id:
+                    is_hidden = path_id in self.hidden_paths
+                    return {
+                        'near_visible': not is_hidden,
+                        'near_hidden': is_hidden,
+                        'existing_component': comp,
+                        'path_id': path_id
+                    }
+                else:
+                    # Component not registered to path - treat as blocking (visible)
+                    return {
+                        'near_visible': True,
+                        'near_hidden': False,
+                        'existing_component': comp,
+                        'path_id': None
+                    }
+        
+        # No nearby component found
+        return {
+            'near_visible': False,
+            'near_hidden': False,
+            'existing_component': None,
+            'path_id': None
+        }
 
     def _is_component_registered_any_path(self, comp):
         """Check if component is registered to any path using priority-based matching.
