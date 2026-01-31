@@ -497,6 +497,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
             self.drawing_overlay.element_unhovered.connect(self.on_drawing_element_unhovered)
             # Handle placement blocked signal (duplicate near visible path)
             self.drawing_overlay.placement_blocked.connect(self.handle_placement_blocked)
+            # Connect segment validation error signal to show popup
+            self._connect_segment_validation_error()
             
         self.scale_manager.scale_changed.connect(self.scale_updated)
         
@@ -518,6 +520,32 @@ class DrawingInterface(HelpMixin, QMainWindow):
             self.analysis_panel.path_changed.connect(self.on_analysis_path_changed)
             # When edit is requested from analysis panel
             self.analysis_panel.edit_element_requested.connect(self.edit_element_from_analysis)
+    
+    def _connect_segment_validation_error(self):
+        """Connect the SegmentTool's validation_error signal to show error popup."""
+        try:
+            from drawing.drawing_tools import ToolType
+            if (self.drawing_overlay and 
+                hasattr(self.drawing_overlay, 'tool_manager') and 
+                self.drawing_overlay.tool_manager):
+                tools = getattr(self.drawing_overlay.tool_manager, 'tools', {})
+                if ToolType.SEGMENT in tools:
+                    segment_tool = tools[ToolType.SEGMENT]
+                    if hasattr(segment_tool, 'validation_error'):
+                        segment_tool.validation_error.connect(self._on_segment_validation_error)
+                        print("DEBUG: Connected segment validation_error signal")
+        except Exception as e:
+            print(f"DEBUG: Failed to connect segment validation_error signal: {e}")
+    
+    def _on_segment_validation_error(self, error_msg: str):
+        """Show error popup when segment validation fails."""
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            self,
+            "Invalid Segment",
+            error_msg,
+            QMessageBox.Ok
+        )
         
     def load_pdf(self):
         """Load the PDF file with path resolution for portability"""
@@ -1038,6 +1066,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
             # Clean up orphaned elements - those marked converted_to_space but Space no longer exists
             overlay_data = self._cleanup_orphaned_space_elements(overlay_data)
             
+            # Clean up orphaned segments - those without any valid endpoint connections
+            overlay_data = self._cleanup_orphaned_segments(overlay_data)
+            
             # Filter out components/segments that duplicate positions of already-existing overlay elements
             # This prevents loading old elements that were saved without proper hvac_path_id linkage
             overlay_data = self._filter_duplicate_hvac_elements(overlay_data)
@@ -1172,6 +1203,56 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
         except Exception as e:
             print(f"Error cleaning up orphaned space elements: {e}")
+            return overlay_data  # Return original data on error
+
+    def _cleanup_orphaned_segments(self, overlay_data):
+        """Remove segments that have no valid endpoint connections from overlay data and database.
+        
+        Orphaned segments occur when:
+        1. Segments were drawn without snapping to components
+        2. Segments were saved before being linked to a path
+        3. The components they were connected to have been deleted
+        
+        This method cleans up these orphaned segments to prevent them from cluttering the overlay.
+        """
+        try:
+            cleaned_segments = []
+            deleted_count = 0
+            
+            for seg in overlay_data.get('segments', []):
+                # Check for any form of endpoint linkage
+                has_from = (
+                    seg.get('from_element_id') or 
+                    seg.get('from_db_component_id') or
+                    (isinstance(seg.get('from_component'), dict) and seg['from_component'])
+                )
+                has_to = (
+                    seg.get('to_element_id') or 
+                    seg.get('to_db_component_id') or
+                    (isinstance(seg.get('to_component'), dict) and seg['to_component'])
+                )
+                
+                # Keep segment if it has at least one valid endpoint connection
+                if has_from or has_to:
+                    cleaned_segments.append(seg)
+                else:
+                    # Delete orphaned segment from database
+                    seg_id = seg.get('id')
+                    if seg_id:
+                        try:
+                            self.element_manager.delete_element(seg_id)
+                            deleted_count += 1
+                        except Exception as e:
+                            print(f"DEBUG: Failed to delete orphaned segment {seg_id}: {e}")
+            
+            if deleted_count > 0:
+                print(f"DEBUG: Cleaned up {deleted_count} orphaned segments from database")
+            
+            overlay_data['segments'] = cleaned_segments
+            return overlay_data
+            
+        except Exception as e:
+            print(f"Error cleaning up orphaned segments: {e}")
             return overlay_data  # Return original data on error
 
     def _filter_duplicate_hvac_elements(self, overlay_data):

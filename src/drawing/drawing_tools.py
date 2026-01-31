@@ -321,6 +321,9 @@ class ComponentTool(DrawingTool):
 class SegmentTool(DrawingTool):
     """Tool for drawing duct segments between components"""
     
+    # Signal emitted when segment validation fails (e.g., not connected to components)
+    validation_error = Signal(str)
+    
     def __init__(self):
         super().__init__()
         self.pen = QPen(QColor(50, 150, 50), 3, Qt.SolidLine)
@@ -530,6 +533,32 @@ class SegmentTool(DrawingTool):
                                 self.current_point = QPoint(comp_x, comp_y)
                         except Exception:
                             pass
+
+            # VALIDATION: Only allow segments connected at both ends
+            if not self.from_component or not self.to_component:
+                missing = []
+                if not self.from_component:
+                    missing.append("start point")
+                if not self.to_component:
+                    missing.append("end point")
+                
+                error_msg = (
+                    f"Segment must connect to HVAC components at both endpoints.\n\n"
+                    f"Missing connection at: {', '.join(missing)}\n\n"
+                    f"Tip: Draw segments between placed HVAC components (AHU, VAV, Diffuser, etc.)"
+                )
+                print(f"DEBUG: Segment rejected - must connect to components at both endpoints. Missing: {', '.join(missing)}")
+                self.validation_error.emit(error_msg)
+                
+                # Reset tool state
+                self.active = False
+                self.start_point = None
+                self.current_point = None
+                self.from_component = None
+                self.to_component = None
+                self.from_segment = None
+                self.to_segment = None
+                return
 
             self.active = False
             print("DEBUG: SegmentTool.finish - calling get_result()")

@@ -257,6 +257,15 @@ class DrawingElementManager:
 						# Skip measurements if they're temporary
 						if element_type == 'measurements' and not element_data.get('persistent', True):
 							continue
+						
+						# Skip segments without path linkage - they are work-in-progress
+						# and should not be persisted until part of an HVAC path
+						if element_type == 'segments':
+							has_path = (element_data.get('hvac_path_id') or 
+							            element_data.get('db_path_id'))
+							if not has_path:
+								print(f"DEBUG: Skipping segment save - no path linkage")
+								continue
 							
 						# Create drawing element
 						drawing_element = DrawingElement.from_overlay_data(
