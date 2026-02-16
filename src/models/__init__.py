@@ -8,7 +8,7 @@ init_database = initialize_database
 
 from .project import Project
 from .drawing import Drawing
-from .space import Space, RoomBoundary
+from .space import Space, SpaceNoiseSource, RoomBoundary
 from .hvac import HVACComponent, HVACPath, HVACSegment, SegmentFitting
 from .drawing_elements import DrawingElement, DrawingElementManager
 from .rt60_models import (SurfaceCategory, SurfaceType, AcousticMaterial, 
@@ -27,7 +27,8 @@ __all__ = [
 	'close_database',
 	'Project',
 	'Drawing', 
-	'Space', 
+	'Space',
+	'SpaceNoiseSource',
 	'RoomBoundary',
 	'HVACComponent', 
 	'HVACPath', 

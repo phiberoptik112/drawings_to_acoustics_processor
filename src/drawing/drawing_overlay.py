@@ -1404,10 +1404,14 @@ class DrawingOverlay(QWidget):
             painter.setBrush(brush)
             painter.drawEllipse(x - size, y - size, size * 2, size * 2)
             
-            # Draw text
+            # Draw text - use custom_type_label when component_type is 'custom'
+            if comp_type == 'custom':
+                label = comp.get('custom_type_label') or comp_type
+            else:
+                label = comp_type
             painter.setPen(QPen(Qt.black))
             painter.setFont(QFont("Arial", 8))
-            painter.drawText(x - 15, y + 25, comp_type)
+            painter.drawText(x - 15, y + 25, label)
             
             # Draw highlight ring for selected elements
             if is_selected:

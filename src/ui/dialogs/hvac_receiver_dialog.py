@@ -13,9 +13,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from models import get_session
-from models.space import Space
+from models.space import Space, SpaceNoiseSource
 from models.hvac import HVACPath, HVACSegment, HVACReceiverResult
 from sqlalchemy.orm import selectinload
+
+from ui.dialogs.space_noise_source_dialog import SpaceNoiseSourceDialog
 
 from calculations.hvac_path_calculator import HVACPathCalculator
 from calculations.receiver_room_sound_correction_calculations import (
@@ -32,6 +34,7 @@ class HVACReceiverDialog(QDialog):
         self.space_id = space_id
         self.space = None
         self.paths: List[HVACPath] = []
+        self.space_noise_sources: List[SpaceNoiseSource] = []
         self.room_calc = ReceiverRoomSoundCorrection()
         self.engine = HVACNoiseEngine()
         self._latest_results = None  # Stored after successful calculation
@@ -53,12 +56,14 @@ class HVACReceiverDialog(QDialog):
                 session.query(Space)
                 .options(
                     selectinload(Space.hvac_paths).selectinload(HVACPath.segments),
-                    selectinload(Space.hvac_paths).selectinload(HVACPath.primary_source)
+                    selectinload(Space.hvac_paths).selectinload(HVACPath.primary_source),
+                    selectinload(Space.space_noise_sources)
                 )
                 .filter(Space.id == self.space_id)
                 .first()
             )
             self.paths = list(self.space.hvac_paths) if self.space else []
+            self.space_noise_sources = list(self.space.space_noise_sources) if self.space else []
 
     # --- UI ---
     def _init_ui(self) -> None:
@@ -92,6 +97,34 @@ class HVACReceiverDialog(QDialog):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
         self._populate_table()
         layout.addWidget(self.table)
+
+        # In-Space Noise Sources (no duct path)
+        insource_group = QGroupBox("In-Space Noise Sources (No Duct Path)")
+        insource_layout = QVBoxLayout()
+        self.insource_table = QTableWidget(0, 5)
+        self.insource_table.setHorizontalHeaderLabels([
+            "Name", "Base dB(A)", "Distance (ft)", "Config", "Num Outlets"
+        ])
+        insource_header = self.insource_table.horizontalHeader()
+        insource_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in range(1, 5):
+            insource_header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        insource_layout.addWidget(self.insource_table)
+        insource_btn_row = QHBoxLayout()
+        self.add_insource_btn = QPushButton("Add Source")
+        self.add_insource_btn.clicked.connect(self._add_space_noise_source)
+        self.edit_insource_btn = QPushButton("Edit")
+        self.edit_insource_btn.clicked.connect(self._edit_space_noise_source)
+        self.remove_insource_btn = QPushButton("Remove")
+        self.remove_insource_btn.clicked.connect(self._remove_space_noise_source)
+        insource_btn_row.addWidget(self.add_insource_btn)
+        insource_btn_row.addWidget(self.edit_insource_btn)
+        insource_btn_row.addWidget(self.remove_insource_btn)
+        insource_btn_row.addStretch()
+        insource_layout.addLayout(insource_btn_row)
+        insource_group.setLayout(insource_layout)
+        layout.addWidget(insource_group)
+        self._populate_insource_table()
 
         # Distributed array parameters (global defaults)
         da_group = QGroupBox("Distributed Array Parameters (when selected)")
@@ -205,6 +238,63 @@ class HVACReceiverDialog(QDialog):
             method_combo.currentIndexChanged.connect(self._on_method_changed)
             self.table.setCellWidget(row, 5, method_combo)
 
+    def _populate_insource_table(self) -> None:
+        """Populate the in-space noise sources table"""
+        self.insource_table.setRowCount(len(self.space_noise_sources))
+        for row, src in enumerate(self.space_noise_sources):
+            name_item = QTableWidgetItem(src.name or "")
+            name_item.setData(Qt.UserRole, src.id)
+            self.insource_table.setItem(row, 0, name_item)
+            self.insource_table.setItem(row, 1, QTableWidgetItem(f"{float(src.base_noise_dba or 0):.1f}"))
+            self.insource_table.setItem(row, 2, QTableWidgetItem(f"{float(src.distance_to_receiver_ft or 0):.1f}"))
+            cfg = (src.outlet_configuration or "single").lower()
+            self.insource_table.setItem(row, 3, QTableWidgetItem("Array" if cfg == "array" else "Single"))
+            num = src.num_outlets if cfg == "array" else "—"
+            self.insource_table.setItem(row, 4, QTableWidgetItem(str(num) if num is not None else "—"))
+
+    def _add_space_noise_source(self) -> None:
+        """Open dialog to add new in-space noise source"""
+        dlg = SpaceNoiseSourceDialog(self, space_id=self.space_id)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.source:
+            self.space_noise_sources.append(dlg.source)
+            self._populate_insource_table()
+
+    def _edit_space_noise_source(self) -> None:
+        """Open dialog to edit selected in-space noise source"""
+        row = self.insource_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "Edit", "Select a row to edit.")
+            return
+        src_id = self.insource_table.item(row, 0).data(Qt.UserRole)
+        src = next((s for s in self.space_noise_sources if s.id == src_id), None)
+        if not src:
+            QMessageBox.warning(self, "Edit", "Source not found.")
+            return
+        dlg = SpaceNoiseSourceDialog(self, space_id=self.space_id, source=src)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._populate_insource_table()
+
+    def _remove_space_noise_source(self) -> None:
+        """Remove selected in-space noise source"""
+        row = self.insource_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "Remove", "Select a row to remove.")
+            return
+        src_id = self.insource_table.item(row, 0).data(Qt.UserRole)
+        try:
+            session = get_session()
+            try:
+                db_src = session.query(SpaceNoiseSource).filter(SpaceNoiseSource.id == src_id).first()
+                if db_src:
+                    session.delete(db_src)
+                    session.commit()
+                    self.space_noise_sources = [s for s in self.space_noise_sources if s.id != src_id]
+                    self._populate_insource_table()
+            finally:
+                session.close()
+        except Exception as e:
+            QMessageBox.critical(self, "Remove Error", f"Failed to remove:\n{str(e)}")
+
     # --- Handlers to persist per-path receiver settings ---
     def _on_distance_changed(self, value: float) -> None:
         try:
@@ -244,8 +334,8 @@ class HVACReceiverDialog(QDialog):
     # --- Calculation ---
     def calculate_combined_noise(self) -> None:
         try:
-            if not self.paths:
-                self.results_text.setHtml("<i>No HVAC paths assigned to this space.</i>")
+            if not self.paths and not self.space_noise_sources:
+                self.results_text.setHtml("<i>No HVAC paths or in-space noise sources assigned to this space.</i>")
                 return
 
             room_volume = float(self.space.volume or 0.0)
@@ -255,8 +345,9 @@ class HVACReceiverDialog(QDialog):
             # Energy sum per band (7 bands up to 4000 Hz)
             combined_energy = [0.0] * 7
 
-            # Keep track of parameters used per-path for saving
+            # Keep track of parameters used per-path and per space-source for saving
             used_path_params = []
+            used_space_source_params = []
 
             for row, path in enumerate(self.paths):
                 # Get latest spectrum at terminal for this path
@@ -346,6 +437,46 @@ class HVACReceiverDialog(QDialog):
                     'distance_ft': distance,
                 })
 
+            # Process in-space noise sources (no duct path)
+            ceiling_height = float(self.ceiling_height_spin.value())
+            floor_area = float(self.space.floor_area or 150)
+            for src in self.space_noise_sources:
+                dba = float(src.base_noise_dba or 40.0)
+                distance = float(src.distance_to_receiver_ft or 10.0)
+                outlet_cfg = (src.outlet_configuration or "single").lower()
+                # Estimate Lw spectrum from dB(A) using typical_hvac shape
+                octave_data = self.engine.estimate_octave_bands_from_dba(dba, 'typical_hvac')
+                lw_8 = octave_data.to_list()
+                lw_spectrum_7 = [float(x) for x in lw_8[:7]]
+                if len(lw_spectrum_7) < 7:
+                    lw_spectrum_7 = (lw_spectrum_7 + [0.0] * 7)[:7]
+                if outlet_cfg == 'single':
+                    res = self.room_calc.calculate_octave_band_spectrum(
+                        lw_spectrum=lw_spectrum_7,
+                        distance=distance,
+                        room_volume=max(room_volume, 1.0),
+                        method='equation_27',
+                    )
+                    lp_bands = res.get('sound_pressure_levels', [])
+                else:
+                    num_outlets = max(1, int(src.num_outlets or 1))
+                    floor_area_per_outlet = floor_area / num_outlets
+                    lp_res = self.room_calc.calculate_distributed_array_spectrum(
+                        lw_single_spectrum=lw_spectrum_7,
+                        ceiling_height=ceiling_height,
+                        floor_area_per_diffuser=floor_area_per_outlet,
+                    )
+                    lp_bands = lp_res.get('sound_pressure_levels', [])
+                for i in range(min(7, len(lp_bands))):
+                    combined_energy[i] += 10 ** (lp_bands[i] / 10.0)
+                used_space_source_params.append({
+                    'source_id': getattr(src, 'id', None),
+                    'name': src.name,
+                    'method': outlet_cfg,
+                    'distance_ft': distance,
+                    'num_outlets': getattr(src, 'num_outlets', None),
+                })
+
             # Convert back to dB spectrum
             combined_spectrum_7 = [0.0] * 7
             for i, energy in enumerate(combined_energy):
@@ -386,6 +517,7 @@ class HVACReceiverDialog(QDialog):
                 'distributed_ceiling_height': float(self.ceiling_height_spin.value()),
                 'distributed_floor_area_per_diffuser': float(self.floor_area_spin.value()),
                 'path_parameters': used_path_params,
+                'space_noise_source_parameters': used_space_source_params,
             }
             self.save_btn.setEnabled(True)
 
@@ -421,7 +553,10 @@ class HVACReceiverDialog(QDialog):
                     room_volume=float(data.get('room_volume') or 0.0),
                     distributed_ceiling_height=float(data.get('distributed_ceiling_height') or 0.0),
                     distributed_floor_area_per_diffuser=float(data.get('distributed_floor_area_per_diffuser') or 0.0),
-                    path_parameters_json=json.dumps(data.get('path_parameters') or []),
+                    path_parameters_json=json.dumps({
+                        'paths': data.get('path_parameters') or [],
+                        'space_sources': data.get('space_noise_source_parameters') or [],
+                    }),
                 )
                 session.add(rec)
 

@@ -18,7 +18,8 @@ class HVACComponent(Base):
     project_id = Column(Integer, ForeignKey('projects.id'), nullable=False)
     drawing_id = Column(Integer, ForeignKey('drawings.id'), nullable=False)
     name = Column(String(255), nullable=False)
-    component_type = Column(String(50), nullable=False)  # 'ahu', 'vav', 'diffuser', etc.
+    component_type = Column(String(50), nullable=False)  # 'ahu', 'vav', 'diffuser', 'custom', etc.
+    custom_type_label = Column(String(100))  # User-defined label when component_type='custom'
     
     # Position on drawing (pixels)
     x_position = Column(Float, nullable=False)
@@ -71,6 +72,7 @@ class HVACComponent(Base):
             'page_number': self.page_number,
             'name': self.name,
             'component_type': self.component_type,
+            'custom_type_label': self.custom_type_label,
             'x_position': self.x_position,
             'y_position': self.y_position,
             'noise_level': self.noise_level,

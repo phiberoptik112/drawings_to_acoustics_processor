@@ -44,6 +44,44 @@ class SpaceSurfaceMaterial(Base):
         }
 
 
+class SpaceNoiseSource(Base):
+    """Noise source within a space, no duct path. Uses Shultz method for receiver calculation."""
+    __tablename__ = 'space_noise_sources'
+
+    id = Column(Integer, primary_key=True)
+    space_id = Column(Integer, ForeignKey('spaces.id'), nullable=False)
+    name = Column(String(255), nullable=False)  # e.g., "Unit Heater-1", "Inline Fan"
+
+    # Acoustic properties
+    base_noise_dba = Column(Float)  # Overall dB(A) - used to estimate octave spectrum
+
+    # Receiver characteristics (required by user)
+    distance_to_receiver_ft = Column(Float, nullable=False)  # Distance to receiver in space
+    outlet_configuration = Column(String(20), nullable=False)  # 'single' | 'array'
+
+    # For array: number of outlets. floor_area_per_outlet = space.floor_area / num_outlets
+    num_outlets = Column(Integer)  # Required when outlet_configuration='array'
+
+    created_date = Column(DateTime, default=datetime.utcnow)
+
+    space = relationship("Space", back_populates="space_noise_sources")
+
+    def __repr__(self):
+        return f"<SpaceNoiseSource(id={self.id}, name='{self.name}', space_id={self.space_id})>"
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'space_id': self.space_id,
+            'name': self.name,
+            'base_noise_dba': self.base_noise_dba,
+            'distance_to_receiver_ft': self.distance_to_receiver_ft,
+            'outlet_configuration': self.outlet_configuration,
+            'num_outlets': self.num_outlets,
+            'created_date': self.created_date.isoformat() if self.created_date else None,
+        }
+
+
 class Space(Base):
     """Space model for storing room/space information"""
     __tablename__ = 'spaces'
@@ -91,7 +129,8 @@ class Space(Base):
     drawing_set = relationship("DrawingSet")
     room_boundaries = relationship("RoomBoundary", back_populates="space", cascade="all, delete-orphan")
     hvac_paths = relationship("HVACPath", back_populates="target_space")
-    
+    space_noise_sources = relationship("SpaceNoiseSource", back_populates="space", cascade="all, delete-orphan")
+
     # Enhanced RT60 relationships
     surface_instances = relationship("RoomSurfaceInstance", back_populates="space", cascade="all, delete-orphan")
     rt60_results = relationship("RT60CalculationResult", back_populates="space", cascade="all, delete-orphan")

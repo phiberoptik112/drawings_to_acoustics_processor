@@ -12,7 +12,7 @@ from PySide6.QtCore import Qt, Signal, QTimer
 
 from models import get_session
 from models.database import get_hvac_session
-from models.space import Space, SurfaceType
+from models.space import Space, SpaceNoiseSource, SurfaceType
 from models.partition import PartitionType, SpacePartition
 from data.materials import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS, get_materials_by_category
 from data.partition_stc_standards import (
@@ -22,6 +22,7 @@ from data.partition_stc_standards import (
 from calculations.rt60_calculator import RT60Calculator
 from ui.rt60_plot_widget import RT60PlotContainer
 from ui.dialogs.material_search_dialog import MaterialSearchDialog
+from ui.dialogs.space_noise_source_dialog import SpaceNoiseSourceDialog
 from data.materials_database import get_all_materials
 from help import HelpMixin
 from utils.settings_manager import get_settings_manager
@@ -501,6 +502,10 @@ class SpaceEditDialog(HelpMixin, QDialog):
         # Partition Isolation tab
         partition_tab = self.create_partition_tab()
         tabs.addTab(partition_tab, "Partition Isolation")
+        
+        # HVAC Noise tab (in-space noise sources)
+        hvac_noise_tab = self.create_hvac_noise_tab()
+        tabs.addTab(hvac_noise_tab, "HVAC Noise")
         
         # Calculations tab
         calc_tab = self.create_calculations_tab()
@@ -991,6 +996,129 @@ class SpaceEditDialog(HelpMixin, QDialog):
         widget.setLayout(layout)
         return widget
     
+    def create_hvac_noise_tab(self):
+        """Create the HVAC Noise tab with in-space noise sources (no duct path)"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        instructions = QLabel(
+            "Add noise sources that contribute to receiver calculations without a duct path. "
+            "These sources use distance and outlet configuration (single or array) for Shultz method calculations."
+        )
+        instructions.setWordWrap(True)
+        instructions.setStyleSheet("color: #7f8c8d; font-style: italic; margin-bottom: 10px;")
+        layout.addWidget(instructions)
+        
+        # In-space noise sources table
+        group = QGroupBox("In-Space Noise Sources (No Duct Path)")
+        vbox = QVBoxLayout()
+        self.space_insource_table = QTableWidget(0, 5)
+        self.space_insource_table.setHorizontalHeaderLabels([
+            "Name", "Base dB(A)", "Distance (ft)", "Config", "Num Outlets"
+        ])
+        header = self.space_insource_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col in range(1, 5):
+            header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        vbox.addWidget(self.space_insource_table)
+        btn_row = QHBoxLayout()
+        self.add_insource_btn = QPushButton("Add Source")
+        self.add_insource_btn.clicked.connect(self._space_add_insource)
+        self.edit_insource_btn = QPushButton("Edit")
+        self.edit_insource_btn.clicked.connect(self._space_edit_insource)
+        self.remove_insource_btn = QPushButton("Remove")
+        self.remove_insource_btn.clicked.connect(self._space_remove_insource)
+        btn_row.addWidget(self.add_insource_btn)
+        btn_row.addWidget(self.edit_insource_btn)
+        btn_row.addWidget(self.remove_insource_btn)
+        btn_row.addStretch()
+        vbox.addLayout(btn_row)
+        group.setLayout(vbox)
+        layout.addWidget(group)
+        
+        open_receiver_btn = QPushButton("Open HVAC Receiver Analysis…")
+        open_receiver_btn.setToolTip("Open the full receiver dialog to calculate combined noise")
+        open_receiver_btn.clicked.connect(self._open_receiver_dialog)
+        layout.addWidget(open_receiver_btn)
+        
+        layout.addStretch()
+        widget.setLayout(layout)
+        return widget
+    
+    def _space_add_insource(self):
+        """Add in-space noise source"""
+        if not self.space:
+            return
+        dlg = SpaceNoiseSourceDialog(self, space_id=self.space.id)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.source:
+            self._space_refresh_insource_table()
+    
+    def _space_edit_insource(self):
+        """Edit selected in-space noise source"""
+        row = self.space_insource_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "Edit", "Select a row to edit.")
+            return
+        src_id = self.space_insource_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        try:
+            session = get_session()
+            src = session.query(SpaceNoiseSource).filter(SpaceNoiseSource.id == src_id).first()
+            session.close()
+            if src:
+                dlg = SpaceNoiseSourceDialog(self, space_id=self.space.id, source=src)
+                if dlg.exec() == QDialog.DialogCode.Accepted:
+                    self._space_refresh_insource_table()
+        except Exception as e:
+            QMessageBox.critical(self, "Edit Error", str(e))
+    
+    def _space_remove_insource(self):
+        """Remove selected in-space noise source"""
+        row = self.space_insource_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "Remove", "Select a row to remove.")
+            return
+        src_id = self.space_insource_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        try:
+            session = get_session()
+            db_src = session.query(SpaceNoiseSource).filter(SpaceNoiseSource.id == src_id).first()
+            if db_src:
+                session.delete(db_src)
+                session.commit()
+            session.close()
+            self._space_refresh_insource_table()
+        except Exception as e:
+            QMessageBox.critical(self, "Remove Error", str(e))
+    
+    def _space_refresh_insource_table(self):
+        """Refresh the in-space noise sources table"""
+        if not self.space:
+            return
+        try:
+            session = get_session()
+            sources = session.query(SpaceNoiseSource).filter(
+                SpaceNoiseSource.space_id == self.space.id
+            ).all()
+            session.close()
+            self.space_insource_table.setRowCount(len(sources))
+            for row, src in enumerate(sources):
+                name_item = QTableWidgetItem(src.name or "")
+                name_item.setData(Qt.ItemDataRole.UserRole, src.id)
+                self.space_insource_table.setItem(row, 0, name_item)
+                self.space_insource_table.setItem(row, 1, QTableWidgetItem(f"{float(src.base_noise_dba or 0):.1f}"))
+                self.space_insource_table.setItem(row, 2, QTableWidgetItem(f"{float(src.distance_to_receiver_ft or 0):.1f}"))
+                cfg = (src.outlet_configuration or "single").lower()
+                self.space_insource_table.setItem(row, 3, QTableWidgetItem("Array" if cfg == "array" else "Single"))
+                num = src.num_outlets if cfg == "array" else "—"
+                self.space_insource_table.setItem(row, 4, QTableWidgetItem(str(num) if num is not None else "—"))
+        except Exception as e:
+            QMessageBox.critical(self, "Refresh Error", str(e))
+    
+    def _open_receiver_dialog(self):
+        """Open the HVAC Receiver dialog for this space"""
+        from ui.dialogs.hvac_receiver_dialog import HVACReceiverDialog
+        dlg = HVACReceiverDialog(self, space_id=self.space.id)
+        dlg.exec()
+    
     def load_partition_types(self):
         """Load partition types for dropdowns"""
         self.partition_types_cache = {}
@@ -1412,6 +1540,10 @@ class SpaceEditDialog(HelpMixin, QDialog):
         # Load partition assignments
         if hasattr(self, 'partitions_table'):
             self.load_partitions()
+        
+        # Load in-space noise sources
+        if hasattr(self, 'space_insource_table'):
+            self._space_refresh_insource_table()
         
     def room_type_index_changed(self, index):
         """Handle room type combo box index change"""

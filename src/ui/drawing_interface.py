@@ -4601,6 +4601,7 @@ class DrawingInterface(HelpMixin, QMainWindow):
                                 'x': db_comp.x_position,
                                 'y': db_comp.y_position,
                                 'component_type': db_comp.component_type,
+                                'custom_type_label': getattr(db_comp, 'custom_type_label', None),
                                 'db_component_id': db_comp.id,
                                 'hvac_component_id': db_comp.id,
                                 'db_path_id': hvac_path.id,

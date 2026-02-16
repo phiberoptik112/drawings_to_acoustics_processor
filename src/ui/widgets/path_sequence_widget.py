@@ -306,6 +306,7 @@ class PathSequenceWidget(QWidget):
                     display_name = comp_data.get('name', f'Component {element_id}')
                     extra_info = {
                         'component_type': comp_data.get('component_type', ''),
+                        'custom_type_label': comp_data.get('custom_type_label'),
                         'noise_level': comp_data.get('noise_level'),
                     }
                     list_item = PathSequenceItem('component', element_id, display_name, extra_info)

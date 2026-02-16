@@ -102,6 +102,13 @@ STANDARD_COMPONENTS = {
         'cfm': 200.0,
         'cfm_range': (25, 10000),
         'description': '90 degree elbow without turning vanes'
+    },
+    'custom': {
+        'name': 'Custom Component',
+        'noise_level': 40.0,
+        'cfm': 500.0,
+        'cfm_range': (50, 50000),
+        'description': 'User-defined mechanical component'
     }
 }
 

@@ -79,6 +79,7 @@ DEFAULT_CFM_VALUES = {
     'rtu': 100.0,        # Rooftop Unit
     'rf': 100.0,         # Return Fan
     'sf': 100.0,         # Supply Fan
+    'custom': 500.0,     # Custom component - use component's stored value
 }
 
 # CFM validation ranges (min, max) by component type
@@ -97,6 +98,7 @@ CFM_VALIDATION_RANGES = {
     'rtu': (1000.0, 30000.0),
     'rf': (500.0, 15000.0),
     'sf': (500.0, 15000.0),
+    'custom': (50.0, 50000.0),
 }
 
 # General fallback CFM for unknown components

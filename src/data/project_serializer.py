@@ -14,7 +14,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from models import get_session, Project
 from models.drawing import Drawing
 from models.drawing_sets import DrawingSet, DrawingComparison, ChangeItem
-from models.space import Space, RoomBoundary, SpaceSurfaceMaterial, SurfaceType
+from models.space import Space, SpaceNoiseSource, RoomBoundary, SpaceSurfaceMaterial, SurfaceType
 from models.hvac import (
     HVACComponent, HVACPath, HVACSegment, SegmentFitting, HVACReceiverResult
 )
@@ -146,6 +146,9 @@ class ProjectExporter:
             
             # HVAC receiver results
             'receiver_results': self._export_receiver_results(project_id),
+            
+            # Space noise sources (in-space, no duct path)
+            'space_noise_sources': self._export_space_noise_sources(project_id),
         }
         
         return export_data
@@ -406,6 +409,17 @@ class ProjectExporter:
             HVACReceiverResult.space_id.in_(space_ids)
         ).all()
         return [r.to_dict() for r in results]
+    
+    def _export_space_noise_sources(self, project_id: int) -> List[Dict]:
+        """Export all space noise sources"""
+        spaces = self.session.query(Space).filter(Space.project_id == project_id).all()
+        space_ids = [s.id for s in spaces]
+        if not space_ids:
+            return []
+        sources = self.session.query(SpaceNoiseSource).filter(
+            SpaceNoiseSource.space_id.in_(space_ids)
+        ).all()
+        return [s.to_dict() for s in sources]
 
 
 class ProjectImporter:
@@ -570,6 +584,9 @@ class ProjectImporter:
         if data.get('receiver_results'):
             self._import_receiver_results(data['receiver_results'])
         
+        if data.get('space_noise_sources'):
+            self._import_space_noise_sources(data['space_noise_sources'])
+        
         return new_project_id
     
     def _get_new_id(self, entity_type: str, old_id: Optional[int]) -> Optional[int]:
@@ -714,6 +731,7 @@ class ProjectImporter:
                 page_number=c_data.get('page_number', 1),  # Store page for multi-page PDFs
                 name=c_data['name'],
                 component_type=c_data['component_type'],
+                custom_type_label=c_data.get('custom_type_label'),
                 x_position=c_data['x_position'],
                 y_position=c_data['y_position'],
                 noise_level=c_data.get('noise_level'),
@@ -1034,4 +1052,17 @@ class ProjectImporter:
                 path_parameters_json=r_data.get('path_parameters_json'),
             )
             self.session.add(result)
+    
+    def _import_space_noise_sources(self, sources: List[Dict]):
+        """Import space noise sources"""
+        for s_data in sources:
+            source = SpaceNoiseSource(
+                space_id=self._get_new_id('space', s_data['space_id']),
+                name=s_data['name'],
+                base_noise_dba=s_data.get('base_noise_dba'),
+                distance_to_receiver_ft=s_data.get('distance_to_receiver_ft', 10.0),
+                outlet_configuration=s_data.get('outlet_configuration', 'single'),
+                num_outlets=s_data.get('num_outlets'),
+            )
+            self.session.add(source)
 

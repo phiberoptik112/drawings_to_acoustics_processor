@@ -491,7 +491,8 @@ class PathAnalysisPanel(QWidget):
                     for seg in path.segments:
                         for comp in [seg.from_component, seg.to_component]:
                             if comp and comp.id == comp_id:
-                                name = getattr(comp, 'name', None) or getattr(comp, 'component_type', None)
+                                name = (getattr(comp, 'name', None) or getattr(comp, 'custom_type_label', None) or
+                                        getattr(comp, 'component_type', None))
                                 return name or "Unknown Source"
                     break
         
@@ -505,7 +506,8 @@ class PathAnalysisPanel(QWidget):
             first_segment = min(segments, key=lambda s: getattr(s, 'segment_order', 0) or 0)
             from_comp = getattr(first_segment, 'from_component', None)
             if from_comp:
-                name = getattr(from_comp, 'name', None) or getattr(from_comp, 'component_type', None)
+                name = (getattr(from_comp, 'name', None) or getattr(from_comp, 'custom_type_label', None) or
+                        getattr(from_comp, 'component_type', None))
                 return name or "Unknown Source"
         except (ValueError, TypeError):
             pass
