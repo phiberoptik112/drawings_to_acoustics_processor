@@ -1,0 +1,126 @@
+"""
+API Schema Definitions
+
+All request/response dataclasses for the Acoustic Analysis API.
+"""
+
+from src.api.schemas.common import (
+    OCTAVE_BANDS_6,
+    OCTAVE_BANDS_8,
+    OctaveBandData6,
+    OctaveBandData8,
+    APIError,
+    ValidationError,
+)
+from src.api.schemas.rt60_schemas import (
+    SurfaceDefinition,
+    SurfaceAnalysis,
+    RT60CalculationRequest,
+    RT60CalculationResponse,
+    RT60ComplianceRequest,
+    RT60ComplianceResponse,
+    FrequencyCompliance,
+    MaterialRecommendationRequest,
+    MaterialRecommendationResponse,
+    TreatableSurface,
+    MaterialSuggestion,
+)
+from src.api.schemas.hvac_schemas import (
+    PathElementInput,
+    ReceiverRoomInput,
+    ElementResult,
+    HVACPathNoiseRequest,
+    HVACPathNoiseResponse,
+    CombinedReceiverNoiseRequest,
+    CombinedReceiverNoiseResponse,
+    PathContribution,
+    NCComplianceRequest,
+    NCComplianceResponse,
+    FrequencyExceedance,
+    ElementAttenuationRequest,
+    ElementAttenuationResponse,
+)
+from src.api.schemas.material_schemas import (
+    MaterialSearchRequest,
+    MaterialSearchResponse,
+    MaterialInfo,
+    MaterialDetailRequest,
+    MaterialDetailResponse,
+    CategoryListResponse,
+    CategoryInfo,
+)
+from src.api.schemas.simulation_schemas import (
+    MaterialChange,
+    RT60MaterialChangeRequest,
+    RT60MaterialChangeResponse,
+    ChangeEffect,
+    ElementModification,
+    HVACPathModificationRequest,
+    HVACPathModificationResponse,
+    ElementModificationEffect,
+    ElementInsertion,
+    PathElementChangeRequest,
+    ScenarioDefinition,
+    ScenarioComparisonRequest,
+    ScenarioComparisonResponse,
+    ScenarioResult,
+)
+
+__all__ = [
+    # Common
+    'OCTAVE_BANDS_6',
+    'OCTAVE_BANDS_8',
+    'OctaveBandData6',
+    'OctaveBandData8',
+    'APIError',
+    'ValidationError',
+    # RT60
+    'SurfaceDefinition',
+    'SurfaceAnalysis',
+    'RT60CalculationRequest',
+    'RT60CalculationResponse',
+    'RT60ComplianceRequest',
+    'RT60ComplianceResponse',
+    'FrequencyCompliance',
+    'MaterialRecommendationRequest',
+    'MaterialRecommendationResponse',
+    'TreatableSurface',
+    'MaterialSuggestion',
+    # HVAC
+    'PathElementInput',
+    'ReceiverRoomInput',
+    'ElementResult',
+    'HVACPathNoiseRequest',
+    'HVACPathNoiseResponse',
+    'CombinedReceiverNoiseRequest',
+    'CombinedReceiverNoiseResponse',
+    'PathContribution',
+    'NCComplianceRequest',
+    'NCComplianceResponse',
+    'FrequencyExceedance',
+    'ElementAttenuationRequest',
+    'ElementAttenuationResponse',
+    # Materials
+    'MaterialSearchRequest',
+    'MaterialSearchResponse',
+    'MaterialInfo',
+    'MaterialDetailRequest',
+    'MaterialDetailResponse',
+    'CategoryListResponse',
+    'CategoryInfo',
+    # Simulation
+    'MaterialChange',
+    'RT60MaterialChangeRequest',
+    'RT60MaterialChangeResponse',
+    'ChangeEffect',
+    'ElementModification',
+    'HVACPathModificationRequest',
+    'HVACPathModificationResponse',
+    'ElementModificationEffect',
+    'ElementInsertion',
+    'PathElementChangeRequest',
+    'ScenarioDefinition',
+    'ScenarioComparisonRequest',
+    'ScenarioComparisonResponse',
+    'ScenarioResult',
+]
