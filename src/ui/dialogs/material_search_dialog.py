@@ -274,6 +274,9 @@ class MaterialSearchDialog(QDialog):
             self.update_comparison()
             self.apply_btn.setEnabled(len(self.selected_materials) > 0)
             
+            # Update frequency graph with projected improvement
+            self._update_graph_with_selected_materials()
+
     def prompt_surface_type(self):
         """Prompt user to select surface type for material"""
         from PySide6.QtWidgets import QInputDialog
@@ -337,6 +340,14 @@ class MaterialSearchDialog(QDialog):
             
         self.analysis_results = results
         self.display_treatment_results(results)
+        
+        # Update the frequency graph with analysis data
+        gap_analysis = results.get('gap_analysis', {})
+        if gap_analysis.get('current_rt60'):
+            self.material_graph.frequency_widget.set_rt60_data(
+                gap_analysis['current_rt60'],
+                self.space_data.get('target_rt60', 0.6)
+            )
         
     def display_treatment_results(self, results):
         """Display treatment analysis results"""
@@ -453,6 +464,52 @@ class MaterialSearchDialog(QDialog):
             html += "<p><i>Run treatment analysis to see detailed performance predictions</i></p>"
         
         self.comparison_results.setHtml(html)
+    
+    def _get_surface_area(self, surface_type):
+        """Get the available area for a given surface type"""
+        if surface_type == 'ceiling':
+            return self.space_data.get('ceiling_area', self.space_data.get('floor_area', 500))
+        elif surface_type == 'floor':
+            return self.space_data.get('floor_area', 500)
+        else:  # wall
+            return self.space_data.get('wall_area', self.space_data.get('floor_area', 500) * 2)
+    
+    def _update_graph_with_selected_materials(self):
+        """Update graph with projected RT60 based on selected materials"""
+        if not self.selected_materials or not self.space_data:
+            # Clear projected if no materials selected
+            self.material_graph.frequency_widget.clear_projected()
+            return
+            
+        try:
+            analyzer = TreatmentAnalyzer()
+            
+            # Build material changes dict
+            material_changes = {}
+            for surface_type, material in self.selected_materials.items():
+                area = self._get_surface_area(surface_type)
+                material_changes[surface_type] = {
+                    'material_key': material.get('key', ''),
+                    'area': area
+                }
+            
+            # Simulate changes
+            simulation = analyzer.simulate_material_changes(self.space_data, material_changes)
+            
+            # Extract projected RT60 values
+            projected_rt60 = {}
+            for freq, data in simulation.get('frequency_improvements', {}).items():
+                projected_rt60[freq] = data.get('modified_rt60', 0)
+            
+            # Update graph with projected values
+            if projected_rt60:
+                self.material_graph.frequency_widget.set_projected_rt60(projected_rt60)
+            else:
+                self.material_graph.frequency_widget.clear_projected()
+                
+        except Exception as e:
+            print(f"Error updating projected RT60: {e}")
+            self.material_graph.frequency_widget.clear_projected()
         
     def apply_materials(self):
         """Apply selected materials"""
@@ -469,7 +526,12 @@ class MaterialSearchDialog(QDialog):
             for surface_type, material in self.selected_materials.items():
                 self.material_applied.emit(material, surface_type)
             
-            self.accept()
+            # Show success message instead of closing
+            QMessageBox.information(self, "Materials Applied", 
+                f"Successfully applied {len(self.selected_materials)} material(s) to the space.")
+            
+            # Update the graph with projected RT60 after applying
+            self._update_graph_with_selected_materials()
 
 
 # Convenience function to show dialog

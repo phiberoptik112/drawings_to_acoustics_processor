@@ -96,6 +96,7 @@ class HVACPathCalculator:
                     hvac_comp = HVACComponent(
                         project_id=project_id,
                         drawing_id=comp_data.get('drawing_id', 0),
+                        page_number=comp_data.get('page_number', 1),  # Store page for multi-page PDFs
                         name=f"{component_type.upper()}-{len(db_components)+1}",
                         component_type=component_type,
                         x_position=comp_data.get('x', 0),
@@ -108,6 +109,12 @@ class HVACPathCalculator:
                     )
                     session.add(hvac_comp)
                     session.flush()  # Get ID
+                    # Link back to drawing component data so overlays get DB IDs
+                    try:
+                        comp_data['db_component_id'] = hvac_comp.id
+                        comp_data['hvac_component_id'] = hvac_comp.id
+                    except Exception:
+                        pass
                     
                     # Auto-link with mechanical unit if possible
                     try:
@@ -240,6 +247,12 @@ class HVACPathCalculator:
                             flow_rate=segment_cfm
                         )
                         session.add(hvac_segment)
+                        session.flush()  # Ensure ID is available for linking
+                        try:
+                            seg_data['db_segment_id'] = hvac_segment.id
+                            seg_data['hvac_segment_id'] = hvac_segment.id
+                        except Exception:
+                            pass
                         created_segments.append(hvac_segment)
                     else:
                         # Fallback: if neither endpoint matched by exact equality, try position/type match
@@ -277,6 +290,12 @@ class HVACPathCalculator:
                                 flow_rate=segment_cfm
                             )
                             session.add(hvac_segment)
+                            session.flush()  # Ensure ID is available for linking
+                            try:
+                                seg_data['db_segment_id'] = hvac_segment.id
+                                seg_data['hvac_segment_id'] = hvac_segment.id
+                            except Exception:
+                                pass
                             created_segments.append(hvac_segment)
                         else:
                             if self.debug_export_enabled:
@@ -593,7 +612,14 @@ class HVACPathCalculator:
                 print(f"DEBUG_PDB: Number of segments: {len(segments) if segments else 0}")
                 try:
                     preferred_source_id = getattr(hvac_path, 'primary_source_id', None)
-                    segments = self.order_segments_for_path(list(segments), preferred_source_id)
+                    # Get explicit element sequence if available
+                    element_sequence = None
+                    if hasattr(hvac_path, 'get_element_sequence'):
+                        try:
+                            element_sequence = hvac_path.get_element_sequence()
+                        except Exception:
+                            pass
+                    segments = self.order_segments_for_path(list(segments), preferred_source_id, element_sequence)
                 except Exception as _e:
                     if self.debug_export_enabled:
                         print(f"DEBUG_PDB: Using stored segment order; connectivity ordering failed: {_e}")
@@ -632,10 +658,17 @@ class HVACPathCalculator:
                 print(f"DEBUG_LEGACY: No segments found, returning None")
                 return None
             
-            # Ensure segments are ordered by actual connectivity
+            # Ensure segments are ordered by actual connectivity or explicit sequence
             try:
                 preferred_source_id = getattr(hvac_path, 'primary_source_id', None)
-                segments = self.order_segments_for_path(list(segments), preferred_source_id)
+                # Get explicit element sequence if available
+                element_sequence = None
+                if hasattr(hvac_path, 'get_element_sequence'):
+                    try:
+                        element_sequence = hvac_path.get_element_sequence()
+                    except Exception:
+                        pass
+                segments = self.order_segments_for_path(list(segments), preferred_source_id, element_sequence)
             except Exception as e:
                 if self.debug_export_enabled:
                     print(f"DEBUG: Using stored segment order; connectivity ordering failed: {e}")
@@ -1521,15 +1554,26 @@ class HVACPathCalculator:
             
             return None
 
-    def order_segments_for_path(self, segments: List[HVACSegment], preferred_source_id: Optional[int] = None) -> List[HVACSegment]:
+    def order_segments_for_path(self, segments: List[HVACSegment], preferred_source_id: Optional[int] = None, 
+                                  element_sequence: Optional[List[dict]] = None) -> List[HVACSegment]:
         """Unified segment ordering used by all components
         
         Orders segments by walking the chain from source to terminal.
+        - If an explicit element_sequence is provided, use it to determine segment order.
         - If a preferred source component id is provided and exists in the chain, start from there.
         - Otherwise, start from a component that appears as a 'from' but never as a 'to'.
         - Fall back to existing segment_order if traversal fails.
         
         This is the single source of truth for segment ordering across the application.
+        
+        Args:
+            segments: List of HVACSegment objects to order
+            preferred_source_id: Optional preferred starting component ID
+            element_sequence: Optional explicit element sequence from path.get_element_sequence()
+                             Format: [{"type": "component", "id": 1}, {"type": "segment", "id": 1}, ...]
+        
+        Returns:
+            List of segments in traversal order
         """
         import os
         
@@ -1542,12 +1586,42 @@ class HVACPathCalculator:
             if debug_enabled:
                 print(f"DEBUG: Starting segment ordering for {len(segments)} segments")
                 print(f"DEBUG: Preferred source component ID: {preferred_source_id}")
+                print(f"DEBUG: Explicit element sequence provided: {element_sequence is not None}")
                 for i, seg in enumerate(segments):
                     seg_id = getattr(seg, 'id', f'stub_{i}')
                     from_id = getattr(seg, 'from_component_id', None)
                     to_id = getattr(seg, 'to_component_id', None)
                     order = getattr(seg, 'segment_order', 0)
                     print(f"DEBUG: Segment {seg_id}: {from_id} -> {to_id} (order: {order})")
+
+            # If an explicit element sequence is provided, use it
+            if element_sequence:
+                segment_ids_in_order = [
+                    item['id'] for item in element_sequence 
+                    if item.get('type') == 'segment' and item.get('id') is not None
+                ]
+                
+                if segment_ids_in_order:
+                    # Build a map of segment_id -> segment
+                    segment_map = {getattr(seg, 'id', None): seg for seg in segments}
+                    
+                    ordered = []
+                    for seg_id in segment_ids_in_order:
+                        if seg_id in segment_map:
+                            ordered.append(segment_map[seg_id])
+                    
+                    # Add any remaining segments not in the sequence
+                    for seg in segments:
+                        if seg not in ordered:
+                            ordered.append(seg)
+                    
+                    if debug_enabled:
+                        print(f"DEBUG: Used explicit element sequence, ordered {len(ordered)} segments")
+                        for i, seg in enumerate(ordered):
+                            seg_id = getattr(seg, 'id', f'stub_{i}')
+                            print(f"DEBUG: Position {i+1}: Segment {seg_id}")
+                    
+                    return ordered
 
             # Index mappings
             from_map = {}

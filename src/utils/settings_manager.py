@@ -15,6 +15,7 @@ class SettingsManager:
     # Settings keys
     KEY_DATABASE_CUSTOM_PATH = "database/custom_path"
     KEY_DATABASE_USE_CUSTOM_PATH = "database/use_custom_path"
+    KEY_HELP_PANEL_AUTO_HIDE = "help/auto_hide"
     
     def __init__(self):
         """Initialize the settings manager"""
@@ -64,6 +65,25 @@ class SettingsManager:
             bool: True if custom path is set, False otherwise
         """
         return self.settings.value(self.KEY_DATABASE_USE_CUSTOM_PATH, False, type=bool)
+    
+    def get_help_panel_auto_hide(self):
+        """
+        Get the help panel auto-hide preference.
+        
+        Returns:
+            bool: True if help panels should start collapsed, False otherwise
+        """
+        return self.settings.value(self.KEY_HELP_PANEL_AUTO_HIDE, False, type=bool)
+    
+    def set_help_panel_auto_hide(self, auto_hide: bool):
+        """
+        Set the help panel auto-hide preference.
+        
+        Args:
+            auto_hide: True to start help panels collapsed, False to start expanded
+        """
+        self.settings.setValue(self.KEY_HELP_PANEL_AUTO_HIDE, auto_hide)
+        self.settings.sync()
 
 
 # Global instance

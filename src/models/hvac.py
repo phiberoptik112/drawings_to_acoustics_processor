@@ -2,9 +2,11 @@
 HVAC models - components, paths, and segments for mechanical noise analysis
 """
 
+import json
 from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Float, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
+from typing import List, Dict, Optional
 from .database import Base
 
 
@@ -16,11 +18,15 @@ class HVACComponent(Base):
     project_id = Column(Integer, ForeignKey('projects.id'), nullable=False)
     drawing_id = Column(Integer, ForeignKey('drawings.id'), nullable=False)
     name = Column(String(255), nullable=False)
-    component_type = Column(String(50), nullable=False)  # 'ahu', 'vav', 'diffuser', etc.
+    component_type = Column(String(50), nullable=False)  # 'ahu', 'vav', 'diffuser', 'custom', etc.
+    custom_type_label = Column(String(100))  # User-defined label when component_type='custom'
     
     # Position on drawing (pixels)
     x_position = Column(Float, nullable=False)
     y_position = Column(Float, nullable=False)
+    
+    # Page number for multi-page PDFs (nullable for backward compatibility with existing data)
+    page_number = Column(Integer, default=1)
     
     # Acoustic properties
     noise_level = Column(Float)  # Base noise level in dB(A)
@@ -63,8 +69,10 @@ class HVACComponent(Base):
             'id': self.id,
             'project_id': self.project_id,
             'drawing_id': self.drawing_id,
+            'page_number': self.page_number,
             'name': self.name,
             'component_type': self.component_type,
+            'custom_type_label': self.custom_type_label,
             'x_position': self.x_position,
             'y_position': self.y_position,
             'noise_level': self.noise_level,
@@ -110,6 +118,10 @@ class HVACPath(Base):
     # Receiver analysis preferences (per-path)
     receiver_distance_ft = Column(Float)  # Preferred receiver distance (ft) for Eq27
     receiver_method = Column(String(50))  # 'single' or 'distributed'
+    
+    # Element sequence - JSON storing the ordered sequence of components and segments
+    # Format: [{"type": "component", "id": 1}, {"type": "segment", "id": 1}, {"type": "component", "id": 2}, ...]
+    element_sequence = Column(Text, nullable=True)
     
     # Relationships
     project = relationship("Project", back_populates="hvac_paths")
@@ -206,7 +218,157 @@ class HVACPath(Base):
             'modified_date': self.modified_date.isoformat() if self.modified_date else None,
             'receiver_distance_ft': self.receiver_distance_ft,
             'receiver_method': self.receiver_method,
+            'element_sequence': self.element_sequence,
         }
+
+    def get_element_sequence(self) -> List[Dict]:
+        """
+        Returns the ordered element sequence.
+        If an explicit sequence is stored, returns it.
+        Otherwise, computes the sequence from segment connectivity.
+        """
+        if self.element_sequence:
+            try:
+                return json.loads(self.element_sequence)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        return self._compute_sequence_from_segments()
+
+    def set_element_sequence(self, sequence: List[Dict]):
+        """
+        Sets the element sequence from a list of dictionaries.
+        Each dict should have 'type' ('component' or 'segment') and 'id' keys.
+        """
+        if sequence:
+            self.element_sequence = json.dumps(sequence)
+        else:
+            self.element_sequence = None
+
+    def _compute_sequence_from_segments(self) -> List[Dict]:
+        """
+        Builds element sequence from segment connectivity.
+        Returns a list alternating between components and segments:
+        [component, segment, component, segment, component, ...]
+        """
+        if not self.segments:
+            return []
+        
+        sequence = []
+        ordered_segments = sorted(self.segments, key=lambda s: s.segment_order or 0)
+        
+        seen_component_ids = set()
+        
+        for i, seg in enumerate(ordered_segments):
+            # Add the from_component if not already added
+            if seg.from_component_id and seg.from_component_id not in seen_component_ids:
+                sequence.append({"type": "component", "id": seg.from_component_id})
+                seen_component_ids.add(seg.from_component_id)
+            
+            # Add the segment
+            sequence.append({"type": "segment", "id": seg.id})
+            
+            # Add the to_component if not already added
+            if seg.to_component_id and seg.to_component_id not in seen_component_ids:
+                sequence.append({"type": "component", "id": seg.to_component_id})
+                seen_component_ids.add(seg.to_component_id)
+        
+        return sequence
+
+    def get_ordered_components(self) -> List['HVACComponent']:
+        """
+        Returns components in their sequence order.
+        Uses explicit sequence if available, otherwise computes from segments.
+        """
+        sequence = self.get_element_sequence()
+        component_ids = [item['id'] for item in sequence if item.get('type') == 'component']
+        
+        # Build a map of component_id -> component for efficient lookup
+        component_map = {}
+        for seg in self.segments:
+            if seg.from_component and seg.from_component.id not in component_map:
+                component_map[seg.from_component.id] = seg.from_component
+            if seg.to_component and seg.to_component.id not in component_map:
+                component_map[seg.to_component.id] = seg.to_component
+        
+        # Return components in sequence order
+        return [component_map[cid] for cid in component_ids if cid in component_map]
+
+    def get_ordered_segments(self) -> List['HVACSegment']:
+        """
+        Returns segments in their sequence order.
+        Uses explicit sequence if available, otherwise uses segment_order.
+        """
+        sequence = self.get_element_sequence()
+        segment_ids = [item['id'] for item in sequence if item.get('type') == 'segment']
+        
+        if not segment_ids:
+            # Fall back to segment_order
+            return sorted(self.segments, key=lambda s: s.segment_order or 0)
+        
+        # Build a map of segment_id -> segment for efficient lookup
+        segment_map = {seg.id: seg for seg in self.segments}
+        
+        # Return segments in sequence order
+        return [segment_map[sid] for sid in segment_ids if sid in segment_map]
+
+    def update_sequence_from_segments(self):
+        """
+        Recomputes and saves the element sequence from current segment connectivity.
+        Call this after modifying segments to keep the sequence in sync.
+        """
+        sequence = self._compute_sequence_from_segments()
+        self.set_element_sequence(sequence)
+
+    def reorder_element(self, element_type: str, element_id: int, new_position: int) -> bool:
+        """
+        Moves an element to a new position in the sequence.
+        Returns True if successful, False if the move would break connectivity.
+        
+        Note: For maintaining connectivity, components should stay adjacent to their
+        connected segments. This method performs basic validation.
+        """
+        sequence = self.get_element_sequence()
+        
+        # Find current position
+        current_pos = None
+        for i, item in enumerate(sequence):
+            if item.get('type') == element_type and item.get('id') == element_id:
+                current_pos = i
+                break
+        
+        if current_pos is None:
+            return False
+        
+        # Remove from current position
+        item = sequence.pop(current_pos)
+        
+        # Adjust new_position if needed after removal
+        if new_position > current_pos:
+            new_position -= 1
+        
+        # Clamp to valid range
+        new_position = max(0, min(len(sequence), new_position))
+        
+        # Insert at new position
+        sequence.insert(new_position, item)
+        
+        # Save the updated sequence
+        self.set_element_sequence(sequence)
+        return True
+
+    def swap_elements(self, pos1: int, pos2: int) -> bool:
+        """
+        Swaps two elements in the sequence by position.
+        Returns True if successful.
+        """
+        sequence = self.get_element_sequence()
+        
+        if pos1 < 0 or pos1 >= len(sequence) or pos2 < 0 or pos2 >= len(sequence):
+            return False
+        
+        sequence[pos1], sequence[pos2] = sequence[pos2], sequence[pos1]
+        self.set_element_sequence(sequence)
+        return True
 
 
 class HVACSegment(Base):

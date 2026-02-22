@@ -52,9 +52,11 @@ from models.mechanical import MechanicalUnit, NoiseSource
 from models.hvac import SilencerProduct
 from models.rt60_models import AcousticMaterial, SurfaceCategory, RoomSurfaceInstance
 from calculations.hvac_constants import is_valid_cfm_value
+from help import HelpMixin
+from utils.settings_manager import get_settings_manager
 
 
-class ComponentLibraryDialog(QDialog):
+class ComponentLibraryDialog(HelpMixin, QDialog):
     """Project-level component library management dialog."""
     
     # Signal emitted when library data changes (so parent can refresh if needed)
@@ -176,21 +178,20 @@ class ComponentLibraryDialog(QDialog):
         self.mechanical_list.itemSelectionChanged.connect(self._toggle_edit_delete_buttons)
 
         mech_btns = QHBoxLayout()
-        self.import_btn = QPushButton("Import Mechanical Schedule from Image")
-        self.import_btn.clicked.connect(self.import_mechanical_schedule_from_image)
-        self.import_pdf_btn = QPushButton("Import Mechanical Schedule from PDF")
-        self.import_pdf_btn.clicked.connect(self.import_mechanical_schedule_from_pdf)
-        self.manual_add_btn = QPushButton("Manual Component Add")
+        # New unified import wizard button
+        self.import_wizard_btn = QPushButton("Import Schedule Wizard...")
+        self.import_wizard_btn.setToolTip("Import mechanical schedules from images or PDFs with guided wizard")
+        self.import_wizard_btn.clicked.connect(self.open_import_wizard)
+        self.manual_add_btn = QPushButton("Manual Add")
         self.manual_add_btn.setToolTip("Manually add a mechanical component with octave-band data")
         self.manual_add_btn.clicked.connect(self.manual_add_component)
-        self.edit_btn = QPushButton("Edit Entry")
+        self.edit_btn = QPushButton("Edit")
         self.edit_btn.setEnabled(False)
         self.edit_btn.clicked.connect(self.edit_selected_mechanical_unit)
-        self.delete_btn = QPushButton("Delete Entry")
+        self.delete_btn = QPushButton("Delete")
         self.delete_btn.setEnabled(False)
         self.delete_btn.clicked.connect(self.delete_selected_mechanical_unit)
-        mech_btns.addWidget(self.import_btn)
-        mech_btns.addWidget(self.import_pdf_btn)
+        mech_btns.addWidget(self.import_wizard_btn)
         mech_btns.addWidget(self.manual_add_btn)
         mech_btns.addStretch()
         mech_btns.addWidget(self.edit_btn)
@@ -286,7 +287,21 @@ class ComponentLibraryDialog(QDialog):
         tabs.addTab(silencer_tab, "Silencers")
         tabs.addTab(acoustic_tab, "Acoustic Treatment")
 
-        layout.addWidget(tabs, 1)
+        # Create main splitter for tabs and help panel
+        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.addWidget(tabs)
+        
+        # Help panel - collapsible right side
+        self.help_panel = self.setup_help_panel("component_library")
+        main_splitter.addWidget(self.help_panel)
+        
+        # Apply auto-hide setting
+        if get_settings_manager().get_help_panel_auto_hide():
+            self.help_panel.collapse()
+        
+        main_splitter.setSizes([800, 100])
+        
+        layout.addWidget(main_splitter, 1)
 
         # Close/Save buttons
         close_btns = QHBoxLayout()
@@ -825,7 +840,28 @@ class ComponentLibraryDialog(QDialog):
         self.edit_btn.setEnabled(has_sel)
         self.delete_btn.setEnabled(has_sel)
 
-    # Import workflow
+    # Import workflow - New unified wizard
+    def open_import_wizard(self) -> None:
+        """Open the mechanical schedule import wizard"""
+        try:
+            from ui.dialogs.mechanical_schedule_import_wizard import MechanicalScheduleImportWizard
+            
+            wizard = MechanicalScheduleImportWizard(self, project_id=self.project_id)
+            wizard.import_completed.connect(self._on_wizard_import_completed)
+            
+            if wizard.exec() == QDialog.Accepted:
+                self.refresh_lists()
+                self.library_updated.emit()
+        except Exception as e:
+            QMessageBox.critical(self, "Import Wizard Error", f"Failed to open import wizard:\n{e}")
+    
+    def _on_wizard_import_completed(self, count: int):
+        """Handle wizard import completion"""
+        QMessageBox.information(self, "Import Complete", f"Successfully imported {count} mechanical units.")
+        self.refresh_lists()
+        self.library_updated.emit()
+
+    # Legacy import methods (kept for backward compatibility, not in UI)
     def import_mechanical_schedule_from_image(self) -> None:
         """Run OCR pipeline on an image and import resulting CSV into MechanicalUnit."""
         # Pick image

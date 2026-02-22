@@ -7,7 +7,8 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QTextEdit, QPushButton, QComboBox,
                              QFormLayout, QMessageBox, QTabWidget, QWidget,
                              QListWidget, QListWidgetItem, QGroupBox, QCheckBox,
-                             QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView)
+                             QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
+                             QSplitter)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 
@@ -15,9 +16,11 @@ from models import get_session, Project
 from models.drawing_sets import DrawingSet
 from models.drawing import Drawing
 from sqlalchemy.orm import selectinload
+from help import HelpMixin
+from utils.settings_manager import get_settings_manager
 
 
-class ProjectSettingsDialog(QDialog):
+class ProjectSettingsDialog(HelpMixin, QDialog):
     """Dialog for editing project settings and managing drawing sets"""
     
     def __init__(self, parent, project_id: int):
@@ -134,7 +137,21 @@ class ProjectSettingsDialog(QDialog):
         drawing_sets_tab = self.create_drawing_sets_tab()
         tabs.addTab(drawing_sets_tab, "Drawing Sets")
         
-        layout.addWidget(tabs)
+        # Create splitter for tabs and help panel
+        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.addWidget(tabs)
+        
+        # Help panel - collapsible right side
+        self.help_panel = self.setup_help_panel("project_settings")
+        main_splitter.addWidget(self.help_panel)
+        
+        # Apply auto-hide setting
+        if get_settings_manager().get_help_panel_auto_hide():
+            self.help_panel.collapse()
+        
+        main_splitter.setSizes([500, 200])
+        
+        layout.addWidget(main_splitter)
         
         # Button layout
         button_layout = QHBoxLayout()

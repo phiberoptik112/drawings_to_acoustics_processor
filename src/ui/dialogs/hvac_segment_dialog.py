@@ -18,6 +18,8 @@ from models.hvac import HVACSegment, SegmentFitting
 from data.components import STANDARD_FITTINGS
 from calculations.hvac_path_calculator import HVACPathCalculator
 from calculations.hvac_noise_engine import HVACNoiseEngine
+from help import HelpMixin
+from utils.settings_manager import get_settings_manager
 
 
 class FittingTableWidget(QTableWidget):
@@ -101,7 +103,7 @@ class FittingTableWidget(QTableWidget):
             )
 
 
-class HVACSegmentDialog(QDialog):
+class HVACSegmentDialog(HelpMixin, QDialog):
     """Dialog for configuring HVAC segments with fittings"""
     
     segment_saved = Signal(HVACSegment)  # Emits saved segment
@@ -231,7 +233,22 @@ class HVACSegmentDialog(QDialog):
         v_splitter.addWidget(downstream_panel)
         
         v_splitter.setSizes([220, 380, 220])
-        layout.addWidget(v_splitter)
+        
+        # Create horizontal splitter for main content and help panel
+        h_splitter = QSplitter(Qt.Horizontal)
+        h_splitter.addWidget(v_splitter)
+        
+        # Help panel - collapsible right side
+        self.help_panel = self.setup_help_panel("hvac_segment")
+        h_splitter.addWidget(self.help_panel)
+        
+        # Apply auto-hide setting
+        if get_settings_manager().get_help_panel_auto_hide():
+            self.help_panel.collapse()
+        
+        h_splitter.setSizes([550, 150])
+        
+        layout.addWidget(h_splitter)
         layout.setStretch(0, 0)
         layout.setStretch(1, 1)
         

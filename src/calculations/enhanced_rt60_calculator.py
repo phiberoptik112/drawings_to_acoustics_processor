@@ -6,10 +6,25 @@ import math
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
-from data.enhanced_materials import (
-    ENHANCED_MATERIALS, MATERIALS_WITH_NRC, OCTAVE_BANDS, 
-    ROOM_TYPE_PRESETS, get_material_info
-)
+try:
+    from ..data.enhanced_materials import (
+        ENHANCED_MATERIALS, MATERIALS_WITH_NRC, OCTAVE_BANDS,
+        ROOM_TYPE_PRESETS, get_material_info
+    )
+except ImportError:
+    try:
+        from src.data.enhanced_materials import (
+            ENHANCED_MATERIALS, MATERIALS_WITH_NRC, OCTAVE_BANDS,
+            ROOM_TYPE_PRESETS, get_material_info
+        )
+    except ImportError:
+        # Fallback minimal definitions
+        ENHANCED_MATERIALS = {}
+        MATERIALS_WITH_NRC = {}
+        OCTAVE_BANDS = [125, 250, 500, 1000, 2000, 4000]
+        ROOM_TYPE_PRESETS = {}
+        def get_material_info(key):
+            return None
 
 
 class EnhancedRT60Calculator:

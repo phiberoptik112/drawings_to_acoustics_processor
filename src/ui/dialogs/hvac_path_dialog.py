@@ -22,6 +22,9 @@ from .hvac_component_dialog import HVACComponentDialog
 from .component_library_dialog import ComponentLibraryDialog
 from .hvac_receiver_dialog import HVACReceiverDialog
 from .hvac_segment_dialog import HVACSegmentDialog
+from help import HelpMixin
+from utils.settings_manager import get_settings_manager
+from ui.widgets.path_sequence_widget import PathSequenceWidget
 
 
 class ComponentListWidget(QListWidget):
@@ -111,7 +114,7 @@ class PathDiagramText(QPlainTextEdit):
         super().mousePressEvent(event)
 
 
-class HVACPathDialog(QDialog):
+class HVACPathDialog(HelpMixin, QDialog):
     """Dialog for creating and managing HVAC paths"""
     
     path_saved = Signal(HVACPath)  # Emits saved path
@@ -266,6 +269,10 @@ class HVACPathDialog(QDialog):
         segments_tab = self.create_segments_tab()
         self.segments_tab_index = self.tabs.addTab(segments_tab, "Segments")
 
+        # Path Sequence tab
+        sequence_tab = self.create_sequence_tab()
+        self.sequence_tab_index = self.tabs.addTab(sequence_tab, "Path Sequence")
+
         # Analysis tab
         analysis_tab = self.create_analysis_tab()
         self.analysis_tab_index = self.tabs.addTab(analysis_tab, "Analysis")
@@ -281,10 +288,20 @@ class HVACPathDialog(QDialog):
         # Right side: NC summary + ASCII diagram panel
         diagram_panel = self.create_ascii_diagram_panel()
         self.main_splitter.addWidget(diagram_panel)
-        self.main_splitter.setSizes([650, 250])
+        
+        # Help panel - collapsible right side
+        self.help_panel = self.setup_help_panel("hvac_path")
+        self.main_splitter.addWidget(self.help_panel)
+        
+        # Apply auto-hide setting
+        if get_settings_manager().get_help_panel_auto_hide():
+            self.help_panel.collapse()
+        
+        self.main_splitter.setSizes([550, 200, 150])
         self.main_splitter.setChildrenCollapsible(False)
         self.main_splitter.setStretchFactor(0, 3)
         self.main_splitter.setStretchFactor(1, 2)
+        self.main_splitter.setStretchFactor(2, 0)
 
         layout.addWidget(self.main_splitter)
         # Give the splitter all extra vertical space
@@ -529,6 +546,134 @@ class HVACPathDialog(QDialog):
         
         widget.setLayout(layout)
         return widget
+
+    def create_sequence_tab(self):
+        """Create the path sequence tab for viewing and reordering elements"""
+        widget = QWidget()
+        layout = QVBoxLayout()
+        
+        # Info label
+        info_label = QLabel(
+            "This tab shows the ordered sequence of components and segments in the path. "
+            "Drag items or use the buttons to reorder elements."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #666; margin-bottom: 10px;")
+        layout.addWidget(info_label)
+        
+        # Path sequence widget
+        self.path_sequence_widget = PathSequenceWidget()
+        self.path_sequence_widget.sequence_changed.connect(self._on_sequence_changed)
+        self.path_sequence_widget.element_selected.connect(self._on_sequence_element_selected)
+        self.path_sequence_widget.element_double_clicked.connect(self._on_sequence_element_double_clicked)
+        layout.addWidget(self.path_sequence_widget, 1)
+        
+        widget.setLayout(layout)
+        return widget
+
+    def _on_sequence_changed(self, sequence):
+        """Handle sequence changes from the path sequence widget"""
+        # Store the new sequence for saving
+        self._current_element_sequence = sequence
+        
+        # Reorder segments based on the new sequence
+        segment_order = [item['id'] for item in sequence if item.get('type') == 'segment']
+        
+        # Create a new ordered list of segments
+        segment_map = {getattr(seg, 'id', i): seg for i, seg in enumerate(self.segments)}
+        new_segments = []
+        for seg_id in segment_order:
+            if seg_id in segment_map:
+                seg = segment_map[seg_id]
+                new_segments.append(seg)
+        
+        # Add any remaining segments not in the sequence
+        for seg in self.segments:
+            if seg not in new_segments:
+                new_segments.append(seg)
+        
+        self.segments = new_segments
+        
+        # Update the segment order attribute on each segment
+        for i, seg in enumerate(self.segments, start=1):
+            try:
+                setattr(seg, 'segment_order', i)
+            except Exception:
+                pass
+        
+        # Update other UI elements
+        self.update_segment_list()
+        self.update_path_diagram()
+        self.update_summary()
+
+    def _on_sequence_element_selected(self, element_type, element_id):
+        """Handle element selection in sequence widget"""
+        if element_type == 'component':
+            # Find and select the component in the component list
+            for i in range(self.component_list.count()):
+                item = self.component_list.item(i)
+                component = item.data(Qt.UserRole)
+                if component and getattr(component, 'id', None) == element_id:
+                    self.component_list.setCurrentItem(item)
+                    break
+        elif element_type == 'segment':
+            # Find and select the segment in the segment list
+            for i in range(self.segment_list.count()):
+                item = self.segment_list.item(i)
+                segment_id = item.data(Qt.UserRole)
+                if segment_id == element_id:
+                    self.segment_list.setCurrentItem(item)
+                    break
+
+    def _on_sequence_element_double_clicked(self, element_type, element_id):
+        """Handle element double-click in sequence widget to open edit dialog"""
+        if element_type == 'component':
+            # Find the component and open edit dialog
+            for comp in self.components:
+                if getattr(comp, 'id', None) == element_id:
+                    self.component_list.component_double_clicked.emit(comp)
+                    break
+        elif element_type == 'segment':
+            # Find the segment and open edit dialog
+            for seg in self.segments:
+                if getattr(seg, 'id', None) == element_id:
+                    self.segment_list.segment_double_clicked.emit(seg)
+                    break
+
+    def update_sequence_widget(self):
+        """Update the path sequence widget with current components and segments"""
+        if not hasattr(self, 'path_sequence_widget'):
+            return
+        
+        # Convert components to dict format
+        components_data = []
+        for comp in self.components:
+            comp_dict = {
+                'id': getattr(comp, 'id', None),
+                'name': getattr(comp, 'name', 'Unknown'),
+                'component_type': getattr(comp, 'component_type', 'unknown'),
+                'noise_level': getattr(comp, 'noise_level', None),
+            }
+            components_data.append(comp_dict)
+        
+        # Convert segments to dict format
+        segments_data = []
+        for seg in self.segments:
+            seg_dict = {
+                'id': getattr(seg, 'id', None),
+                'from_component_id': getattr(seg, 'from_component_id', None),
+                'to_component_id': getattr(seg, 'to_component_id', None),
+                'length': getattr(seg, 'length', 0),
+                'duct_shape': getattr(seg, 'duct_shape', 'rectangular'),
+                'segment_order': getattr(seg, 'segment_order', 0),
+            }
+            segments_data.append(seg_dict)
+        
+        # Get existing sequence if we have one stored
+        sequence = getattr(self, '_current_element_sequence', None)
+        
+        # Set data in the widget
+        self.path_sequence_widget.set_data(components_data, segments_data, sequence)
         
     def create_analysis_tab(self):
         """Create the analysis tab"""
@@ -916,6 +1061,18 @@ class HVACPathDialog(QDialog):
                         seen_ids.add(cid)
             self.components = ordered_components
         
+        # Load element sequence if available
+        try:
+            if hasattr(self.path, 'get_element_sequence'):
+                self._current_element_sequence = self.path.get_element_sequence()
+            elif hasattr(self.path, 'element_sequence') and self.path.element_sequence:
+                import json
+                self._current_element_sequence = json.loads(self.path.element_sequence)
+            else:
+                self._current_element_sequence = None
+        except Exception:
+            self._current_element_sequence = None
+        
         self.update_component_list()
         self.update_segment_list()
         self.update_summary()
@@ -926,6 +1083,7 @@ class HVACPathDialog(QDialog):
         self.component_list.set_components(self.components)
         self.add_seg_btn.setEnabled(len(self.components) >= 2)
         self.update_path_diagram()
+        self.update_sequence_widget()
         # Auto-calc when enabled and path is minimally defined
         try:
             if getattr(self, 'auto_calculate_cb', None) and self.auto_calculate_cb.isChecked():
@@ -969,6 +1127,7 @@ class HVACPathDialog(QDialog):
         self._refresh_segments_if_needed()
         self.segment_list.set_segments(self.segments)
         self.update_path_diagram()
+        self.update_sequence_widget()
         # Auto-calc when enabled and path is minimally defined
         try:
             if getattr(self, 'auto_calculate_cb', None) and self.auto_calculate_cb.isChecked():
@@ -2116,6 +2275,19 @@ class HVACPathDialog(QDialog):
                         # Update drawing set
                         drawing_set_id = self.drawing_set_combo.currentData()
                         db_path.drawing_set_id = drawing_set_id
+                        
+                        # Save element sequence
+                        try:
+                            element_sequence = getattr(self, '_current_element_sequence', None)
+                            if element_sequence:
+                                db_path.set_element_sequence(element_sequence)
+                            else:
+                                db_path.update_sequence_from_segments()
+                        except Exception as seq_e:
+                            import os
+                            if os.environ.get('HVAC_DEBUG_EXPORT'):
+                                print(f"DEBUG: Failed to save element sequence from drawing: {seq_e}")
+                        
                         session.commit()
                         # Assign updated object back for emit
                         self.path = db_path
@@ -2176,6 +2348,19 @@ class HVACPathDialog(QDialog):
                             if os.environ.get('HVAC_DEBUG_EXPORT'):
                                 print(f"DEBUG_UI: Failed to update segment ordering on save: {seg_e}")
                         
+                        # Save element sequence if we have one
+                        try:
+                            element_sequence = getattr(self, '_current_element_sequence', None)
+                            if element_sequence:
+                                db_path.set_element_sequence(element_sequence)
+                            else:
+                                # Compute and save sequence from current state
+                                db_path.update_sequence_from_segments()
+                        except Exception as seq_e:
+                            import os
+                            if os.environ.get('HVAC_DEBUG_EXPORT'):
+                                print(f"DEBUG_UI: Failed to save element sequence: {seq_e}")
+                        
                         path = db_path
                         # Commit handled by context manager
                 else:
@@ -2224,6 +2409,7 @@ class HVACPathDialog(QDialog):
                                 print(f"DEBUG: Failed to order segments for save: {e}, using current order")
                         
                         # Create segments (persist new records based on ordered dialog segment stubs)
+                        created_segments = []
                         for i, segment in enumerate(ordered_segments):
                             seg = HVACSegment(
                                 hvac_path_id=path.id,
@@ -2237,6 +2423,24 @@ class HVACPathDialog(QDialog):
                                 duct_type=getattr(segment, 'duct_type', None) or 'sheet_metal',
                             )
                             session.add(seg)
+                            created_segments.append(seg)
+                        
+                        # Flush to get segment IDs
+                        session.flush()
+                        
+                        # Save element sequence based on created segments
+                        try:
+                            element_sequence = getattr(self, '_current_element_sequence', None)
+                            if element_sequence:
+                                path.set_element_sequence(element_sequence)
+                            else:
+                                # Compute sequence from newly created segments
+                                path.update_sequence_from_segments()
+                        except Exception as seq_e:
+                            import os
+                            if os.environ.get('HVAC_DEBUG_EXPORT'):
+                                print(f"DEBUG: Failed to save element sequence for new path: {seq_e}")
+                        
                         # Commit handled by context manager
                 
                 self.path = path

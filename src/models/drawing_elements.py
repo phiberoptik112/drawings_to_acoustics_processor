@@ -185,6 +185,22 @@ class DrawingElement(Base):
 			element.element_name = f"Segment {element_data.get('length_formatted', '')}"
 			element.end_x_position = element_data.get('end_x')
 			element.end_y_position = element_data.get('end_y')
+
+			# Persist stable endpoint IDs instead of embedding full component dicts.
+			# Back-compat: if old payloads include embedded component dicts, extract IDs from them.
+			from_comp = element_data.get('from_component') if isinstance(element_data.get('from_component'), dict) else None
+			to_comp = element_data.get('to_component') if isinstance(element_data.get('to_component'), dict) else None
+
+			from_element_id = element_data.get('from_element_id') or (from_comp.get('_element_id') if from_comp else None)
+			to_element_id = element_data.get('to_element_id') or (to_comp.get('_element_id') if to_comp else None)
+
+			from_db_component_id = element_data.get('from_db_component_id') or (
+				(from_comp.get('db_component_id') or from_comp.get('hvac_component_id')) if from_comp else None
+			)
+			to_db_component_id = element_data.get('to_db_component_id') or (
+				(to_comp.get('db_component_id') or to_comp.get('hvac_component_id')) if to_comp else None
+			)
+
 			element.properties = {
 				'start_x': element_data.get('start_x'),
 				'start_y': element_data.get('start_y'),
@@ -192,8 +208,10 @@ class DrawingElement(Base):
 				'end_y': element_data.get('end_y'),
 				'length_pixels': element_data.get('length_pixels'),
 				'length_formatted': element_data.get('length_formatted'),
-				'from_component': element_data.get('from_component'),
-				'to_component': element_data.get('to_component'),
+				'from_element_id': from_element_id,
+				'to_element_id': to_element_id,
+				'from_db_component_id': from_db_component_id,
+				'to_db_component_id': to_db_component_id,
 				'saved_zoom': saved_zoom
 			}
 		elif element_type == 'measurement':
@@ -239,6 +257,15 @@ class DrawingElementManager:
 						# Skip measurements if they're temporary
 						if element_type == 'measurements' and not element_data.get('persistent', True):
 							continue
+						
+						# Skip segments without path linkage - they are work-in-progress
+						# and should not be persisted until part of an HVAC path
+						if element_type == 'segments':
+							has_path = (element_data.get('hvac_path_id') or 
+							            element_data.get('db_path_id'))
+							if not has_path:
+								print(f"DEBUG: Skipping segment save - no path linkage")
+								continue
 							
 						# Create drawing element
 						drawing_element = DrawingElement.from_overlay_data(
@@ -259,7 +286,12 @@ class DrawingElementManager:
 			raise e
 			
 	def load_elements(self, drawing_id, page_number=1):
-		"""Load drawing elements for overlay reconstruction for a specific page"""
+		"""Load drawing elements for overlay reconstruction for a specific page.
+		
+		Note: Components and segments that have hvac_path_id set are SKIPPED here
+		because they are already managed through HVAC path registration. Loading them
+		here would create duplicates that don't respond to path visibility controls.
+		"""
 		try:
 			session = self.get_session()
 			
@@ -285,8 +317,15 @@ class DrawingElementManager:
 				elif element.element_type == 'polygon':
 					overlay_data['polygons'].append(element_dict)
 				elif element.element_type == 'component':
+					# Skip components that have hvac_path_id - they are managed by path registration
+					# Loading them here would create duplicates that don't respond to visibility controls
+					if element.hvac_path_id is not None:
+						continue
 					overlay_data['components'].append(element_dict)
 				elif element.element_type == 'segment':
+					# Skip segments that have hvac_path_id - they are managed by path registration
+					if element.hvac_path_id is not None:
+						continue
 					overlay_data['segments'].append(element_dict)
 				elif element.element_type == 'measurement':
 					overlay_data['measurements'].append(element_dict)
@@ -382,6 +421,7 @@ class DrawingElementManager:
 		Returns:
 			Dict with 'components' and 'segments' lists for overlay reconstruction
 		"""
+		session = None
 		try:
 			session = self.get_session()
 			
@@ -418,7 +458,8 @@ class DrawingElementManager:
 			return result
 			
 		except Exception as e:
-			session.close()
+			if session is not None:
+				session.close()
 			raise e
 	
 	def save_path_elements(self, drawing_id, project_id, hvac_path_id, components, segments, page_number=1):
@@ -438,6 +479,7 @@ class DrawingElementManager:
 		Returns:
 			Number of elements saved
 		"""
+		session = None
 		try:
 			session = self.get_session()
 			
@@ -475,8 +517,9 @@ class DrawingElementManager:
 			return elements_saved
 			
 		except Exception as e:
-			session.rollback()
-			session.close()
+			if session is not None:
+				session.rollback()
+				session.close()
 			raise e
 	
 	def delete_path_elements(self, hvac_path_id):
@@ -488,6 +531,7 @@ class DrawingElementManager:
 		Returns:
 			Number of elements deleted
 		"""
+		session = None
 		try:
 			session = self.get_session()
 			
@@ -501,8 +545,9 @@ class DrawingElementManager:
 			return deleted
 			
 		except Exception as e:
-			session.rollback()
-			session.close()
+			if session is not None:
+				session.rollback()
+				session.close()
 			raise e
 	
 	def update_element_path_link(self, element_id, hvac_path_id=None, hvac_segment_id=None, hvac_component_id=None):
@@ -517,6 +562,7 @@ class DrawingElementManager:
 		Returns:
 			True if updated, False if element not found
 		"""
+		session = None
 		try:
 			session = self.get_session()
 			
@@ -536,8 +582,9 @@ class DrawingElementManager:
 				return False
 				
 		except Exception as e:
-			session.rollback()
-			session.close()
+			if session is not None:
+				session.rollback()
+				session.close()
 			raise e
 	
 	def get_path_drawings(self, hvac_path_id):
@@ -553,6 +600,7 @@ class DrawingElementManager:
 			List of tuples (drawing_id, page_number, element_count) for each
 			drawing/page combination that has elements for this path
 		"""
+		session = None
 		try:
 			session = self.get_session()
 			
@@ -576,7 +624,8 @@ class DrawingElementManager:
 			return [(r.drawing_id, r.page_number, r.element_count) for r in results]
 			
 		except Exception as e:
-			session.close()
+			if session is not None:
+				session.close()
 			raise e
 	
 	def path_has_elements_on_drawing(self, hvac_path_id, drawing_id, page_number=None):
@@ -590,6 +639,7 @@ class DrawingElementManager:
 		Returns:
 			True if path has elements on this drawing/page, False otherwise
 		"""
+		session = None
 		try:
 			session = self.get_session()
 			
@@ -607,5 +657,6 @@ class DrawingElementManager:
 			return exists
 			
 		except Exception as e:
-			session.close()
+			if session is not None:
+				session.close()
 			raise e

@@ -23,10 +23,11 @@ class HVACComponentDialog(QDialog):
     
     component_saved = Signal(HVACComponent)  # Emits saved component
     
-    def __init__(self, parent=None, project_id=None, drawing_id=None, component=None):
+    def __init__(self, parent=None, project_id=None, drawing_id=None, page_number=1, component=None):
         super().__init__(parent)
         self.project_id = project_id
         self.drawing_id = drawing_id
+        self.page_number = page_number  # Page number for multi-page PDFs
         self.component = component  # Existing component for editing
         self.is_editing = component is not None
         # Track a selected Mechanical Unit from the chooser so we can persist on save
@@ -68,6 +69,17 @@ class HVACComponentDialog(QDialog):
         self.type_combo.addItems(component_types)
         self.type_combo.currentTextChanged.connect(self.on_component_type_changed)
         info_layout.addRow("Component Type:", self.type_combo)
+        
+        # Custom type label (shown when type is 'custom')
+        self.custom_label_edit = QLineEdit()
+        self.custom_label_edit.setPlaceholderText("e.g., Unit Heater, Linear Slot Diffuser")
+        self.custom_label_row_widget = QWidget()
+        custom_label_row_layout = QHBoxLayout(self.custom_label_row_widget)
+        custom_label_row_layout.setContentsMargins(0, 0, 0, 0)
+        custom_label_row_layout.addWidget(QLabel("Custom Type Label:"))
+        custom_label_row_layout.addWidget(self.custom_label_edit)
+        info_layout.addRow(self.custom_label_row_widget)
+        self.custom_label_row_widget.setVisible(False)
         
         # Import from Library button row (mechanical units)
         import_row = QHBoxLayout()
@@ -449,7 +461,12 @@ class HVACComponentDialog(QDialog):
             
             # Update name suggestion
             if not self.name_edit.text():
-                self.name_edit.setText(f"{component_type.upper()}-1")
+                if component_type == 'custom':
+                    custom_label = self.custom_label_edit.text().strip()
+                    base = custom_label or "CUSTOM"
+                    self.name_edit.setText(f"{base}-1")
+                else:
+                    self.name_edit.setText(f"{component_type.upper()}-1")
         
         # Get component type string
         ctype = (component_type or '').lower()
@@ -461,6 +478,10 @@ class HVACComponentDialog(QDialog):
         # Show the junction preferences only for branch/junction-like components
         show_junction = ('branch' in ctype) or ('junction' in ctype) or ('tee' in ctype)
         self.junction_group.setVisible(show_junction)
+        
+        # Show custom type label only when type is custom
+        show_custom = (ctype == 'custom')
+        self.custom_label_row_widget.setVisible(show_custom)
     
     def on_use_standard_toggled(self, checked):
         """Handle use standard checkbox toggle"""
@@ -500,6 +521,18 @@ class HVACComponentDialog(QDialog):
         index = self.type_combo.findText(self.component.component_type)
         if index >= 0:
             self.type_combo.setCurrentIndex(index)
+        else:
+            # Type might be custom or from older schema; try adding if not in list
+            if self.component.component_type and self.type_combo.findText(self.component.component_type) < 0:
+                self.type_combo.addItem(self.component.component_type)
+                self.type_combo.setCurrentText(self.component.component_type)
+        
+        # Load custom type label when type is custom
+        custom_label = getattr(self.component, 'custom_type_label', None)
+        if custom_label:
+            self.custom_label_edit.setText(custom_label)
+        # Ensure custom label row visibility matches type
+        self.on_component_type_changed(self.type_combo.currentText())
         
         # Set position
         self.x_spin.setValue(int(self.component.x_position))
@@ -708,6 +741,10 @@ class HVACComponentDialog(QDialog):
         name = self.name_edit.text().strip()
         component.name = name
         component.component_type = self.type_combo.currentText()
+        if component.component_type == 'custom':
+            component.custom_type_label = self.custom_label_edit.text().strip() or None
+        else:
+            component.custom_type_label = None
         component.x_position = self.x_spin.value()
         component.y_position = self.y_spin.value()
         component.noise_level = self.noise_spin.value()
@@ -763,11 +800,15 @@ class HVACComponentDialog(QDialog):
         vane_chord = self.vane_chord_spin.value() if has_vanes else None
         num_vanes = self.num_vanes_spin.value() if has_vanes else None
         
+        comp_type = self.type_combo.currentText()
+        custom_label = self.custom_label_edit.text().strip() if comp_type == 'custom' else None
         return HVACComponent(
             project_id=self.project_id,
             drawing_id=self.drawing_id,
+            page_number=self.page_number,  # Store page for multi-page PDFs
             name=name,
-            component_type=self.type_combo.currentText(),
+            component_type=comp_type,
+            custom_type_label=custom_label or None,
             x_position=self.x_spin.value(),
             y_position=self.y_spin.value(),
             noise_level=self.noise_spin.value(),

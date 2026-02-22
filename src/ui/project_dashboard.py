@@ -31,9 +31,11 @@ from ui.dialogs.hvac_path_dialog import HVACPathDialog
 from ui.dialogs.drawing_sets_dialog import DrawingSetsDialog
 from ui.drawing_comparison_interface import DrawingComparisonInterface
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
+from help import HelpMixin
+from utils.settings_manager import get_settings_manager
 
 
-class ProjectDashboard(QMainWindow):
+class ProjectDashboard(HelpMixin, QMainWindow):
     """Main project dashboard window"""
     
     finished = Signal()
@@ -103,8 +105,16 @@ class ProjectDashboard(QMainWindow):
         right_panel = self.create_right_panel()
         splitter.addWidget(right_panel)
         
-        # Set splitter proportions (favor the drawing/right pane)
-        splitter.setSizes([450, 750])
+        # Help panel - collapsible right side
+        self.help_panel = self.setup_help_panel("project_dashboard")
+        splitter.addWidget(self.help_panel)
+        
+        # Apply auto-hide setting
+        if get_settings_manager().get_help_panel_auto_hide():
+            self.help_panel.collapse()
+        
+        # Set splitter proportions (favor the drawing/right pane, help panel gets fixed width)
+        splitter.setSizes([450, 750, 320])
         
         main_layout.addWidget(splitter)
         central_widget.setLayout(main_layout)
@@ -151,6 +161,16 @@ class ProjectDashboard(QMainWindow):
         
         # Help menu
         help_menu = menubar.addMenu('Help')
+        help_menu.addAction('Toggle Help Panel (F1)', self._toggle_help_panel)
+        
+        # Auto-hide checkbox
+        self.auto_hide_help_action = QAction('Auto-hide Help Panels', self)
+        self.auto_hide_help_action.setCheckable(True)
+        self.auto_hide_help_action.setChecked(get_settings_manager().get_help_panel_auto_hide())
+        self.auto_hide_help_action.triggered.connect(self._on_auto_hide_help_changed)
+        help_menu.addAction(self.auto_hide_help_action)
+        
+        help_menu.addSeparator()
         help_menu.addAction('About', self.show_about)
         
     def create_project_header(self, layout):
@@ -260,8 +280,22 @@ class ProjectDashboard(QMainWindow):
 
         left_layout.addWidget(tabs)
         left_widget.setLayout(left_layout)
+        
+        # Register help controls for key elements
+        self._register_left_panel_help_controls()
 
         return left_widget
+    
+    def _register_left_panel_help_controls(self):
+        """Register help controls for left panel elements."""
+        if hasattr(self, 'drawing_sets_list'):
+            self.register_help_control(self.drawing_sets_list, "drawing_sets_list")
+        if hasattr(self, 'drawings_list'):
+            self.register_help_control(self.drawings_list, "drawings_list")
+        if hasattr(self, 'spaces_list'):
+            self.register_help_control(self.spaces_list, "spaces_list")
+        if hasattr(self, 'hvac_list'):
+            self.register_help_control(self.hvac_list, "hvac_list")
 
     def create_locations_tab(self):
         """Create the locations browser tab"""
@@ -1777,6 +1811,18 @@ class ProjectDashboard(QMainWindow):
                 )
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open database settings:\n{str(e)}")
+    
+    def _on_auto_hide_help_changed(self, checked: bool):
+        """Handle auto-hide help panel preference change."""
+        settings = get_settings_manager()
+        settings.set_help_panel_auto_hide(checked)
+        
+        # Apply immediately to current help panel
+        if hasattr(self, 'help_panel') and self.help_panel:
+            if checked:
+                self.help_panel.collapse()
+            else:
+                self.help_panel.expand()
     
     def show_about(self):
         """Show about dialog"""

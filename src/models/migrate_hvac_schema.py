@@ -8,7 +8,12 @@ Ensures that legacy databases gain newly added columns required by
 from typing import Dict, List, Tuple
 from sqlalchemy import text
 
-from .database import get_session
+from .database import get_session, Base
+
+
+def _get_existing_tables(session) -> List[str]:
+    result = session.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))
+    return [row[0] for row in result.fetchall()]
 
 
 def _get_existing_columns(session, table_name: str) -> List[str]:
@@ -41,6 +46,7 @@ def ensure_hvac_schema():
             session,
             "hvac_components",
             [
+                ("custom_type_label", "TEXT"),
                 ("is_silencer", "INTEGER DEFAULT 0"),
                 ("silencer_type", "TEXT"),
                 ("target_noise_reduction", "REAL"),
@@ -49,6 +55,8 @@ def ensure_hvac_schema():
                 ("selected_product_id", "INTEGER"),
                 # Junction preference for BRANCH_TAKEOFF_90 selection
                 ("branch_takeoff_choice", "TEXT"),
+                # Page number for multi-page PDF support
+                ("page_number", "INTEGER DEFAULT 1"),
             ],
         )
 
@@ -157,6 +165,15 @@ def ensure_hvac_schema():
             )
         except Exception:
             # Table may not exist yet; it will be created on fresh DBs
+            pass
+
+        # space_noise_sources table (create if missing for legacy DBs)
+        try:
+            from . import space  # noqa: F401 - register SpaceNoiseSource
+            existing_tables = set(_get_existing_tables(session))
+            if "space_noise_sources" not in existing_tables:
+                Base.metadata.create_all(bind=session.get_bind(), tables=[space.SpaceNoiseSource.__table__])
+        except Exception:
             pass
 
         session.commit()

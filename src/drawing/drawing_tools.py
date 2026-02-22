@@ -156,7 +156,7 @@ class SelectionTool(DrawingTool):
             painter.drawRect(rect)
 
 class ComponentTool(DrawingTool):
-    """Tool for placing HVAC components"""
+    """Tool for placing HVAC components with duplicate detection visual feedback"""
     
     def __init__(self, component_type="ahu"):
         super().__init__()
@@ -164,10 +164,54 @@ class ComponentTool(DrawingTool):
         self.component_size = 24  # Size in pixels
         self.pen = QPen(QColor(220, 100, 50), 2, Qt.SolidLine)
         self.brush = QBrush(QColor(220, 100, 50, 100))
+        self.current_zoom_factor = 1.0  # Track zoom for saved_zoom field
+        
+        # Duplicate checking state for visual feedback
+        self.duplicate_check_callback = None  # Set by drawing_overlay
+        self.current_page = 1
+        self.is_near_visible_path_component = False  # Red - will be blocked
+        self.is_near_hidden_path_component = False   # Yellow - allowed but warning
         
     def set_component_type(self, component_type):
         """Set the type of component to place"""
         self.component_type = component_type
+    
+    def set_zoom_factor(self, zoom_factor):
+        """Set the current zoom factor for coordinate tracking"""
+        self.current_zoom_factor = zoom_factor if zoom_factor and zoom_factor > 0 else 1.0
+    
+    def set_duplicate_checker(self, callback, current_page):
+        """Set the callback for real-time duplicate detection.
+        
+        Args:
+            callback: Function(x, y, comp_type, page) -> dict with 'near_visible', 'near_hidden'
+            current_page: Current page number for page-aware duplicate checking
+        """
+        self.duplicate_check_callback = callback
+        self.current_page = current_page
+    
+    def update(self, point):
+        """Update tool state on mouse move - includes duplicate checking"""
+        super().update(point)
+        
+        # Check for duplicates at current hover position
+        if self.current_point and self.duplicate_check_callback:
+            try:
+                result = self.duplicate_check_callback(
+                    self.current_point.x(),
+                    self.current_point.y(),
+                    self.component_type,
+                    self.current_page
+                )
+                self.is_near_visible_path_component = result.get('near_visible', False)
+                self.is_near_hidden_path_component = result.get('near_hidden', False)
+            except Exception as e:
+                print(f"DEBUG: ComponentTool duplicate check error: {e}")
+                self.is_near_visible_path_component = False
+                self.is_near_hidden_path_component = False
+        else:
+            self.is_near_visible_path_component = False
+            self.is_near_hidden_path_component = False
         
     def start(self, point):
         """Place component immediately on click"""
@@ -187,15 +231,36 @@ class ComponentTool(DrawingTool):
                 'position': {
                     'x': point.x(),
                     'y': point.y()
-                }
+                },
+                'saved_zoom': self.current_zoom_factor  # Track zoom level for coordinate normalization
             }
             self.finished.emit(result)
             
     def draw_preview(self, painter):
-        """Draw component preview"""
+        """Draw component preview with duplicate detection visual feedback.
+        
+        Colors:
+        - RED: Near visible path component (will be blocked)
+        - YELLOW: Near hidden path component (allowed but warning)
+        - NORMAL (orange): Clear to place
+        """
         if self.current_point:
-            painter.setPen(self.pen)
-            painter.setBrush(self.brush)
+            # Choose color based on duplicate status
+            if self.is_near_visible_path_component:
+                # RED: Will be blocked - near visible path component
+                pen = QPen(QColor(255, 0, 0), 3, Qt.SolidLine)
+                brush = QBrush(QColor(255, 0, 0, 120))
+            elif self.is_near_hidden_path_component:
+                # YELLOW: Allowed but near hidden path component
+                pen = QPen(QColor(255, 200, 0), 2, Qt.DashLine)
+                brush = QBrush(QColor(255, 200, 0, 100))
+            else:
+                # NORMAL: Clear to place
+                pen = self.pen
+                brush = self.brush
+            
+            painter.setPen(pen)
+            painter.setBrush(brush)
             
             # Draw component as circle or square based on type
             x, y = self.current_point.x(), self.current_point.y()
@@ -207,8 +272,9 @@ class ComponentTool(DrawingTool):
                 painter.drawRect(rect)
             elif self.component_type == 'elbow':
                 # Draw as L-shaped elbow for direction changes
-                painter.setPen(QPen(QColor(100, 100, 100), 3, Qt.SolidLine))
-                painter.setBrush(QBrush(QColor(100, 100, 100, 50)))
+                if not self.is_near_visible_path_component and not self.is_near_hidden_path_component:
+                    painter.setPen(QPen(QColor(100, 100, 100), 3, Qt.SolidLine))
+                    painter.setBrush(QBrush(QColor(100, 100, 100, 50)))
                 
                 # Draw L-shape
                 half_size = size // 2
@@ -223,8 +289,9 @@ class ComponentTool(DrawingTool):
                 painter.drawEllipse(x - 3, y + half_size - 3, 6, 6)  # Bottom connection
             elif self.component_type == 'branch':
                 # Draw as T-shaped branch for flow distribution
-                painter.setPen(QPen(QColor(150, 75, 0), 3, Qt.SolidLine))
-                painter.setBrush(QBrush(QColor(150, 75, 0, 50)))
+                if not self.is_near_visible_path_component and not self.is_near_hidden_path_component:
+                    painter.setPen(QPen(QColor(150, 75, 0), 3, Qt.SolidLine))
+                    painter.setBrush(QBrush(QColor(150, 75, 0, 50)))
                 
                 # Draw T-shape
                 half_size = size // 2
@@ -240,6 +307,11 @@ class ComponentTool(DrawingTool):
             else:
                 # Draw as circle for terminals
                 painter.drawEllipse(x - size//2, y - size//2, size, size)
+            
+            # Add warning icon for blocked duplicates
+            if self.is_near_visible_path_component:
+                painter.setPen(QPen(Qt.white, 2))
+                painter.drawText(x - 8, y + 6, "⚠")
                 
             # Add label
             painter.setPen(QPen(Qt.black))
@@ -248,6 +320,9 @@ class ComponentTool(DrawingTool):
 
 class SegmentTool(DrawingTool):
     """Tool for drawing duct segments between components"""
+    
+    # Signal emitted when segment validation fails (e.g., not connected to components)
+    validation_error = Signal(str)
     
     def __init__(self):
         super().__init__()
@@ -364,6 +439,13 @@ class SegmentTool(DrawingTool):
 
         # Try to find a component at the start point
         self.from_component = self.find_nearby_component(point)
+        
+        # If found a component, SNAP start_point to the component center
+        if self.from_component:
+            comp_x = int(self.from_component.get('x', 0))
+            comp_y = int(self.from_component.get('y', 0))
+            self.start_point = QPoint(comp_x, comp_y)
+            print(f"DEBUG: Snapped start_point to component center ({comp_x}, {comp_y})")
 
         # If no component found, try to find a segment endpoint; snap and infer component
         if not self.from_component:
@@ -373,13 +455,18 @@ class SegmentTool(DrawingTool):
                 self.from_segment = nearby_segment
                 # Snap start point for clean geometry
                 try:
-                    self.start_point.setX(int(nearby_segment['snap_x']))
-                    self.start_point.setY(int(nearby_segment['snap_y']))
+                    snap_x = int(nearby_segment['snap_x'])
+                    snap_y = int(nearby_segment['snap_y'])
+                    self.start_point = QPoint(snap_x, snap_y)
                 except Exception:
                     pass
                 # If that endpoint is attached to a component, use it
                 if nearby_segment.get('component') is not None:
                     self.from_component = nearby_segment['component']
+                    # Snap to component center
+                    comp_x = int(self.from_component.get('x', 0))
+                    comp_y = int(self.from_component.get('y', 0))
+                    self.start_point = QPoint(comp_x, comp_y)
                 else:
                     # Re-check for a component at the snapped point
                     try:
@@ -388,6 +475,10 @@ class SegmentTool(DrawingTool):
                         if alt_component is not None:
                             print("DEBUG: Found component at snapped start point; using as from_component")
                             self.from_component = alt_component
+                            # Snap to component center
+                            comp_x = int(alt_component.get('x', 0))
+                            comp_y = int(alt_component.get('y', 0))
+                            self.start_point = QPoint(comp_x, comp_y)
                     except Exception:
                         pass
         
@@ -400,6 +491,13 @@ class SegmentTool(DrawingTool):
 
             # Try to find a component at the end point
             self.to_component = self.find_nearby_component(point)
+            
+            # If found a component, SNAP current_point to the component center
+            if self.to_component:
+                comp_x = int(self.to_component.get('x', 0))
+                comp_y = int(self.to_component.get('y', 0))
+                self.current_point = QPoint(comp_x, comp_y)
+                print(f"DEBUG: Snapped current_point to component center ({comp_x}, {comp_y})")
 
             # If no component found, try to find a segment endpoint; snap and infer component
             if not self.to_component:
@@ -409,13 +507,18 @@ class SegmentTool(DrawingTool):
                     self.to_segment = nearby_segment
                     # Snap end point for clean geometry
                     try:
-                        self.current_point.setX(int(nearby_segment['snap_x']))
-                        self.current_point.setY(int(nearby_segment['snap_y']))
+                        snap_x = int(nearby_segment['snap_x'])
+                        snap_y = int(nearby_segment['snap_y'])
+                        self.current_point = QPoint(snap_x, snap_y)
                     except Exception:
                         pass
                     # If that endpoint is attached to a component, use it
                     if nearby_segment.get('component') is not None:
                         self.to_component = nearby_segment['component']
+                        # Snap to component center
+                        comp_x = int(self.to_component.get('x', 0))
+                        comp_y = int(self.to_component.get('y', 0))
+                        self.current_point = QPoint(comp_x, comp_y)
                     else:
                         # Re-check for a component at the snapped point
                         try:
@@ -424,8 +527,38 @@ class SegmentTool(DrawingTool):
                             if alt_component is not None:
                                 print("DEBUG: Found component at snapped end point; using as to_component")
                                 self.to_component = alt_component
+                                # Snap to component center
+                                comp_x = int(alt_component.get('x', 0))
+                                comp_y = int(alt_component.get('y', 0))
+                                self.current_point = QPoint(comp_x, comp_y)
                         except Exception:
                             pass
+
+            # VALIDATION: Only allow segments connected at both ends
+            if not self.from_component or not self.to_component:
+                missing = []
+                if not self.from_component:
+                    missing.append("start point")
+                if not self.to_component:
+                    missing.append("end point")
+                
+                error_msg = (
+                    f"Segment must connect to HVAC components at both endpoints.\n\n"
+                    f"Missing connection at: {', '.join(missing)}\n\n"
+                    f"Tip: Draw segments between placed HVAC components (AHU, VAV, Diffuser, etc.)"
+                )
+                print(f"DEBUG: Segment rejected - must connect to components at both endpoints. Missing: {', '.join(missing)}")
+                self.validation_error.emit(error_msg)
+                
+                # Reset tool state
+                self.active = False
+                self.start_point = None
+                self.current_point = None
+                self.from_component = None
+                self.to_component = None
+                self.from_segment = None
+                self.to_segment = None
+                return
 
             self.active = False
             print("DEBUG: SegmentTool.finish - calling get_result()")
@@ -445,17 +578,33 @@ class SegmentTool(DrawingTool):
         if not self.start_point or not self.current_point:
             print(f"DEBUG: get_result - no start or current point")
             return None
-            
-        # Calculate length (with axis snapping)
+        
+        # Get base coordinates from points (already snapped to component centers if connected)
         x1, y1 = self.start_point.x(), self.start_point.y()
         x2, y2 = self.current_point.x(), self.current_point.y()
-        dx = x2 - x1
-        dy = y2 - y1
-        # Snap to axis if nearly horizontal/vertical (10px tolerance)
-        if abs(dx) < 10 and abs(dy) >= 10:
-            x2 = x1
-        elif abs(dy) < 10 and abs(dx) >= 10:
-            y2 = y1
+        
+        # If connected to components, use component coordinates directly (highest priority)
+        if self.from_component:
+            x1 = int(self.from_component.get('x', x1))
+            y1 = int(self.from_component.get('y', y1))
+            print(f"DEBUG: Using from_component coordinates: ({x1}, {y1})")
+        
+        if self.to_component:
+            x2 = int(self.to_component.get('x', x2))
+            y2 = int(self.to_component.get('y', y2))
+            print(f"DEBUG: Using to_component coordinates: ({x2}, {y2})")
+        
+        # Only apply axis snapping if NOT connected to components
+        # This preserves the exact component positions
+        if not self.from_component and not self.to_component:
+            dx = x2 - x1
+            dy = y2 - y1
+            # Snap to axis if nearly horizontal/vertical (10px tolerance)
+            if abs(dx) < 10 and abs(dy) >= 10:
+                x2 = x1
+            elif abs(dy) < 10 and abs(dx) >= 10:
+                y2 = y1
+        
         length_pixels = math.sqrt((x2 - x1)**2 + (y2 - y1)**2)
         
         print(f"DEBUG: get_result - length_pixels: {length_pixels}")
@@ -463,8 +612,9 @@ class SegmentTool(DrawingTool):
         if length_pixels > 10:  # Minimum segment length (reduced for precise connections)
             # Prevent self-connections
             if self.from_component and self.to_component:
-                from_comp_id = f"{self.from_component.get('x', 0)}_{self.from_component.get('y', 0)}_{self.from_component.get('component_type', 'unknown')}"
-                to_comp_id = f"{self.to_component.get('x', 0)}_{self.to_component.get('y', 0)}_{self.to_component.get('component_type', 'unknown')}"
+                # Use element IDs if available, otherwise fall back to position-based ID
+                from_comp_id = self.from_component.get('_element_id') or f"{self.from_component.get('x', 0)}_{self.from_component.get('y', 0)}_{self.from_component.get('component_type', 'unknown')}"
+                to_comp_id = self.to_component.get('_element_id') or f"{self.to_component.get('x', 0)}_{self.to_component.get('y', 0)}_{self.to_component.get('component_type', 'unknown')}"
                 
                 if from_comp_id == to_comp_id:
                     print(f"DEBUG: get_result - preventing self-connection")
@@ -788,6 +938,11 @@ class DrawingToolManager(QObject):
         """Set available segments for segment tool"""
         if ToolType.SEGMENT in self.tools:
             self.tools[ToolType.SEGMENT].set_available_segments(segments)
+    
+    def set_zoom_factor(self, zoom_factor):
+        """Set zoom factor for tools that need coordinate tracking (e.g., ComponentTool)"""
+        if ToolType.COMPONENT in self.tools:
+            self.tools[ToolType.COMPONENT].set_zoom_factor(zoom_factor)
             
     def get_current_tool(self):
         """Get the current active tool"""

@@ -23,9 +23,12 @@ from ui.dialogs.space_edit_dialog import SpaceEditDialog
 from data.components import STANDARD_COMPONENTS
 from data.excel_exporter import ExcelExporter, ExportOptions, EXCEL_EXPORT_AVAILABLE
 from calculations import RT60Calculator, NoiseCalculator, HVACPathCalculator
+from help import HelpMixin
+from utils.settings_manager import get_settings_manager
+from ui.widgets.path_analysis_panel import PathAnalysisPanel
 
 
-class DrawingInterface(QMainWindow):
+class DrawingInterface(HelpMixin, QMainWindow):
     """Drawing interface for PDF viewing and drawing tools"""
     
     # Signals
@@ -118,20 +121,32 @@ class DrawingInterface(QMainWindow):
         main_layout = QHBoxLayout()
         
         # Create splitter
-        splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter = QSplitter(Qt.Horizontal)
         
         # Left panel - tools and properties
         left_panel = self.create_left_panel()
-        splitter.addWidget(left_panel)
+        self.main_splitter.addWidget(left_panel)
         
         # Center panel - PDF viewer with overlay
         center_panel = self.create_center_panel()
-        splitter.addWidget(center_panel)
+        self.main_splitter.addWidget(center_panel)
         
-        # Set splitter proportions
-        splitter.setSizes([300, 1100])
+        # Analysis panel - path calculation view (collapsible)
+        self.analysis_panel = PathAnalysisPanel(project_id=self.project_id)
+        self.main_splitter.addWidget(self.analysis_panel)
         
-        main_layout.addWidget(splitter)
+        # Help panel - collapsible right side
+        self.help_panel = self.setup_help_panel("drawing_interface")
+        self.main_splitter.addWidget(self.help_panel)
+        
+        # Apply auto-hide setting for help panel
+        if get_settings_manager().get_help_panel_auto_hide():
+            self.help_panel.collapse()
+        
+        # Set splitter proportions: tools, drawing, analysis, help
+        self.main_splitter.setSizes([280, 750, 400, 320])
+        
+        main_layout.addWidget(self.main_splitter)
         central_widget.setLayout(main_layout)
         
         # Create status bar
@@ -168,6 +183,8 @@ class DrawingInterface(QMainWindow):
         view_menu.addSeparator()
         view_menu.addAction('Toggle Grid', self.toggle_grid)
         view_menu.addAction('Toggle Measurements', self.toggle_measurements)
+        view_menu.addSeparator()
+        view_menu.addAction('📊 Toggle Analysis Panel', self.toggle_analysis_panel)
         
         # Tools menu
         tools_menu = menubar.addMenu('Tools')
@@ -179,6 +196,10 @@ class DrawingInterface(QMainWindow):
         tools_menu.addAction('Calculate All Paths', self.calculate_all_hvac_paths)
         tools_menu.addSeparator()
         tools_menu.addAction('NC Compliance Analysis', self.analyze_nc_compliance)
+        
+        # Help menu
+        help_menu = menubar.addMenu('Help')
+        help_menu.addAction('Toggle Help Panel (F1)', self._toggle_help_panel)
         
     def create_toolbar(self):
         """Create the main toolbar"""
@@ -437,6 +458,7 @@ class DrawingInterface(QMainWindow):
         # Drawing overlay
         self.drawing_overlay = DrawingOverlay()
         self.drawing_overlay.set_scale_manager(self.scale_manager)
+        self.drawing_overlay.current_page = self.current_page_number  # Initialize page
         
         # Stack overlay on top of PDF viewer
         # Create a container widget
@@ -470,6 +492,13 @@ class DrawingInterface(QMainWindow):
             self.drawing_overlay.element_double_clicked.connect(self.overlay_element_double_clicked)
             # Handle space clicks for selection/editing
             self.drawing_overlay.space_clicked.connect(self.on_space_clicked)
+            # Connect hover signals for analysis panel integration
+            self.drawing_overlay.element_hovered.connect(self.on_drawing_element_hovered)
+            self.drawing_overlay.element_unhovered.connect(self.on_drawing_element_unhovered)
+            # Handle placement blocked signal (duplicate near visible path)
+            self.drawing_overlay.placement_blocked.connect(self.handle_placement_blocked)
+            # Connect segment validation error signal to show popup
+            self._connect_segment_validation_error()
             
         self.scale_manager.scale_changed.connect(self.scale_updated)
         
@@ -478,6 +507,45 @@ class DrawingInterface(QMainWindow):
         # Saved paths list - single click to select path for editing, double-click to open editor
         self.paths_list.itemClicked.connect(self.on_path_selected)
         self.paths_list.itemDoubleClicked.connect(self.open_path_editor_from_item)
+        
+        # Analysis panel connections - bidirectional linking with drawing
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            # When hovering cards in analysis panel, highlight on drawing
+            self.analysis_panel.element_hover_requested.connect(self.highlight_element_on_drawing)
+            self.analysis_panel.element_unhover_requested.connect(self.clear_element_highlight_on_drawing)
+            # When clicking cards, select and pan to element on drawing
+            self.analysis_panel.element_select_requested.connect(self.select_element_on_drawing)
+            self.analysis_panel.pan_to_element_requested.connect(self.pan_to_element_on_drawing)
+            # When path selection changes in analysis panel
+            self.analysis_panel.path_changed.connect(self.on_analysis_path_changed)
+            # When edit is requested from analysis panel
+            self.analysis_panel.edit_element_requested.connect(self.edit_element_from_analysis)
+    
+    def _connect_segment_validation_error(self):
+        """Connect the SegmentTool's validation_error signal to show error popup."""
+        try:
+            from drawing.drawing_tools import ToolType
+            if (self.drawing_overlay and 
+                hasattr(self.drawing_overlay, 'tool_manager') and 
+                self.drawing_overlay.tool_manager):
+                tools = getattr(self.drawing_overlay.tool_manager, 'tools', {})
+                if ToolType.SEGMENT in tools:
+                    segment_tool = tools[ToolType.SEGMENT]
+                    if hasattr(segment_tool, 'validation_error'):
+                        segment_tool.validation_error.connect(self._on_segment_validation_error)
+                        print("DEBUG: Connected segment validation_error signal")
+        except Exception as e:
+            print(f"DEBUG: Failed to connect segment validation_error signal: {e}")
+    
+    def _on_segment_validation_error(self, error_msg: str):
+        """Show error popup when segment validation fails."""
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            self,
+            "Invalid Segment",
+            error_msg,
+            QMessageBox.Ok
+        )
         
     def load_pdf(self):
         """Load the PDF file with path resolution for portability"""
@@ -708,6 +776,10 @@ class DrawingInterface(QMainWindow):
         
         # Clear overlay elements for new page
         if self.drawing_overlay:
+            # Update overlay's current page for proper filtering
+            self.drawing_overlay.current_page = self.current_page_number
+            # Update component tool duplicate checker with new page number
+            self.drawing_overlay.setup_component_tool_duplicate_checker()
             self.drawing_overlay.clear_all_elements()
             self.elements_list.clear()
             self.update_elements_display()
@@ -717,6 +789,10 @@ class DrawingInterface(QMainWindow):
         
         # Load elements for the new page
         self.load_saved_elements()
+        
+        # Re-register HVAC paths for the new page
+        # This ensures path-linked elements are loaded after page change
+        self._register_hvac_paths_for_current_page()
         
         # Update status bar
         self.status_bar.showMessage(f"Page {self.current_page_number} - Loaded page-specific elements", 3000)
@@ -835,6 +911,48 @@ class DrawingInterface(QMainWindow):
         self.status_bar.showMessage("Started new path - continue adding components and segments", 3000)
         
         print(f"DEBUG: Started new path with {element_data.get('type', 'unknown')}")
+    
+    def handle_placement_blocked(self, block_info):
+        """Handle when component placement is blocked due to proximity to visible path component.
+        
+        Shows a warning dialog explaining why placement was blocked and how to proceed.
+        """
+        comp_type = block_info.get('component_type', 'component')
+        path_id = block_info.get('path_id')
+        location = block_info.get('location', (0, 0))
+        
+        # Get path name for the message
+        path_name = "an existing path"
+        if path_id:
+            from models.database import get_session
+            from models.hvac import HVACPath
+            session = get_session()
+            try:
+                hvac_path = session.query(HVACPath).filter(HVACPath.id == path_id).first()
+                if hvac_path:
+                    path_name = f"'{hvac_path.name}'" if hvac_path.name else f"Path {path_id}"
+            except Exception as e:
+                print(f"DEBUG: Error getting path name: {e}")
+            finally:
+                session.close()
+        
+        # Show informative warning dialog
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("Cannot Place Component")
+        msg.setText(f"A {comp_type.upper()} component cannot be placed at this location.")
+        msg.setInformativeText(
+            f"This location is too close to an existing component in {path_name}, "
+            f"which is currently visible.\n\n"
+            f"To place a component here:\n"
+            f"• Move to a different location (at least 5 pixels away), or\n"
+            f"• Hide {path_name} using the eye icon (👁️) in the paths list, then try again\n\n"
+            f"Location: ({location[0]:.0f}, {location[1]:.0f})"
+        )
+        msg.setStandardButtons(QMessageBox.Ok)
+        msg.exec()
+        
+        print(f"DEBUG: Showed placement blocked dialog for {comp_type} near path {path_id}")
             
     def measurement_taken(self, length_real, length_formatted):
         """Handle measurement taken"""
@@ -948,8 +1066,19 @@ class DrawingInterface(QMainWindow):
             # Clean up orphaned elements - those marked converted_to_space but Space no longer exists
             overlay_data = self._cleanup_orphaned_space_elements(overlay_data)
             
+            # Clean up orphaned segments - those without any valid endpoint connections
+            overlay_data = self._cleanup_orphaned_segments(overlay_data)
+            
+            # Filter out components/segments that duplicate positions of already-existing overlay elements
+            # This prevents loading old elements that were saved without proper hvac_path_id linkage
+            overlay_data = self._filter_duplicate_hvac_elements(overlay_data)
+            
             if any(overlay_data.values()):  # If there are any elements
                 self.drawing_overlay.load_elements_data(overlay_data)
+                
+                # Recalculate coordinates at current zoom level after loading
+                # This ensures elements saved at different zoom levels display correctly
+                self.drawing_overlay.set_zoom_factor(self.drawing_overlay._current_zoom_factor)
                 
                 # Rebuild elements list
                 self.rebuild_elements_list(overlay_data)
@@ -1075,6 +1204,147 @@ class DrawingInterface(QMainWindow):
         except Exception as e:
             print(f"Error cleaning up orphaned space elements: {e}")
             return overlay_data  # Return original data on error
+
+    def _cleanup_orphaned_segments(self, overlay_data):
+        """Remove segments that have no valid endpoint connections from overlay data and database.
+        
+        Orphaned segments occur when:
+        1. Segments were drawn without snapping to components
+        2. Segments were saved before being linked to a path
+        3. The components they were connected to have been deleted
+        
+        This method cleans up these orphaned segments to prevent them from cluttering the overlay.
+        """
+        try:
+            cleaned_segments = []
+            deleted_count = 0
+            
+            for seg in overlay_data.get('segments', []):
+                # Check for any form of endpoint linkage
+                has_from = (
+                    seg.get('from_element_id') or 
+                    seg.get('from_db_component_id') or
+                    (isinstance(seg.get('from_component'), dict) and seg['from_component'])
+                )
+                has_to = (
+                    seg.get('to_element_id') or 
+                    seg.get('to_db_component_id') or
+                    (isinstance(seg.get('to_component'), dict) and seg['to_component'])
+                )
+                
+                # Keep segment if it has at least one valid endpoint connection
+                if has_from or has_to:
+                    cleaned_segments.append(seg)
+                else:
+                    # Delete orphaned segment from database
+                    seg_id = seg.get('id')
+                    if seg_id:
+                        try:
+                            self.element_manager.delete_element(seg_id)
+                            deleted_count += 1
+                        except Exception as e:
+                            print(f"DEBUG: Failed to delete orphaned segment {seg_id}: {e}")
+            
+            if deleted_count > 0:
+                print(f"DEBUG: Cleaned up {deleted_count} orphaned segments from database")
+            
+            overlay_data['segments'] = cleaned_segments
+            return overlay_data
+            
+        except Exception as e:
+            print(f"Error cleaning up orphaned segments: {e}")
+            return overlay_data  # Return original data on error
+
+    def _filter_duplicate_hvac_elements(self, overlay_data):
+        """Filter out components and segments that duplicate HVAC path elements.
+        
+        This handles legacy data where DrawingElements were saved without proper
+        hvac_path_id linkage. It compares positions with existing overlay components
+        (which come from HVAC path registration) and removes duplicates.
+        """
+        try:
+            if not self.drawing_overlay:
+                return overlay_data
+            
+            existing_overlay_comps = self.drawing_overlay.components or []
+            existing_overlay_segs = self.drawing_overlay.segments or []
+            
+            # Get positions of existing overlay components (from path registration)
+            existing_positions = set()
+            tolerance = 15.0  # pixels
+            
+            for comp in existing_overlay_comps:
+                # Normalize to base zoom for comparison
+                z = comp.get('saved_zoom') or 1.0
+                if z <= 0:
+                    z = 1.0
+                x = comp.get('x', 0) / z
+                y = comp.get('y', 0) / z
+                comp_type = comp.get('component_type', 'unknown')
+                existing_positions.add((round(x), round(y), comp_type))
+            
+            # Filter components - remove those at same position as existing
+            filtered_components = []
+            for comp in overlay_data.get('components', []):
+                z = comp.get('saved_zoom') or 1.0
+                if z <= 0:
+                    z = 1.0
+                x = comp.get('x', 0) / z
+                y = comp.get('y', 0) / z
+                comp_type = comp.get('component_type', 'unknown')
+                
+                # Check if this position matches any existing component
+                is_duplicate = False
+                for ex_x, ex_y, ex_type in existing_positions:
+                    if abs(x - ex_x) <= tolerance and abs(y - ex_y) <= tolerance and comp_type == ex_type:
+                        is_duplicate = True
+                        print(f"DEBUG: Filtering duplicate component at ({x:.0f}, {y:.0f}) type={comp_type}")
+                        break
+                
+                if not is_duplicate:
+                    filtered_components.append(comp)
+            
+            # Similarly filter segments
+            existing_seg_positions = set()
+            for seg in existing_overlay_segs:
+                z = seg.get('saved_zoom') or 1.0
+                if z <= 0:
+                    z = 1.0
+                sx = seg.get('start_x', 0) / z
+                sy = seg.get('start_y', 0) / z
+                ex = seg.get('end_x', 0) / z
+                ey = seg.get('end_y', 0) / z
+                existing_seg_positions.add((round(sx), round(sy), round(ex), round(ey)))
+            
+            filtered_segments = []
+            for seg in overlay_data.get('segments', []):
+                z = seg.get('saved_zoom') or 1.0
+                if z <= 0:
+                    z = 1.0
+                sx = seg.get('start_x', 0) / z
+                sy = seg.get('start_y', 0) / z
+                ex = seg.get('end_x', 0) / z
+                ey = seg.get('end_y', 0) / z
+                
+                is_duplicate = False
+                for e_sx, e_sy, e_ex, e_ey in existing_seg_positions:
+                    if (abs(sx - e_sx) <= tolerance and abs(sy - e_sy) <= tolerance and
+                        abs(ex - e_ex) <= tolerance and abs(ey - e_ey) <= tolerance):
+                        is_duplicate = True
+                        print(f"DEBUG: Filtering duplicate segment ({sx:.0f},{sy:.0f})->({ex:.0f},{ey:.0f})")
+                        break
+                
+                if not is_duplicate:
+                    filtered_segments.append(seg)
+            
+            overlay_data['components'] = filtered_components
+            overlay_data['segments'] = filtered_segments
+            
+            return overlay_data
+            
+        except Exception as e:
+            print(f"Error filtering duplicate HVAC elements: {e}")
+            return overlay_data
 
     def load_space_rectangles(self):
         """Load space rectangles from RoomBoundary records in the database for current page"""
@@ -1775,13 +2045,94 @@ class DrawingInterface(QMainWindow):
                         path_components.append(segment_to)
         
         return path_components
+
+    def order_segments_by_connectivity(self, segments, components):
+        """
+        Order segments by connectivity, traversing from source to terminal.
+        Returns segments in traversal order for proper path sequence.
+        """
+        if not segments:
+            return []
+        
+        # Get unique identifier for component
+        def get_component_id(comp):
+            if not comp:
+                return None
+            return comp.get('id', f"{comp.get('x', 0)}_{comp.get('y', 0)}")
+        
+        # Build adjacency: from_component_id -> segment
+        from_map = {}
+        to_set = set()
+        
+        for seg in segments:
+            from_comp = seg.get('from_component')
+            to_comp = seg.get('to_component')
+            from_id = get_component_id(from_comp)
+            to_id = get_component_id(to_comp)
+            
+            if from_id:
+                from_map[from_id] = seg
+            if to_id:
+                to_set.add(to_id)
+        
+        # Find start component (a 'from' that is never a 'to')
+        start_id = None
+        for seg in segments:
+            from_comp = seg.get('from_component')
+            from_id = get_component_id(from_comp)
+            if from_id and from_id not in to_set:
+                start_id = from_id
+                break
+        
+        # Fall back to first segment's from_component if no clear start
+        if not start_id and segments:
+            from_comp = segments[0].get('from_component')
+            start_id = get_component_id(from_comp)
+        
+        if not start_id:
+            return segments  # Can't determine order, return as-is
+        
+        # Traverse chain from start
+        ordered = []
+        visited = set()
+        current_id = start_id
+        
+        max_iterations = len(segments) + 2
+        iterations = 0
+        
+        while current_id and iterations < max_iterations:
+            iterations += 1
+            
+            seg = from_map.get(current_id)
+            if not seg:
+                break
+            
+            # Prevent loops
+            seg_id = id(seg)
+            if seg_id in visited:
+                break
+            visited.add(seg_id)
+            
+            ordered.append(seg)
+            
+            # Move to next component
+            to_comp = seg.get('to_component')
+            current_id = get_component_id(to_comp)
+        
+        # Add any remaining segments not yet in ordered list
+        for seg in segments:
+            if seg not in ordered:
+                ordered.append(seg)
+        
+        return ordered
     
     def create_hvac_path_from_components(self, components, segments):
         """Create HVAC path from a list of connected components"""
         try:
-            # Add drawing ID to components
+            # Add drawing ID and page number to components
             for comp in components:
                 comp['drawing_id'] = self.drawing.id
+                comp['page_number'] = self.current_page_number
             
             # Filter segments that connect to any components in our path
             # Be permissive: include a segment if EITHER endpoint is in the path's component set.
@@ -1815,6 +2166,10 @@ class DrawingInterface(QMainWindow):
                         include = True
                 print(f"DEBUG: Segment {i} filter include={include}")
             print(f"DEBUG: path_segments after filter: {len(path_segments)}")
+            
+            # Order segments by connectivity for proper path sequence
+            ordered_segments = self.order_segments_by_connectivity(path_segments, components)
+            print(f"DEBUG: Ordered {len(ordered_segments)} segments by connectivity")
             
             # Open HVAC path dialog with drawing data
             from ui.dialogs.hvac_path_dialog import HVACPathDialog
@@ -1854,15 +2209,16 @@ class DrawingInterface(QMainWindow):
                         self.drawing_overlay.enable_clearing()
             
             dialog.path_saved.connect(on_path_saved)
-            dialog.set_drawing_data(components, path_segments, self.drawing.id)
+            dialog.set_drawing_data(components, ordered_segments, self.drawing.id)
             
             if dialog.exec() == QDialog.Accepted:
                 hvac_path = dialog.path
                 
-                # Ask user if they want to clear used elements from drawing
+                # Keep newly created path elements visible on the drawing.
+                # We no longer prompt to remove them after saving.
                 path_info = f"Successfully created HVAC path: {hvac_path.name}\n\n"
                 path_info += f"Components: {len(components)}\n"
-                path_info += f"Segments: {len(path_segments)}\n"
+                path_info += f"Segments: {len(ordered_segments)}\n"
                 
                 if hvac_path.calculated_noise:
                     path_info += f"Terminal Noise: {hvac_path.calculated_noise:.1f} dB(A)\n"
@@ -1870,25 +2226,20 @@ class DrawingInterface(QMainWindow):
                 else:
                     path_info += "Noise calculation pending\n\n"
                 
-                path_info += "Would you like to remove the used components and segments from the drawing?\n"
-                path_info += "(They will still be available as part of the saved path)"
+                path_info += "Path elements will remain visible on the drawing."
                 
-                reply = QMessageBox.question(
-                    self, 
-                    "HVAC Path Created", 
-                    path_info,
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes
+                QMessageBox.information(
+                    self,
+                    "HVAC Path Created",
+                    path_info
                 )
-                
-                if reply == QMessageBox.Yes:
-                    self.clear_used_elements_from_overlay(components, path_segments)
                 
                 # Update status bar
                 self.status_bar.showMessage(f"Created HVAC path '{hvac_path.name}' with {len(components)} components", 5000)
                 
-                # Refresh paths list to show new path
-                self.load_saved_paths()
+                # Add path to UI list without clearing existing registrations
+                # (on_path_saved already registered the elements, don't destroy that)
+                self.add_single_path_to_ui(hvac_path)
                 # Notify listeners (e.g., project dashboard HVAC tab)
                 try:
                     self.paths_updated.emit()
@@ -2876,9 +3227,68 @@ class DrawingInterface(QMainWindow):
                 HVACPath.project_id == self.project_id
             ).all()
             
-            # Clear the current list
+            # Clear the current list and visibility state
             self.paths_list.clear()
             self.visible_paths.clear()
+            
+            # Also clear overlay's path-related state to reset to clean state
+            if self.drawing_overlay:
+                self.drawing_overlay.visible_paths.clear()
+                self.drawing_overlay.hidden_paths.clear()
+                self.drawing_overlay.path_element_mapping.clear()
+                
+                # Remove path-linked elements from overlay to prevent duplicates on refresh
+                # Keep elements that don't have path associations (user-drawn elements)
+
+                # Collect all path component positions WITH page numbers for proximity-based filtering
+                # This prevents cross-page contamination where components on different pages
+                # with similar positions are incorrectly matched
+                path_component_positions = set()
+                for hvac_path in hvac_paths:
+                    for seg in hvac_path.segments:
+                        if seg.from_component:
+                            path_component_positions.add((
+                                seg.from_component.x_position or 0,
+                                seg.from_component.y_position or 0,
+                                seg.from_component.page_number or 1  # Include page number
+                            ))
+                        if seg.to_component:
+                            path_component_positions.add((
+                                seg.to_component.x_position or 0,
+                                seg.to_component.y_position or 0,
+                                seg.to_component.page_number or 1  # Include page number
+                            ))
+
+                def is_near_path_position(comp):
+                    """Check if component is near any path component position ON THE SAME PAGE."""
+                    comp_zoom = comp.get('saved_zoom') or 1.0
+                    if comp_zoom <= 0:
+                        comp_zoom = 1.0
+                    comp_x = comp.get('x', 0) / comp_zoom
+                    comp_y = comp.get('y', 0) / comp_zoom
+                    comp_page = comp.get('page_number') or self.current_page_number
+                    tol = 15.0  # pixels tolerance
+                    for px, py, p_page in path_component_positions:
+                        # Only match positions on the SAME page to avoid cross-page contamination
+                        if p_page != comp_page:
+                            continue
+                        if abs(comp_x - (px or 0)) < tol and abs(comp_y - (py or 0)) < tol:
+                            return True
+                    return False
+
+                # Remove components that either have path IDs OR are near path positions
+                self.drawing_overlay.components = [
+                    c for c in self.drawing_overlay.components
+                    if not (c.get('hvac_path_id') or c.get('db_path_id') or is_near_path_position(c))
+                ]
+                self.drawing_overlay.segments = [
+                    s for s in self.drawing_overlay.segments
+                    if not s.get('hvac_path_id') and not s.get('db_path_id')
+                ]
+                
+                # Mark base cache as dirty since we modified component/segment lists
+                self.drawing_overlay._base_dirty = True
+                self.drawing_overlay.update()
             
             if not hvac_paths:
                 self.paths_summary_label.setText("No paths saved")
@@ -2911,12 +3321,12 @@ class DrawingInterface(QMainWindow):
                 path_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
                 
                 # Toggle button for show/hide
-                toggle_btn = QPushButton("👁️‍🗨️")  # Hidden eye initially
+                toggle_btn = QPushButton("👁️")  # Open eye - visible by default
                 toggle_btn.setMaximumWidth(35)
                 toggle_btn.setMaximumHeight(25)
-                toggle_btn.setToolTip("Click to show/hide this path on drawing")
+                toggle_btn.setToolTip("Click to hide/show this path on drawing")
                 toggle_btn.setCheckable(True)  # Make it a toggle button
-                toggle_btn.setChecked(False)  # Default to hidden
+                toggle_btn.setChecked(True)  # Default to visible (checked = visible)
                 
                 # Style the toggle button
                 toggle_btn.setStyleSheet("""
@@ -2958,10 +3368,91 @@ class DrawingInterface(QMainWindow):
             
             session.close()
             
+            # Refresh analysis panel path list
+            if hasattr(self, 'analysis_panel') and self.analysis_panel:
+                self.analysis_panel.refresh_paths()
+            
         except Exception as e:
             if session is not None:
                 session.close()
             QMessageBox.warning(self, "Error", f"Failed to load saved paths:\n{str(e)}")
+    
+    def add_single_path_to_ui(self, hvac_path):
+        """Add a single newly-created path to the UI list without clearing existing registrations.
+        
+        This is used after path creation to avoid the destructive reload behavior of load_saved_paths().
+        The path elements should already be registered via on_path_saved signal handler.
+        """
+        try:
+            # Update summary label
+            current_count = self.paths_list.count()
+            calculated = 0
+            for i in range(current_count):
+                item = self.paths_list.item(i)
+                if item:
+                    path_data = item.data(Qt.UserRole)
+                    if path_data and getattr(path_data, 'calculated_noise', None):
+                        calculated += 1
+            if hvac_path.calculated_noise:
+                calculated += 1
+            self.paths_summary_label.setText(f"{current_count + 1} paths ({calculated} calculated)")
+            
+            # Add to visible_paths set
+            self.visible_paths.add(hvac_path.id)
+            
+            # Create list item widget (same code as in load_saved_paths)
+            item = QListWidgetItem()
+            widget = QWidget()
+            layout = QHBoxLayout(widget)
+            layout.setContentsMargins(5, 2, 5, 2)
+            
+            path_label = QLabel(self.format_path_display_name(hvac_path))
+            path_label.setToolTip(self.format_path_tooltip(hvac_path))
+            path_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            
+            toggle_btn = QPushButton("👁️")
+            toggle_btn.setMaximumWidth(35)
+            toggle_btn.setMaximumHeight(25)
+            toggle_btn.setToolTip("Click to hide/show this path on drawing")
+            toggle_btn.setCheckable(True)
+            toggle_btn.setChecked(True)
+            toggle_btn.setStyleSheet("""
+                QPushButton { border: 1px solid #888; border-radius: 3px; padding: 2px; }
+                QPushButton:checked { background-color: #4CAF50; border: 1px solid #45a049; }
+            """)
+            toggle_btn.clicked.connect(lambda checked, pid=hvac_path.id, btn=toggle_btn: 
+                                       self.toggle_path_visibility(pid, checked, btn))
+            
+            layout.addWidget(path_label)
+            layout.addStretch()
+            layout.addWidget(toggle_btn)
+            
+            # Allow double-clicking the row to open the editor
+            def _row_dbl_click(event, p=hvac_path):
+                try:
+                    if event.button() == Qt.LeftButton:
+                        self.open_path_editor(p)
+                        event.accept()
+                        return
+                except Exception:
+                    pass
+                QWidget.mouseDoubleClickEvent(widget, event)
+            widget.mouseDoubleClickEvent = _row_dbl_click
+            
+            item.setData(Qt.UserRole, hvac_path)
+            self.paths_list.addItem(item)
+            self.paths_list.setItemWidget(item, widget)
+            
+            # Refresh analysis panel
+            if hasattr(self, 'analysis_panel') and self.analysis_panel:
+                self.analysis_panel.refresh_paths()
+                
+            print(f"DEBUG: Added path {hvac_path.id} to UI list without clearing registrations")
+            
+        except Exception as e:
+            print(f"ERROR: Failed to add single path to UI: {e}")
+            # Fall back to full reload if something goes wrong
+            self.load_saved_paths()
     
     def format_path_display_name(self, hvac_path):
         """Format the display name for a path in the list"""
@@ -2992,30 +3483,50 @@ class DrawingInterface(QMainWindow):
     
     def handle_path_visibility_changed(self, path_id: int, visible: bool):
         """Handle path visibility checkbox change"""
-        print(f"DEBUG: Path {path_id} visibility changed to {visible}")
         if visible:
             self.visible_paths.add(path_id)
             self.show_path_on_drawing(path_id)
         else:
             self.visible_paths.discard(path_id)
             self.hide_path_on_drawing(path_id)
-        print(f"DEBUG: Drawing overlay visible_paths after change: {list(self.drawing_overlay.visible_paths.keys()) if self.drawing_overlay else 'No overlay'}")
     
     def show_path_on_drawing(self, path_id: int):
-        """Show a specific path on the drawing overlay"""
+        """Show a specific path on the drawing overlay.
+        
+        This method ensures the path is visible by:
+        1. Removing it from hidden_paths (if it was hidden)
+        2. Adding it to visible_paths
+        3. Only re-registering elements if not already registered AND not just hidden
+        """
         if self.drawing_overlay:
+            # First, remove from hidden paths if present (this handles show after hide)
+            self.drawing_overlay.hidden_paths.discard(path_id)
+            
+            # Only register path elements if not already registered
+            # AND path elements don't already exist in the overlay
+            if path_id not in self.drawing_overlay.path_element_mapping:
+                try:
+                    from models import get_session
+                    from models.hvac import HVACPath
+                    session = get_session()
+                    hvac_path = session.query(HVACPath).filter(HVACPath.id == path_id).first()
+                    if hvac_path:
+                        self.register_existing_path_elements(hvac_path)
+                    session.close()
+                except Exception as e:
+                    print(f"DEBUG: Failed to register path {path_id}: {e}")
+            
             # Add path to visible paths (this will make path elements visible)
             self.drawing_overlay.visible_paths[path_id] = True
             self.drawing_overlay.update()
-            print(f"DEBUG: Showing path {path_id}, visible paths: {list(self.drawing_overlay.visible_paths.keys())}")
         
     def hide_path_on_drawing(self, path_id: int):
         """Hide a specific path from the drawing overlay"""
         if self.drawing_overlay:
-            # Remove path from visible paths (this will hide path elements)
+            # Mark hidden for normal mode and remove from visible for path-only mode
+            self.drawing_overlay.hidden_paths.add(path_id)
             self.drawing_overlay.visible_paths.pop(path_id, None)
             self.drawing_overlay.update()
-            print(f"DEBUG: Hiding path {path_id}, visible paths: {list(self.drawing_overlay.visible_paths.keys())}")
     
     def show_all_paths(self):
         """Show all paths on the drawing"""
@@ -3024,9 +3535,12 @@ class DrawingInterface(QMainWindow):
             widget = self.paths_list.itemWidget(item)
             if widget:
                 toggle_btn = widget.findChild(QPushButton)
+                hvac_path = item.data(Qt.UserRole)
                 if toggle_btn and not toggle_btn.isChecked():
                     toggle_btn.setChecked(True)
-                    toggle_btn.clicked.emit(True)  # Trigger the click handler
+                    # Directly call toggle_path_visibility instead of emitting
+                    if hvac_path:
+                        self.toggle_path_visibility(hvac_path.id, True, toggle_btn)
     
     def hide_all_paths(self):
         """Hide all paths from the drawing"""
@@ -3035,9 +3549,12 @@ class DrawingInterface(QMainWindow):
             widget = self.paths_list.itemWidget(item)
             if widget:
                 toggle_btn = widget.findChild(QPushButton)
+                hvac_path = item.data(Qt.UserRole)
                 if toggle_btn and toggle_btn.isChecked():
                     toggle_btn.setChecked(False)
-                    toggle_btn.clicked.emit(False)  # Trigger the click handler
+                    # Directly call toggle_path_visibility instead of emitting
+                    if hvac_path:
+                        self.toggle_path_visibility(hvac_path.id, False, toggle_btn)
     
     def show_path_context_menu(self, position):
         """Show context menu for paths list"""
@@ -3419,7 +3936,7 @@ class DrawingInterface(QMainWindow):
                         pass
                 print("DEBUG[DrawingInterface]: Opening HVACComponentDialog for component id=", getattr(comp, 'id', None),
                       " name=", getattr(comp, 'name', None))
-                dlg = HVACComponentDialog(self, self.project_id, self.drawing.id if self.drawing else None, comp)
+                dlg = HVACComponentDialog(self, self.project_id, self.drawing.id if self.drawing else None, self.current_page_number, comp)
                 try:
                     # Keep the drawing overlay in sync when a component is saved from the dialog
                     dlg.component_saved.connect(self._on_component_saved)
@@ -3603,6 +4120,34 @@ class DrawingInterface(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to calculate path noise:\n{str(e)}")
     
+    def _register_hvac_paths_for_current_page(self):
+        """Re-register HVAC paths after page change to load path-linked elements.
+        
+        This is called after changing pages to ensure path elements are loaded
+        for the new page.
+        """
+        if not self.project_id or not self.drawing_overlay:
+            return
+            
+        try:
+            from models.hvac import HVACPath
+            session = get_session()
+            
+            # Query HVAC paths for this project
+            hvac_paths = session.query(HVACPath).filter(
+                HVACPath.project_id == self.project_id
+            ).all()
+            
+            # Register each path's elements
+            for hvac_path in hvac_paths:
+                self.register_existing_path_elements(hvac_path)
+                
+            session.close()
+            print(f"DEBUG: Registered {len(hvac_paths)} HVAC paths for page {self.current_page_number}")
+            
+        except Exception as e:
+            print(f"DEBUG: Error registering HVAC paths for page: {e}")
+    
     def register_existing_path_elements(self, hvac_path):
         """Register existing path elements in the drawing overlay for show/hide functionality.
         
@@ -3648,19 +4193,60 @@ class DrawingInterface(QMainWindow):
                         if 'component_type' not in comp and comp.get('properties'):
                             comp['component_type'] = comp['properties'].get('component_type', 'unknown')
                         
+                        # Normalize coordinates to base (zoom=1.0) for comparison
+                        comp_z = comp.get('saved_zoom') or 1.0
+                        comp_base_x = comp.get('x', 0) / comp_z
+                        comp_base_y = comp.get('y', 0) / comp_z
+                        
                         # Add to overlay components if not already there
+                        # First try matching by DB ID, then by normalized base coordinates
                         existing = False
+                        comp_db_id = comp.get('db_component_id') or comp.get('hvac_component_id')
                         for existing_comp in self.drawing_overlay.components:
-                            if (existing_comp.get('x') == comp.get('x') and 
-                                existing_comp.get('y') == comp.get('y') and
+                            # Match by DB component ID first (most reliable)
+                            existing_db_id = existing_comp.get('db_component_id') or existing_comp.get('hvac_component_id')
+                            if comp_db_id and existing_db_id and comp_db_id == existing_db_id:
+                                # Ensure the existing component has all necessary IDs
+                                existing_comp['db_component_id'] = comp_db_id
+                                existing_comp['hvac_component_id'] = comp_db_id
+                                existing_comp['db_path_id'] = hvac_path.id
+                                existing_comp['hvac_path_id'] = hvac_path.id
+                                if existing_comp.get('page_number') is None:
+                                    existing_comp['page_number'] = comp.get('page_number') or current_page
+                                path_components.append(existing_comp)
+                                existing = True
+                                break
+
+                            # Fall back to normalized coordinate comparison
+                            exist_z = existing_comp.get('saved_zoom') or 1.0
+                            exist_base_x = existing_comp.get('x', 0) / exist_z
+                            exist_base_y = existing_comp.get('y', 0) / exist_z
+
+                            # Use tolerance of 5 pixels at base zoom for comparison
+                            if (abs(exist_base_x - comp_base_x) < 5 and
+                                abs(exist_base_y - comp_base_y) < 5 and
                                 existing_comp.get('component_type') == comp.get('component_type')):
-                                # Already exists, use the existing one
+                                # Ensure the existing component has all necessary IDs
+                                existing_comp['db_component_id'] = comp_db_id
+                                existing_comp['hvac_component_id'] = comp_db_id
+                                existing_comp['db_path_id'] = hvac_path.id
+                                existing_comp['hvac_path_id'] = hvac_path.id
+                                if existing_comp.get('page_number') is None:
+                                    existing_comp['page_number'] = comp.get('page_number') or current_page
                                 path_components.append(existing_comp)
                                 existing = True
                                 break
                         
                         if not existing:
-                            # Add to overlay
+                            # Scale coordinates to current overlay zoom before adding
+                            current_z = self.drawing_overlay._current_zoom_factor or 1.0
+                            comp['x'] = int(comp_base_x * current_z)
+                            comp['y'] = int(comp_base_y * current_z)
+                            comp['saved_zoom'] = current_z
+                            if comp.get('page_number') is None:
+                                comp['page_number'] = current_page
+                            # Note: page_number should come from DrawingElement.to_dict() if available
+                            # Don't override with current_page as that would be wrong for multi-page
                             self.drawing_overlay.components.append(comp)
                             path_components.append(comp)
                     
@@ -3681,26 +4267,64 @@ class DrawingInterface(QMainWindow):
                             if 'to_component' not in seg:
                                 seg['to_component'] = props.get('to_component')
                         
+                        # Normalize segment coordinates to base (zoom=1.0) for comparison
+                        seg_z = seg.get('saved_zoom') or 1.0
+                        seg_base_sx = seg.get('start_x', 0) / seg_z
+                        seg_base_sy = seg.get('start_y', 0) / seg_z
+                        seg_base_ex = seg.get('end_x', 0) / seg_z
+                        seg_base_ey = seg.get('end_y', 0) / seg_z
+                        
                         # Add to overlay segments if not already there
                         existing = False
+                        seg_db_id = seg.get('db_segment_id') or seg.get('hvac_segment_id')
                         for existing_seg in self.drawing_overlay.segments:
-                            if (abs(existing_seg.get('start_x', 0) - seg.get('start_x', 0)) < 5 and
-                                abs(existing_seg.get('start_y', 0) - seg.get('start_y', 0)) < 5 and
-                                abs(existing_seg.get('end_x', 0) - seg.get('end_x', 0)) < 5 and
-                                abs(existing_seg.get('end_y', 0) - seg.get('end_y', 0)) < 5):
-                                # Already exists, use the existing one
+                            # Match by DB segment ID first
+                            existing_db_id = existing_seg.get('db_segment_id') or existing_seg.get('hvac_segment_id')
+                            if seg_db_id and existing_db_id and seg_db_id == existing_db_id:
+                                if existing_seg.get('page_number') is None:
+                                    existing_seg['page_number'] = seg.get('page_number') or current_page
+                                path_segments.append(existing_seg)
+                                existing = True
+                                break
+                            
+                            # Fall back to normalized coordinate comparison
+                            exist_z = existing_seg.get('saved_zoom') or 1.0
+                            exist_base_sx = existing_seg.get('start_x', 0) / exist_z
+                            exist_base_sy = existing_seg.get('start_y', 0) / exist_z
+                            exist_base_ex = existing_seg.get('end_x', 0) / exist_z
+                            exist_base_ey = existing_seg.get('end_y', 0) / exist_z
+                            
+                            if (abs(exist_base_sx - seg_base_sx) < 5 and
+                                abs(exist_base_sy - seg_base_sy) < 5 and
+                                abs(exist_base_ex - seg_base_ex) < 5 and
+                                abs(exist_base_ey - seg_base_ey) < 5):
+                                if existing_seg.get('page_number') is None:
+                                    existing_seg['page_number'] = seg.get('page_number') or current_page
                                 path_segments.append(existing_seg)
                                 existing = True
                                 break
                         
                         if not existing:
-                            # Add to overlay
+                            # Scale coordinates to current overlay zoom before adding
+                            current_z = self.drawing_overlay._current_zoom_factor or 1.0
+                            seg['start_x'] = int(seg_base_sx * current_z)
+                            seg['start_y'] = int(seg_base_sy * current_z)
+                            seg['end_x'] = int(seg_base_ex * current_z)
+                            seg['end_y'] = int(seg_base_ey * current_z)
+                            seg['saved_zoom'] = current_z
+                            if seg.get('page_number') is None:
+                                seg['page_number'] = current_page
+                            # Note: page_number should come from DrawingElement.to_dict() if available
+                            # Don't override with current_page as that would be wrong for multi-page
                             self.drawing_overlay.segments.append(seg)
                             path_segments.append(seg)
                     
                     if path_components or path_segments:
                         linked_elements_loaded = True
                         print(f"DEBUG: Loaded {len(path_components)} components and {len(path_segments)} segments from database for path {path_id}")
+                        # Mark base cache as dirty so coordinates are recalculated with saved_zoom
+                        self.drawing_overlay._base_dirty = True
+                        self.drawing_overlay.set_zoom_factor(self.drawing_overlay._current_zoom_factor)
                         
             except Exception as load_e:
                 print(f"DEBUG: Could not load linked elements for path {path_id}: {load_e}")
@@ -3718,33 +4342,79 @@ class DrawingInterface(QMainWindow):
                 for i, segment in enumerate(hvac_path.segments):
                     if segment.from_component:
                         db_comp = segment.from_component
-                        
-                        # Look for matching component in drawing elements
+
+                        # Look for matching component in drawing elements with fuzzy tolerance
                         found = False
+                        tol = 12.0  # pixels tolerance (matching segment logic)
+                        db_x = db_comp.x_position or 0
+                        db_y = db_comp.y_position or 0
+                        db_page = db_comp.page_number or 1  # Get page from database
+
                         for comp in drawing_components:
-                            if (comp.get('x') == db_comp.x_position and
-                                comp.get('y') == db_comp.y_position and
+                            # Skip components on different pages to avoid cross-page contamination
+                            comp_page = comp.get('page_number')
+                            if comp_page is not None and comp_page != db_page:
+                                continue
+                            
+                            # Normalize overlay component to base coordinates
+                            comp_zoom = comp.get('saved_zoom') or 1.0
+                            if comp_zoom <= 0:
+                                comp_zoom = 1.0
+                            comp_base_x = comp.get('x', 0) / comp_zoom
+                            comp_base_y = comp.get('y', 0) / comp_zoom
+
+                            if (abs(comp_base_x - db_x) <= tol and
+                                abs(comp_base_y - db_y) <= tol and
                                 comp.get('component_type') == db_comp.component_type):
                                 if comp not in path_components:
                                     path_components.append(comp)
-                                    # Attach DB id for edit lookups
+                                    # Add ALL required IDs for visibility matching and filtering
                                     comp['db_component_id'] = db_comp.id
+                                    comp['hvac_component_id'] = db_comp.id
+                                    comp['db_path_id'] = hvac_path.id
+                                    comp['hvac_path_id'] = hvac_path.id
+                                    # Use database page_number, not current_page
+                                    if comp.get('page_number') is None:
+                                        comp['page_number'] = db_page
                                 found = True
                                 break
                     
                     if segment.to_component:
                         db_comp = segment.to_component
-                        
-                        # Look for matching component in drawing elements
+
+                        # Look for matching component in drawing elements with fuzzy tolerance
                         found = False
+                        tol = 12.0  # pixels tolerance (matching segment logic)
+                        db_x = db_comp.x_position or 0
+                        db_y = db_comp.y_position or 0
+                        db_page = db_comp.page_number or 1  # Get page from database
+
                         for comp in drawing_components:
-                            if (comp.get('x') == db_comp.x_position and
-                                comp.get('y') == db_comp.y_position and
+                            # Skip components on different pages to avoid cross-page contamination
+                            comp_page = comp.get('page_number')
+                            if comp_page is not None and comp_page != db_page:
+                                continue
+                            
+                            # Normalize overlay component to base coordinates
+                            comp_zoom = comp.get('saved_zoom') or 1.0
+                            if comp_zoom <= 0:
+                                comp_zoom = 1.0
+                            comp_base_x = comp.get('x', 0) / comp_zoom
+                            comp_base_y = comp.get('y', 0) / comp_zoom
+
+                            if (abs(comp_base_x - db_x) <= tol and
+                                abs(comp_base_y - db_y) <= tol and
                                 comp.get('component_type') == db_comp.component_type):
                                 if comp not in path_components:
                                     path_components.append(comp)
-                                    # Attach DB id for edit lookups
+                                    # Add ALL required IDs for visibility matching and filtering
                                     comp['db_component_id'] = db_comp.id
+                                    comp['hvac_component_id'] = db_comp.id
+                                    comp['db_path_id'] = hvac_path.id
+                                    comp['hvac_path_id'] = hvac_path.id
+                                    # Use database page_number, not current_page
+                                    if comp.get('page_number') is None:
+                                        comp['page_number'] = db_page
                                 found = True
                                 break
                     
@@ -3756,7 +4426,15 @@ class DrawingInterface(QMainWindow):
                         fy = float(segment.from_component.y_position or 0.0)
                         tx = float(segment.to_component.x_position or 0.0)
                         ty = float(segment.to_component.y_position or 0.0)
+                        # Get page from the segment's components (use from_component's page)
+                        seg_db_page = segment.from_component.page_number or 1
+                        
                         for seg in drawing_segments:
+                            # Skip segments on different pages to avoid cross-page contamination
+                            seg_page = seg.get('page_number')
+                            if seg_page is not None and seg_page != seg_db_page:
+                                continue
+                            
                             # Check if this segment connects the same components (within tolerance)
                             from_comp = seg.get('from_component')
                             to_comp = seg.get('to_component')
@@ -3770,6 +4448,9 @@ class DrawingInterface(QMainWindow):
                                     # Attach DB ids for edit lookups
                                     seg['db_segment_id'] = segment.id
                                     seg['db_path_id'] = hvac_path.id
+                                    # Use database page_number, not current_page
+                                    if seg.get('page_number') is None:
+                                        seg['page_number'] = seg_db_page
                                     # Also synchronize overlay label length with DB value
                                     try:
                                         seg['length_real'] = float(getattr(segment, 'length', 0) or 0)
@@ -3785,13 +4466,27 @@ class DrawingInterface(QMainWindow):
                 if not path_components and not path_segments and hvac_path.segments:
                     print(f"DEBUG: Reconstructing visual elements from HVAC component positions for path {path_id}")
                     path_components, path_segments = self._reconstruct_path_visuals_from_db(hvac_path)
+
+            # If we have segments but no components (e.g. only segments were linked/saved),
+            # reconstruct component visuals so the path renders with circles.
+            if not path_components and hvac_path.segments:
+                print(f"DEBUG: Reconstructing missing components for path {path_id}")
+                recon_components, recon_segments = self._reconstruct_path_visuals_from_db(hvac_path)
+                if recon_components:
+                    path_components = recon_components
+                if not path_segments and recon_segments:
+                    path_segments = recon_segments
             
             # Register the found elements
             if path_components or path_segments:
                 self.drawing_overlay.register_path_elements(path_id, path_components, path_segments)
                 print(f"DEBUG: Registered path {path_id} with {len(path_components)} components and {len(path_segments)} segments")
-            else:
-                print(f"DEBUG: No elements found to register for path {path_id}")
+                
+                # If elements were reconstructed from DB (not linked elements), update zoom coordinates
+                # This ensures elements with base zoom coordinates (saved_zoom=1.0) are properly scaled
+                if not linked_elements_loaded:
+                    self.drawing_overlay._base_dirty = True
+                    self.drawing_overlay.set_zoom_factor(self.drawing_overlay._current_zoom_factor)
             
         except Exception as e:
             print(f"Error registering path elements for path {hvac_path.id}: {e}")
@@ -3803,7 +4498,9 @@ class DrawingInterface(QMainWindow):
         position-based matching fails. It creates new overlay elements from the
         HVACComponent and HVACSegment positions stored in the database.
         
-        Only reconstructs elements for components on the current drawing.
+        Only reconstructs elements for components on the current drawing AND page.
+        Since HVACComponent doesn't store page_number, we use DrawingElement records
+        to determine which page each component belongs to.
         
         Args:
             hvac_path: HVACPath object with segments and components
@@ -3817,31 +4514,134 @@ class DrawingInterface(QMainWindow):
         
         # Get current drawing context
         current_drawing_id = self.drawing.id if self.drawing else None
+        current_page = self.current_page_number
+        
+        # Build a set of hvac_component_ids that have DrawingElements on the current page
+        # This is the source of truth for which components belong to which page
+        components_on_current_page = set()
+        # Also build a set of hvac_segment_ids that have DrawingElements on the current page
+        segments_on_current_page = set()
+        try:
+            from models.drawing_elements import DrawingElement
+            session = get_session()
+            # Query DrawingElements for components on the current drawing/page
+            comp_elements = session.query(DrawingElement.hvac_component_id).filter(
+                DrawingElement.hvac_path_id == hvac_path.id,
+                DrawingElement.drawing_id == current_drawing_id,
+                DrawingElement.page_number == current_page,
+                DrawingElement.hvac_component_id.isnot(None)
+            ).all()
+            components_on_current_page = {e[0] for e in comp_elements if e[0] is not None}
+            
+            # Query DrawingElements for segments on the current drawing/page
+            seg_elements = session.query(DrawingElement.hvac_segment_id).filter(
+                DrawingElement.hvac_path_id == hvac_path.id,
+                DrawingElement.drawing_id == current_drawing_id,
+                DrawingElement.page_number == current_page,
+                DrawingElement.hvac_segment_id.isnot(None)
+            ).all()
+            segments_on_current_page = {e[0] for e in seg_elements if e[0] is not None}
+            
+            session.close()
+            print(f"DEBUG: Found {len(components_on_current_page)} component IDs and {len(segments_on_current_page)} segment IDs on page {current_page} for path {hvac_path.id}")
+                
+        except Exception as e:
+            print(f"DEBUG: Could not query DrawingElements for page filtering: {e}")
         
         try:
             for segment in hvac_path.segments:
-                # Reconstruct component visuals - only for components on this drawing
+                # Reconstruct component visuals - only for components on this drawing AND page
                 for db_comp in [segment.from_component, segment.to_component]:
                     if db_comp and db_comp.id not in seen_comp_ids:
+                        # #region agent log
+                        import json, time
+                        try:
+                            on_current_page = db_comp.id in components_on_current_page if components_on_current_page else True
+                            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({"location": "drawing_interface.py:_reconstruct_path_visuals_from_db:check_comp", "message": "Checking component for reconstruction", "data": {"db_comp_id": db_comp.id, "db_comp_drawing_id": db_comp.drawing_id, "db_comp_x": db_comp.x_position, "db_comp_y": db_comp.y_position, "db_comp_type": db_comp.component_type, "current_drawing_id": current_drawing_id, "current_page": current_page, "on_current_page": on_current_page, "will_skip_drawing": current_drawing_id and db_comp.drawing_id != current_drawing_id, "will_skip_page": components_on_current_page and db_comp.id not in components_on_current_page}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "B,E"}) + '\n')
+                        except: pass
+                        # #endregion
                         # Skip components that are not on the current drawing
                         if current_drawing_id and db_comp.drawing_id != current_drawing_id:
                             continue
+                        
+                        # Skip components that are not on the current page
+                        # First check if HVACComponent has page_number set (newer data)
+                        comp_page = getattr(db_comp, 'page_number', None)
+                        if comp_page is not None and comp_page != current_page:
+                            print(f"DEBUG: Skipping component {db_comp.id} - page_number {comp_page} != current page {current_page}")
+                            continue
+                        
+                        # Fallback: check DrawingElement records for page info (older data)
+                        if comp_page is None and components_on_current_page and db_comp.id not in components_on_current_page:
+                            print(f"DEBUG: Skipping component {db_comp.id} - not in DrawingElements on page {current_page}")
+                            continue
                             
-                        comp_visual = {
-                            'type': 'component',
-                            'x': db_comp.x_position,
-                            'y': db_comp.y_position,
-                            'component_type': db_comp.component_type,
-                            'db_component_id': db_comp.id,
-                            'hvac_component_id': db_comp.id,
-                            'db_path_id': hvac_path.id,
-                            'hvac_path_id': hvac_path.id,
-                        }
-                        path_components.append(comp_visual)
-                        self.drawing_overlay.components.append(comp_visual)
+                        # Check if this component already exists in overlay by DB ID
+                        existing_comp = None
+                        for overlay_comp in self.drawing_overlay.components:
+                            existing_db_id = overlay_comp.get('db_component_id') or overlay_comp.get('hvac_component_id')
+                            if existing_db_id and existing_db_id == db_comp.id:
+                                existing_comp = overlay_comp
+                                break
+                        
+                        if existing_comp:
+                            # Use existing component, but ensure it has all DB IDs
+                            existing_comp['db_component_id'] = db_comp.id
+                            existing_comp['hvac_component_id'] = db_comp.id
+                            existing_comp['db_path_id'] = hvac_path.id
+                            existing_comp['hvac_path_id'] = hvac_path.id
+                            path_components.append(existing_comp)
+                        else:
+                            # Create new visual element
+                            # Get page_number from HVACComponent if available, otherwise from DrawingElement check
+                            comp_page = getattr(db_comp, 'page_number', None)
+                            comp_visual = {
+                                'type': 'component',
+                                'x': db_comp.x_position,
+                                'y': db_comp.y_position,
+                                'component_type': db_comp.component_type,
+                                'custom_type_label': getattr(db_comp, 'custom_type_label', None),
+                                'db_component_id': db_comp.id,
+                                'hvac_component_id': db_comp.id,
+                                'db_path_id': hvac_path.id,
+                                'hvac_path_id': hvac_path.id,
+                                'saved_zoom': 1.0,  # DB coordinates are at base zoom
+                                # Always set page_number - use DB value if available, else current_page
+                                # This prevents elements from appearing on all pages
+                                'page_number': comp_page if comp_page is not None else current_page,
+                            }
+                            
+                            # DEFENSIVE: Check for existing component at same position before appending
+                            # This prevents duplicate components when matching fails due to coordinate mismatch
+                            is_duplicate = False
+                            for existing in self.drawing_overlay.components:
+                                # Normalize both to base coordinates for comparison
+                                exist_zoom = existing.get('saved_zoom') or 1.0
+                                exist_x = existing.get('x', 0) / exist_zoom if exist_zoom > 0 else existing.get('x', 0)
+                                exist_y = existing.get('y', 0) / exist_zoom if exist_zoom > 0 else existing.get('y', 0)
+                                comp_x = db_comp.x_position
+                                comp_y = db_comp.y_position
+                                
+                                if (abs(exist_x - comp_x) < 15 and 
+                                    abs(exist_y - comp_y) < 15 and 
+                                    existing.get('component_type') == db_comp.component_type):
+                                    # Update existing component with DB IDs instead of creating duplicate
+                                    existing['db_component_id'] = db_comp.id
+                                    existing['hvac_component_id'] = db_comp.id
+                                    existing['db_path_id'] = hvac_path.id
+                                    existing['hvac_path_id'] = hvac_path.id
+                                    path_components.append(existing)
+                                    is_duplicate = True
+                                    print(f"DEBUG: Found existing component at similar position, updated with DB IDs instead of creating duplicate")
+                                    break
+                            
+                            if not is_duplicate:
+                                path_components.append(comp_visual)
+                                self.drawing_overlay.components.append(comp_visual)
                         seen_comp_ids.add(db_comp.id)
                 
-                # Reconstruct segment visual - only if BOTH endpoints are on this drawing
+                # Reconstruct segment visual - only if BOTH endpoints are on this drawing AND page
                 if segment.from_component and segment.to_component:
                     from_comp = segment.from_component
                     to_comp = segment.to_component
@@ -3851,38 +4651,121 @@ class DrawingInterface(QMainWindow):
                         if from_comp.drawing_id != current_drawing_id or to_comp.drawing_id != current_drawing_id:
                             continue
                     
-                    seg_visual = {
-                        'type': 'segment',
-                        'start_x': from_comp.x_position,
-                        'start_y': from_comp.y_position,
-                        'end_x': to_comp.x_position,
-                        'end_y': to_comp.y_position,
-                        'from_component': {
-                            'x': from_comp.x_position,
-                            'y': from_comp.y_position,
-                            'component_type': from_comp.component_type,
-                        },
-                        'to_component': {
-                            'x': to_comp.x_position,
-                            'y': to_comp.y_position,
-                            'component_type': to_comp.component_type,
-                        },
-                        'db_segment_id': segment.id,
-                        'hvac_segment_id': segment.id,
-                        'db_path_id': hvac_path.id,
-                        'hvac_path_id': hvac_path.id,
-                        'length_real': segment.length,
-                    }
+                    # CRITICAL: If we have DrawingElement records for some components but NOT for
+                    # the segment endpoints, skip this segment - it belongs to a different page
+                    if components_on_current_page:
+                        if from_comp.id not in components_on_current_page or to_comp.id not in components_on_current_page:
+                            print(f"DEBUG: Skipping segment {segment.id} - endpoints not on page {current_page}")
+                            # #region agent log
+                            import json, time
+                            try:
+                                with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                                    f.write(json.dumps({"location": "drawing_interface.py:reconstruct_segment_skip", "message": "Skipping segment - wrong page (endpoints)", "data": {"seg_id": segment.id, "current_page": current_page, "from_comp_id": from_comp.id, "to_comp_id": to_comp.id, "components_on_page": list(components_on_current_page)[:10]}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "F"}) + '\n')
+                            except: pass
+                            # #endregion
+                            continue
                     
-                    # Format length for display
-                    try:
-                        fmtr = self.drawing_overlay.scale_manager.format_distance
-                        seg_visual['length_formatted'] = fmtr(segment.length or 0)
-                    except Exception:
-                        seg_visual['length_formatted'] = f"{segment.length:.1f} ft" if segment.length else "0 ft"
+                    # Also skip if segment's DrawingElement is not on the current page
+                    if segments_on_current_page and segment.id not in segments_on_current_page:
+                        print(f"DEBUG: Skipping segment {segment.id} - not in DrawingElements on page {current_page}")
+                        # #region agent log
+                        import json, time
+                        try:
+                            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({"location": "drawing_interface.py:reconstruct_segment_skip", "message": "Skipping segment - wrong page (DrawingElement)", "data": {"seg_id": segment.id, "current_page": current_page, "segments_on_page": list(segments_on_current_page)[:10]}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "F"}) + '\n')
+                        except: pass
+                        # #endregion
+                        continue
                     
-                    path_segments.append(seg_visual)
-                    self.drawing_overlay.segments.append(seg_visual)
+                    # Check if this segment already exists in overlay by DB ID
+                    existing_seg = None
+                    for overlay_seg in self.drawing_overlay.segments:
+                        existing_db_id = overlay_seg.get('db_segment_id') or overlay_seg.get('hvac_segment_id')
+                        if existing_db_id and existing_db_id == segment.id:
+                            existing_seg = overlay_seg
+                            break
+                    
+                    if existing_seg:
+                        # Use existing segment
+                        path_segments.append(existing_seg)
+                    else:
+                        # Create new visual element
+                        # Get page_number from endpoint components if available
+                        seg_page = getattr(from_comp, 'page_number', None) or getattr(to_comp, 'page_number', None)
+                        seg_visual = {
+                            'type': 'segment',
+                            'start_x': from_comp.x_position,
+                            'start_y': from_comp.y_position,
+                            'end_x': to_comp.x_position,
+                            'end_y': to_comp.y_position,
+                            'from_component': {
+                                'x': from_comp.x_position,
+                                'y': from_comp.y_position,
+                                'component_type': from_comp.component_type,
+                            },
+                            'to_component': {
+                                'x': to_comp.x_position,
+                                'y': to_comp.y_position,
+                                'component_type': to_comp.component_type,
+                            },
+                            'db_segment_id': segment.id,
+                            'hvac_segment_id': segment.id,
+                            'db_path_id': hvac_path.id,
+                            'hvac_path_id': hvac_path.id,
+                            'length_real': segment.length,
+                            'saved_zoom': 1.0,  # DB coordinates are at base zoom
+                            # Always set page_number - use endpoint value if available, else current_page
+                            # This prevents segments from appearing on all pages
+                            'page_number': seg_page if seg_page is not None else current_page,
+                        }
+                        
+                        # Format length for display
+                        try:
+                            fmtr = self.drawing_overlay.scale_manager.format_distance
+                            seg_visual['length_formatted'] = fmtr(segment.length or 0)
+                        except Exception:
+                            seg_visual['length_formatted'] = f"{segment.length:.1f} ft" if segment.length else "0 ft"
+                        
+                        # #region agent log
+                        import json, time
+                        try:
+                            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                                f.write(json.dumps({"location": "drawing_interface.py:reconstruct_segment_add", "message": "Adding reconstructed segment", "data": {"seg_id": segment.id, "current_page": current_page, "start_x": seg_visual['start_x'], "start_y": seg_visual['start_y'], "end_x": seg_visual['end_x'], "end_y": seg_visual['end_y'], "hvac_path_id": hvac_path.id}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "F"}) + '\n')
+                        except: pass
+                        # #endregion
+                        
+                        # DEFENSIVE: Check for existing segment at same position before appending
+                        is_seg_duplicate = False
+                        for existing_seg in self.drawing_overlay.segments:
+                            # Normalize both to base coordinates for comparison
+                            exist_zoom = existing_seg.get('saved_zoom') or 1.0
+                            if exist_zoom <= 0:
+                                exist_zoom = 1.0
+                            exist_sx = existing_seg.get('start_x', 0) / exist_zoom
+                            exist_sy = existing_seg.get('start_y', 0) / exist_zoom
+                            exist_ex = existing_seg.get('end_x', 0) / exist_zoom
+                            exist_ey = existing_seg.get('end_y', 0) / exist_zoom
+                            
+                            seg_sx = seg_visual['start_x']
+                            seg_sy = seg_visual['start_y']
+                            seg_ex = seg_visual['end_x']
+                            seg_ey = seg_visual['end_y']
+                            
+                            if (abs(exist_sx - seg_sx) < 15 and abs(exist_sy - seg_sy) < 15 and
+                                abs(exist_ex - seg_ex) < 15 and abs(exist_ey - seg_ey) < 15):
+                                # Update existing segment with DB IDs instead of creating duplicate
+                                existing_seg['db_segment_id'] = segment.id
+                                existing_seg['hvac_segment_id'] = segment.id
+                                existing_seg['db_path_id'] = hvac_path.id
+                                existing_seg['hvac_path_id'] = hvac_path.id
+                                path_segments.append(existing_seg)
+                                is_seg_duplicate = True
+                                print(f"DEBUG: Found existing segment at similar position, updated with DB IDs instead of creating duplicate")
+                                break
+                        
+                        if not is_seg_duplicate:
+                            path_segments.append(seg_visual)
+                            self.drawing_overlay.segments.append(seg_visual)
             
             print(f"DEBUG: Reconstructed {len(path_components)} components and {len(path_segments)} segments from DB for path {hvac_path.id}")
             
@@ -3915,6 +4798,8 @@ class DrawingInterface(QMainWindow):
             for comp in (components or []):
                 comp['hvac_path_id'] = hvac_path_id
                 comp['db_path_id'] = hvac_path_id
+                if comp.get('page_number') is None:
+                    comp['page_number'] = self.current_page_number
                 # Also try to link to specific component ID if available
                 db_comp_id = comp.get('db_component_id')
                 if db_comp_id:
@@ -3923,18 +4808,54 @@ class DrawingInterface(QMainWindow):
             for seg in (segments or []):
                 seg['hvac_path_id'] = hvac_path_id
                 seg['db_path_id'] = hvac_path_id
+                if seg.get('page_number') is None:
+                    seg['page_number'] = self.current_page_number
                 # Also try to link to specific segment ID if available
                 db_seg_id = seg.get('db_segment_id')
                 if db_seg_id:
                     seg['hvac_segment_id'] = db_seg_id
+            
+            # Normalize components to base zoom before saving
+            normalized_components = []
+            for comp in (components or []):
+                comp_z = comp.get('saved_zoom') or 1.0
+                if comp_z <= 0:
+                    comp_z = 1.0
+                normalized = comp.copy()
+                # Convert to base coordinates
+                if comp.get('x') is not None:
+                    normalized['x'] = comp.get('x', 0) / comp_z
+                if comp.get('y') is not None:
+                    normalized['y'] = comp.get('y', 0) / comp_z
+                normalized['saved_zoom'] = 1.0  # Store at base zoom
+                normalized_components.append(normalized)
+            
+            # Normalize segments to base zoom before saving
+            normalized_segments = []
+            for seg in (segments or []):
+                seg_z = seg.get('saved_zoom') or 1.0
+                if seg_z <= 0:
+                    seg_z = 1.0
+                normalized = seg.copy()
+                # Convert to base coordinates
+                if seg.get('start_x') is not None:
+                    normalized['start_x'] = seg.get('start_x', 0) / seg_z
+                if seg.get('start_y') is not None:
+                    normalized['start_y'] = seg.get('start_y', 0) / seg_z
+                if seg.get('end_x') is not None:
+                    normalized['end_x'] = seg.get('end_x', 0) / seg_z
+                if seg.get('end_y') is not None:
+                    normalized['end_y'] = seg.get('end_y', 0) / seg_z
+                normalized['saved_zoom'] = 1.0  # Store at base zoom
+                normalized_segments.append(normalized)
             
             # Use the element manager to save path-linked elements
             elements_saved = self.element_manager.save_path_elements(
                 self.drawing.id,
                 self.project_id,
                 hvac_path_id,
-                components or [],
-                segments or [],
+                normalized_components,
+                normalized_segments,
                 self.current_page_number
             )
             
@@ -4022,6 +4943,10 @@ class DrawingInterface(QMainWindow):
             
             # Also make sure the path is visible on drawing
             self.show_path_on_drawing(hvac_path.id)
+            
+            # Update analysis panel to show this path's calculations
+            if hasattr(self, 'analysis_panel') and self.analysis_panel:
+                self.analysis_panel.set_path(hvac_path.id)
             
             print(f"DEBUG: Selected path {hvac_path.id} ({hvac_path.name}) for editing")
             
@@ -4134,17 +5059,33 @@ class DrawingInterface(QMainWindow):
             print(f"ERROR: populate_path_element_list failed: {e}")
     
     def toggle_path_visibility(self, path_id: int, visible: bool, button: QPushButton):
-        """Toggle a path's visibility using the eye button"""
-        print(f"DEBUG: Toggle path {path_id} visibility: {visible}")
+        """Toggle a path's visibility using the eye button.
         
+        visible=True (checked) means path should be shown
+        visible=False (unchecked) means path should be hidden
+        """
+        # #region agent log
+        import json, time
+        try:
+            mapping = self.drawing_overlay.path_element_mapping.get(path_id, {}) if self.drawing_overlay else {}
+            reg_comps = mapping.get('components', [])
+            reg_segs = mapping.get('segments', [])
+            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
+                f.write(json.dumps({"location": "drawing_interface.py:toggle_path_visibility", "message": "Toggling path visibility", "data": {"path_id": path_id, "visible": visible, "hidden_paths_before": list(self.drawing_overlay.hidden_paths) if self.drawing_overlay else [], "num_registered_comps": len(reg_comps), "num_registered_segs": len(reg_segs), "sample_reg_comps": [{"x": c.get('x'), "y": c.get('y'), "type": c.get('component_type'), "db_id": c.get('db_component_id')} for c in reg_comps[:3]], "total_overlay_comps": len(self.drawing_overlay.components) if self.drawing_overlay else 0}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "C,D"}) + '\n')
+        except: pass
+        # #endregion
         # Update button appearance
         if visible:
             button.setText("👁️")  # Open eye for visible
         else:
             button.setText("👁️‍🗨️")  # Closed eye for hidden
             
-        # Call visibility handler
-        self.handle_path_visibility_changed(path_id, visible)
+        # Route through standard helpers to keep hidden/visible
+        # state consistent for normal and path-only modes.
+        if visible:
+            self.show_path_on_drawing(path_id)
+        else:
+            self.hide_path_on_drawing(path_id)
     
     def force_show_path(self, path_id: int):
         """Force show a path (debug method)"""
@@ -4240,6 +5181,198 @@ class DrawingInterface(QMainWindow):
         """Update any cached space data with fresh database values"""
         # This method can be extended to update specific UI elements
         pass
+
+    # ========== Analysis Panel Integration Methods ==========
+    
+    def on_drawing_element_hovered(self, element_id: object, element_type: str):
+        """Handle element hover on drawing - highlight in analysis panel"""
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.highlight_element_card(element_id, element_type)
+    
+    def on_drawing_element_unhovered(self):
+        """Handle element unhover on drawing - clear highlight in analysis panel"""
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.clear_highlight()
+    
+    def toggle_analysis_panel(self):
+        """Toggle the analysis panel visibility"""
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            if self.analysis_panel.content_widget.isVisible():
+                self.analysis_panel.collapse()
+            else:
+                self.analysis_panel.expand()
+    
+    def show_path_in_analysis_panel(self, path_id: int):
+        """Show a specific path in the analysis panel"""
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.expand()
+            self.analysis_panel.set_path(path_id)
+    
+    def highlight_element_on_drawing(self, element_id: object, element_type: str):
+        """Highlight a specific element on the drawing overlay (called from analysis panel hover)"""
+        if not self.drawing_overlay:
+            return
+        
+        try:
+            # Set highlighted element in overlay
+            self.drawing_overlay.set_highlighted_element(element_id, element_type)
+            self.drawing_overlay.update()
+        except AttributeError:
+            # If method doesn't exist yet, just log
+            print(f"DEBUG: highlight_element_on_drawing - overlay doesn't support highlighting yet")
+    
+    def clear_element_highlight_on_drawing(self):
+        """Clear element highlight on drawing (called from analysis panel unhover)"""
+        if not self.drawing_overlay:
+            return
+        
+        try:
+            self.drawing_overlay.clear_highlighted_element()
+            self.drawing_overlay.update()
+        except AttributeError:
+            pass
+    
+    def select_element_on_drawing(self, element_id: object, element_type: str):
+        """Select an element on the drawing (called from analysis panel click)"""
+        if not self.drawing_overlay:
+            return
+        
+        try:
+            self.drawing_overlay.set_selected_element(element_id, element_type)
+            self.drawing_overlay.update()
+        except AttributeError:
+            print(f"DEBUG: select_element_on_drawing - overlay doesn't support selection yet")
+    
+    def pan_to_element_on_drawing(self, element_id: object, element_type: str):
+        """Pan the drawing view to show a specific element"""
+        if not self.drawing_overlay or not self.pdf_viewer:
+            return
+        
+        try:
+            # Find element position on drawing
+            pos = self._find_element_position(element_id, element_type)
+            if pos:
+                # Pan viewer to center on position
+                self.pdf_viewer.center_on_point(pos[0], pos[1])
+        except Exception as e:
+            print(f"DEBUG: pan_to_element_on_drawing error: {e}")
+    
+    def _find_element_position(self, element_id: object, element_type: str):
+        """Find the position of an element on the drawing"""
+        if not element_id:
+            return None
+        
+        # Check components
+        for comp in self.drawing_overlay.components:
+            comp_id = comp.get('id') or comp.get('db_id')
+            if comp_id == element_id:
+                return (comp.get('x', 0), comp.get('y', 0))
+        
+        # Check segments (return midpoint)
+        for seg in self.drawing_overlay.segments:
+            seg_id = seg.get('id') or seg.get('db_id')
+            if seg_id == element_id:
+                x1, y1 = seg.get('start_x', 0), seg.get('start_y', 0)
+                x2, y2 = seg.get('end_x', 0), seg.get('end_y', 0)
+                return ((x1 + x2) / 2, (y1 + y2) / 2)
+        
+        # Check if it's a space/receiver
+        if element_type in ('receiver', 'space'):
+            for space_data in self.drawing_overlay.saved_spaces:
+                if space_data.get('id') == element_id:
+                    # Return center of space polygon
+                    coords = space_data.get('coordinates', [])
+                    if coords:
+                        xs = [c[0] for c in coords]
+                        ys = [c[1] for c in coords]
+                        return (sum(xs) / len(xs), sum(ys) / len(ys))
+        
+        return None
+    
+    def on_analysis_path_changed(self, path_id: int):
+        """Handle when the analysis panel selects a different path"""
+        # Update the visible paths to show this path on the drawing
+        if path_id and self.drawing_overlay:
+            # Add to visible paths
+            self.visible_paths.add(path_id)
+            # Use set_visible_paths which takes a list of path IDs
+            self.drawing_overlay.set_visible_paths(list(self.visible_paths))
+            self.drawing_overlay.update()
+            
+            # Also update the paths list selection
+            for i in range(self.paths_list.count()):
+                item = self.paths_list.item(i)
+                if item:
+                    item_path = item.data(Qt.UserRole)
+                    if item_path and getattr(item_path, 'id', None) == path_id:
+                        self.paths_list.setCurrentItem(item)
+                        break
+    
+    def edit_element_from_analysis(self, element_id: object, element_type: str):
+        """Open edit dialog for an element (called from analysis panel double-click)"""
+        if not element_id:
+            return
+        
+        try:
+            if element_type in ('segment', 'duct'):
+                # Open segment editor
+                from models.hvac_segment import HVACSegment
+                session = get_session()
+                segment = session.query(HVACSegment).filter(HVACSegment.id == element_id).first()
+                if segment:
+                    dialog = HVACSegmentDialog(
+                        self,
+                        hvac_path_id=segment.hvac_path_id,
+                        from_component=segment.from_component,
+                        to_component=segment.to_component,
+                        segment=segment
+                    )
+                    dialog.segment_saved.connect(self._on_segment_saved)
+                    if dialog.exec() == QDialog.Accepted:
+                        # Refresh analysis panel
+                        if hasattr(self, 'analysis_panel'):
+                            self.analysis_panel._recalculate_path()
+                session.close()
+                
+            elif element_type in ('source', 'component', 'ahu', 'fan', 'mechanical_unit', 
+                                  'elbow', 'silencer', 'diffuser', 'damper', 'terminal'):
+                # Open component editor
+                from models.hvac_component import HVACComponent
+                session = get_session()
+                component = session.query(HVACComponent).filter(HVACComponent.id == element_id).first()
+                if component:
+                    dialog = HVACComponentDialog(
+                        self,
+                        project_id=self.project_id,
+                        drawing_id=self.drawing_id,
+                        page_number=self.current_page_number,
+                        component=component
+                    )
+                    if dialog.exec() == QDialog.Accepted:
+                        # Refresh analysis panel
+                        if hasattr(self, 'analysis_panel'):
+                            self.analysis_panel._recalculate_path()
+                session.close()
+                
+            elif element_type in ('receiver', 'space'):
+                # Open space editor
+                from models.space import Space
+                session = get_session()
+                space = session.query(Space).filter(Space.id == element_id).first()
+                if space:
+                    dialog = SpaceEditDialog(self, space)
+                    dialog.show()  # Non-modal
+                session.close()
+                
+        except Exception as e:
+            print(f"DEBUG: edit_element_from_analysis error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def refresh_analysis_panel(self):
+        """Refresh the analysis panel data"""
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.refresh_paths()
 
     def closeEvent(self, event):
         """Handle window close event"""
