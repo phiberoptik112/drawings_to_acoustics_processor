@@ -10,6 +10,12 @@ from .acoustic_utilities import (
     calculate_dba_from_spectrum, combine_noise_levels, calculate_nc_rating, get_nc_description
 )
 
+# Import standardized result types
+from .result_types import (
+    ResultStatus, CalculationResult, PathCreationResult, ValidationResult,
+    OperationResult, SurfaceData, RT60Result, NCAnalysisData
+)
+
 
 # Lazy loading function to avoid circular imports
 def __getattr__(name):
@@ -86,7 +92,7 @@ __all__ = [
     # Core calculators
     'RT60Calculator',
     'EnhancedRT60Calculator',
-    'calculate_simple_rt60', 
+    'calculate_simple_rt60',
     'get_material_absorption_coeff',
     'NoiseCalculator',
     'HVACPathCalculator',
@@ -110,10 +116,19 @@ __all__ = [
     # Common utilities
     'AcousticConstants',
     'SpectrumProcessor',
-    'FrequencyBandManager', 
+    'FrequencyBandManager',
     'NCRatingUtils',
     'calculate_dba_from_spectrum',
     'combine_noise_levels',
     'calculate_nc_rating',
-    'get_nc_description'
+    'get_nc_description',
+    # Standardized result types
+    'ResultStatus',
+    'CalculationResult',
+    'PathCreationResult',
+    'ValidationResult',
+    'OperationResult',
+    'SurfaceData',
+    'RT60Result',
+    'NCAnalysisData'
 ]

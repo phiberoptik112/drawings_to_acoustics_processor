@@ -2,11 +2,14 @@
 Drawing model - represents PDF drawings in a project
 """
 
+import logging
 import os
 from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Float
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
+
+logger = logging.getLogger(__name__)
 
 
 def get_project_base_directory():
@@ -167,6 +170,8 @@ class Drawing(Base):
         abs_path = self.get_absolute_file_path()
         if abs_path and os.path.exists(abs_path):
             return abs_path, True
+
+        logger.debug(f"File not found at primary location, searching: {self.file_path}")
         
         # Get filename for searching
         filename = os.path.basename(self.file_path)
@@ -203,7 +208,8 @@ class Drawing(Base):
                             return os.path.abspath(candidate), True
             except OSError:
                 pass
-        
+
+        logger.warning(f"Could not locate file: {filename}")
         return None, False
     
     def update_file_path(self, new_path, make_relative=True, base_directory=None):

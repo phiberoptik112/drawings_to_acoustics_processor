@@ -13,7 +13,7 @@ from PySide6.QtGui import QFont
 from models import get_session
 from models.database import get_hvac_session
 from models.mechanical import MechanicalUnit
-from models.hvac import HVACComponent, HVACPath, HVACSegment
+from models.hvac import HVACComponent, HVACPath, HVACSegment, SilencerProduct
 from data.components import STANDARD_COMPONENTS
 from calculations.hvac_constants import get_default_cfm_for_component, is_valid_cfm_value
 
@@ -32,7 +32,9 @@ class HVACComponentDialog(QDialog):
         self.is_editing = component is not None
         # Track a selected Mechanical Unit from the chooser so we can persist on save
         self._selected_mech_unit_id = None
-        
+        # Track selected silencer product for silencer components
+        self._selected_silencer_product_id = None
+
         self.init_ui()
         if self.is_editing:
             self.load_component_data()
@@ -153,7 +155,29 @@ class HVACComponentDialog(QDialog):
         
         acoustic_group.setLayout(acoustic_layout)
         layout.addWidget(acoustic_group)
-        
+
+        # Silencer Properties (only shown for silencer component types)
+        self.silencer_group = QGroupBox("Silencer Product Selection")
+        silencer_layout = QFormLayout()
+
+        self.silencer_product_label = QLabel("No silencer selected")
+        self.silencer_product_label.setStyleSheet("color: #666;")
+        silencer_layout.addRow("Selected Product:", self.silencer_product_label)
+
+        self.select_silencer_btn = QPushButton("Select Silencer Product...")
+        self.select_silencer_btn.setToolTip("Open silencer product database to select a silencer with specific insertion loss")
+        self.select_silencer_btn.clicked.connect(self.open_silencer_selection)
+        silencer_layout.addRow("", self.select_silencer_btn)
+
+        self.silencer_details_label = QLabel("")
+        self.silencer_details_label.setWordWrap(True)
+        self.silencer_details_label.setStyleSheet("font-size: 11px; color: #444;")
+        silencer_layout.addRow(self.silencer_details_label)
+
+        self.silencer_group.setLayout(silencer_layout)
+        layout.addWidget(self.silencer_group)
+        self.silencer_group.setVisible(False)  # Hidden by default
+
         # Elbow Properties (only shown for elbow component types)
         self.elbow_group = QGroupBox("Elbow Properties")
         elbow_layout = QFormLayout()
@@ -470,15 +494,19 @@ class HVACComponentDialog(QDialog):
         
         # Get component type string
         ctype = (component_type or '').lower()
-        
+
         # Show the elbow properties only for elbow components
         show_elbow = 'elbow' in ctype
         self.elbow_group.setVisible(show_elbow)
-        
+
         # Show the junction preferences only for branch/junction-like components
         show_junction = ('branch' in ctype) or ('junction' in ctype) or ('tee' in ctype)
         self.junction_group.setVisible(show_junction)
-        
+
+        # Show silencer properties only for silencer components
+        show_silencer = ('silencer' in ctype)
+        self.silencer_group.setVisible(show_silencer)
+
         # Show custom type label only when type is custom
         show_custom = (ctype == 'custom')
         self.custom_label_row_widget.setVisible(show_custom)
@@ -497,7 +525,65 @@ class HVACComponentDialog(QDialog):
         else:
             self.noise_spin.setEnabled(True)
             self.cfm_spin.setEnabled(True)
-    
+
+    def open_silencer_selection(self):
+        """Open the silencer product selection dialog"""
+        try:
+            from ui.dialogs.silencer_filter_dialog import SilencerFilterDialog
+
+            # Build requirements from current context (CFM if available)
+            requirements = {}
+            cfm_value = self.cfm_spin.value()
+            if cfm_value > 0:
+                requirements['flow_rate'] = cfm_value
+
+            dialog = SilencerFilterDialog(
+                noise_requirements=requirements,
+                space_constraints={},
+                parent=self
+            )
+
+            if dialog.exec():
+                product = dialog.get_selected_product()
+                if product:
+                    self._apply_silencer_product(product)
+
+        except Exception as e:
+            QMessageBox.warning(self, "Silencer Selection",
+                                f"Failed to open silencer selection dialog:\n{e}")
+
+    def _apply_silencer_product(self, product: SilencerProduct):
+        """Apply selected silencer product to the component"""
+        # Store the product ID for saving
+        self._selected_silencer_product_id = product.id
+
+        # Update UI labels
+        self.silencer_product_label.setText(f"{product.manufacturer} {product.model_number}")
+        self.silencer_product_label.setStyleSheet("color: #2c3e50; font-weight: bold;")
+
+        # Build details text with insertion loss
+        details = f"Type: {product.silencer_type.title()}\n"
+        details += f"Size: {product.length}\" L × {product.width}\" W × {product.height}\" H\n"
+        details += f"Flow: {product.flow_rate_min}-{product.flow_rate_max} CFM\n"
+        details += f"Insertion Loss (dB): "
+        il_values = [
+            f"63Hz:{product.insertion_loss_63}",
+            f"125Hz:{product.insertion_loss_125}",
+            f"250Hz:{product.insertion_loss_250}",
+            f"500Hz:{product.insertion_loss_500}",
+            f"1kHz:{product.insertion_loss_1000}",
+            f"2kHz:{product.insertion_loss_2000}",
+            f"4kHz:{product.insertion_loss_4000}",
+            f"8kHz:{product.insertion_loss_8000}"
+        ]
+        details += "\n  " + ", ".join(il_values[:4])
+        details += "\n  " + ", ".join(il_values[4:])
+
+        self.silencer_details_label.setText(details)
+
+        print(f"DEBUG[HVACComponentDialog]: Selected silencer product id={product.id} "
+              f"({product.manufacturer} {product.model_number})")
+
     def load_component_data(self):
         """Load existing component data for editing"""
         if not self.component:
@@ -650,7 +736,20 @@ class HVACComponentDialog(QDialog):
                 self.has_vanes_cb.setChecked(False)
         except Exception as e:
             print(f"DEBUG: Failed to load elbow properties: {e}")
-    
+
+        # Load silencer product if this is a silencer component
+        try:
+            if self.component.selected_product_id:
+                session = get_session()
+                product = session.query(SilencerProduct).filter(
+                    SilencerProduct.id == self.component.selected_product_id
+                ).first()
+                if product:
+                    self._apply_silencer_product(product)
+                session.close()
+        except Exception as e:
+            print(f"DEBUG: Failed to load silencer product: {e}")
+
     def save_component(self):
         """Save the HVAC component using standardized session management"""
         # Validate inputs first
@@ -783,7 +882,15 @@ class HVACComponentDialog(QDialog):
                   f"num_vanes={component.num_vanes}")
         except Exception as e:
             print(f"DEBUG_COMPONENT_SAVE:   Error saving elbow properties: {e}")
-        
+
+        # Save silencer product selection
+        try:
+            if hasattr(self, '_selected_silencer_product_id') and self._selected_silencer_product_id:
+                component.selected_product_id = self._selected_silencer_product_id
+                print(f"DEBUG_COMPONENT_SAVE:   Silencer product: id={component.selected_product_id}")
+        except Exception as e:
+            print(f"DEBUG_COMPONENT_SAVE:   Error saving silencer product: {e}")
+
         # Handle mechanical unit association propagation
         self.update_mechanical_unit_associations(component, session)
     
@@ -802,6 +909,10 @@ class HVACComponentDialog(QDialog):
         
         comp_type = self.type_combo.currentText()
         custom_label = self.custom_label_edit.text().strip() if comp_type == 'custom' else None
+
+        # Get silencer product ID if selected
+        silencer_product_id = getattr(self, '_selected_silencer_product_id', None)
+
         return HVACComponent(
             project_id=self.project_id,
             drawing_id=self.drawing_id,
@@ -817,7 +928,8 @@ class HVACComponentDialog(QDialog):
             has_turning_vanes=has_vanes,
             vane_chord_length=vane_chord,
             num_vanes=num_vanes,
-            lining_thickness=lining_thickness
+            lining_thickness=lining_thickness,
+            selected_product_id=silencer_product_id
         )
     
     def update_mechanical_unit_associations(self, component, session):

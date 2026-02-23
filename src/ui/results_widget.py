@@ -2,7 +2,8 @@
 Results Widget - Comprehensive display of acoustic analysis results
 """
 
-from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+import logging
+from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QTabWidget, QTableWidget, QTableWidgetItem,
                              QTextEdit, QGroupBox, QPushButton, QFrame,
                              QScrollArea, QProgressBar, QSplitter)
@@ -14,6 +15,8 @@ from models.hvac import HVACPath, HVACComponent, HVACSegment
 from sqlalchemy.orm import selectinload
 from calculations import HVACPathCalculator, NCRatingAnalyzer
 from data.excel_exporter import ExcelExporter, EXCEL_EXPORT_AVAILABLE
+
+logger = logging.getLogger(__name__)
 
 
 class ResultsWidget(QWidget):
@@ -308,7 +311,7 @@ class ResultsWidget(QWidget):
                 self.refresh_data()
             
         except Exception as e:
-            print(f"Error loading project data: {e}")
+            logger.error(f"Error loading project data: {e}")
     
     def refresh_data(self):
         """Refresh all data displays"""
@@ -351,7 +354,7 @@ class ResultsWidget(QWidget):
             self.update_issues_tab(spaces, hvac_paths)
             
         except Exception as e:
-            print(f"Error refreshing data: {e}")
+            logger.error(f"Error refreshing data: {e}")
     
     def update_header_metrics(self, spaces, hvac_paths):
         """Update header metrics"""
@@ -454,14 +457,17 @@ class ResultsWidget(QWidget):
             
             self.spaces_table.setItem(row, 5, status_item)
             
-            # Materials summary
+            # Materials summary - use new materials system with fallback
             materials = []
-            if space.ceiling_material:
-                materials.append(f"C:{space.ceiling_material[:10]}")
-            if space.wall_material:
-                materials.append(f"W:{space.wall_material[:10]}")
-            if space.floor_material:
-                materials.append(f"F:{space.floor_material[:10]}")
+            ceiling_mat = space.get_primary_ceiling_material()
+            wall_mat = space.get_primary_wall_material()
+            floor_mat = space.get_primary_floor_material()
+            if ceiling_mat:
+                materials.append(f"C:{ceiling_mat[:10]}")
+            if wall_mat:
+                materials.append(f"W:{wall_mat[:10]}")
+            if floor_mat:
+                materials.append(f"F:{floor_mat[:10]}")
             
             materials_item = QTableWidgetItem(", ".join(materials))
             self.spaces_table.setItem(row, 6, materials_item)

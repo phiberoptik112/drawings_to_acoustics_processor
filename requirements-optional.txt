@@ -1,0 +1,17 @@
+# Optional ML-based OCR and Table Detection Dependencies
+# These are large (~2-3GB) and only needed for advanced OCR features
+# Install with: pip install -r requirements-optional.txt
+
+# Enhanced OCR Engines
+paddleocr>=2.7.0  # Best accuracy, CPU/GPU support (~200MB)
+
+# Table Detection & AI Models
+torch>=2.0.0  # PyTorch (~2GB)
+torchvision>=0.15.0
+transformers>=4.30.0  # Hugging Face Transformers
+timm>=0.9.0  # Required by Table Transformer
+
+# Optional: Cloud OCR APIs (uncomment if needed)
+# google-cloud-vision>=3.4.0  # Google Vision API
+# boto3>=1.28.0  # AWS Textract
+# azure-ai-formrecognizer>=3.3.0  # Azure Document Intelligence

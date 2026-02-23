@@ -8,6 +8,10 @@ from datetime import datetime
 from .database import Base
 import enum
 import math
+import logging
+import warnings
+
+logger = logging.getLogger(__name__)
 
 
 class SurfaceType(enum.Enum):
@@ -299,7 +303,61 @@ class Space(Base):
     def get_floor_materials(self):
         """Get floor materials (convenience method)"""
         return self.get_surface_materials(SurfaceType.FLOOR)
-    
+
+    def get_primary_ceiling_material(self):
+        """Get the primary ceiling material, preferring new system with legacy fallback.
+
+        Returns the first material from the new surface_materials system, or falls back
+        to the legacy ceiling_material field if no new materials exist.
+        """
+        materials = self.get_ceiling_materials()
+        if materials:
+            return materials[0]
+        return self.ceiling_material
+
+    def get_primary_wall_material(self):
+        """Get the primary wall material, preferring new system with legacy fallback.
+
+        Returns the first material from the new surface_materials system, or falls back
+        to the legacy wall_material field if no new materials exist.
+        """
+        materials = self.get_wall_materials()
+        if materials:
+            return materials[0]
+        return self.wall_material
+
+    def get_primary_floor_material(self):
+        """Get the primary floor material, preferring new system with legacy fallback.
+
+        Returns the first material from the new surface_materials system, or falls back
+        to the legacy floor_material field if no new materials exist.
+        """
+        materials = self.get_floor_materials()
+        if materials:
+            return materials[0]
+        return self.floor_material
+
+    def get_all_ceiling_materials(self):
+        """Get all ceiling materials as a list, preferring new system with legacy fallback."""
+        materials = self.get_ceiling_materials()
+        if materials:
+            return materials
+        return [self.ceiling_material] if self.ceiling_material else []
+
+    def get_all_wall_materials(self):
+        """Get all wall materials as a list, preferring new system with legacy fallback."""
+        materials = self.get_wall_materials()
+        if materials:
+            return materials
+        return [self.wall_material] if self.wall_material else []
+
+    def get_all_floor_materials(self):
+        """Get all floor materials as a list, preferring new system with legacy fallback."""
+        materials = self.get_floor_materials()
+        if materials:
+            return materials
+        return [self.floor_material] if self.floor_material else []
+
     def migrate_legacy_materials(self, session=None):
         """Migrate legacy single materials to new multiple materials system"""
         # Only migrate if we have legacy materials and no new materials
@@ -372,109 +430,15 @@ class Space(Base):
     
     def calculate_mechanical_background_noise(self):
         """Calculate mechanical background noise from HVAC paths serving this space.
-        Uses the unified HVACPathCalculator to build path data and compute spectra.
+
+        This method delegates to SpaceNoiseService for improved testability
+        and separation of concerns.
+
+        Returns:
+            dict: Contains nc_rating, sound_pressure_levels, paths_analyzed, success, and optionally error
         """
-        from calculations.hvac_path_calculator import HVACPathCalculator
-        from models import get_session
-        from sqlalchemy.orm import selectinload
-        from models.hvac import HVACPath
-        
-        if not self.hvac_paths:
-            return {
-                'nc_rating': None,
-                'sound_pressure_levels': {},
-                'paths_analyzed': 0,
-                'error': 'No HVAC paths found serving this space'
-            }
-        
-        path_calculator = HVACPathCalculator()
-        total_energy_by_freq = {63: 0.0, 125: 0.0, 250: 0.0, 500: 0.0, 1000: 0.0, 2000: 0.0, 4000: 0.0, 8000: 0.0}
-        paths_analyzed = 0
-        
-        for path in self.hvac_paths:
-            try:
-                # Fetch a fresh, session-bound path with relationships eager-loaded
-                session = get_session()
-                try:
-                    from models.hvac import HVACSegment  # local import to avoid cycles
-                    db_path = (
-                        session.query(HVACPath)
-                        .options(
-                            selectinload(HVACPath.segments).selectinload(HVACSegment.fittings),
-                            selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
-                            selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
-                            selectinload(HVACPath.primary_source),
-                        )
-                        .filter(HVACPath.id == getattr(path, 'id', None))
-                        .first()
-                    )
-                finally:
-                    try:
-                        session.close()
-                    except Exception:
-                        pass
-                if not db_path:
-                    continue
-                
-                # Build path data and calculate spectrum via the engine
-                path_data = path_calculator.build_path_data_from_db(db_path)
-                if not path_data:
-                    continue
-                calc = path_calculator.noise_calculator.calculate_hvac_path_noise(path_data)
-                spectrum = calc.get('octave_band_spectrum') or []
-                if not spectrum:
-                    continue
-                
-                # Accumulate energy by standard bands (assume order 63..8000)
-                standard_bands = [63, 125, 250, 500, 1000, 2000, 4000, 8000]
-                for i, freq in enumerate(standard_bands):
-                    if i < len(spectrum):
-                        lvl = float(spectrum[i] or 0.0)
-                        total_energy_by_freq[freq] += 10 ** (lvl / 10.0)
-                paths_analyzed += 1
-            except Exception as e:
-                print(f"Error calculating noise for path {getattr(path, 'id', '?')}: {e}")
-                continue
-        
-        # Convert back to dB SPL by band
-        final_sound_levels = {}
-        for freq, energy in total_energy_by_freq.items():
-            final_sound_levels[freq] = 10 * math.log10(energy) if energy > 0 else 0.0
-        
-        # Calculate NC rating from the combined spectrum
-        nc_rating = None
-        if any(energy > 0 for energy in total_energy_by_freq.values()):
-            try:
-                from calculations.nc_rating_analyzer import OctaveBandData
-                octave_data = OctaveBandData(
-                    freq_63=final_sound_levels.get(63, 0.0),
-                    freq_125=final_sound_levels.get(125, 0.0),
-                    freq_250=final_sound_levels.get(250, 0.0),
-                    freq_500=final_sound_levels.get(500, 0.0),
-                    freq_1000=final_sound_levels.get(1000, 0.0),
-                    freq_2000=final_sound_levels.get(2000, 0.0),
-                    freq_4000=final_sound_levels.get(4000, 0.0),
-                    freq_8000=final_sound_levels.get(8000, 0.0),
-                )
-                nc_results = path_calculator.nc_analyzer.analyze_nc_rating(octave_data) if hasattr(path_calculator, 'nc_analyzer') else None
-                # Fallback: compute using NoiseCalculator with final octave-band spectrum
-                if nc_results and isinstance(nc_results, dict):
-                    nc_rating = nc_results.get('nc_rating')
-                else:
-                    try:
-                        spectrum_list = [final_sound_levels.get(f, 0.0) for f in [63,125,250,500,1000,2000,4000,8000]]
-                        nc_rating = path_calculator.noise_calculator.calculate_nc_rating(spectrum_list)
-                    except Exception:
-                        nc_rating = None
-            except Exception as e:
-                print(f"Error calculating NC rating: {e}")
-        
-        return {
-            'nc_rating': nc_rating,
-            'sound_pressure_levels': final_sound_levels,
-            'paths_analyzed': paths_analyzed,
-            'success': True
-        }
+        from calculations.space_noise_service import calculate_space_mechanical_noise
+        return calculate_space_mechanical_noise(self)
     
     def get_mechanical_noise_status(self):
         """Get a summary of mechanical background noise status"""

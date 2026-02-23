@@ -11,13 +11,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **MVP COMPLETE** ✅ - Full working application with all core features implemented:
 
 - ✅ **Phase 1**: Project structure, database models, splash screen, dashboard
-- ✅ **Phase 2**: PDF viewer, drawing overlay system, scale management, drawing tools  
+- ✅ **Phase 2**: PDF viewer, drawing overlay system, scale management, drawing tools
 - ✅ **Phase 3**: Room properties dialog, RT60 calculations, space conversion
 - ✅ **Phase 4**: HVAC noise calculations, NC rating analysis, Excel export
 - ✅ **Final**: Results dashboard, comprehensive testing
 - ✅ **Enhancement**: Acoustic materials database integration with 1,339+ materials
 - ✅ **Advanced Feature**: Frequency-based material search system with treatment analysis
 - ✅ **Deployment**: Windows executable build system with git-based versioning
+
+**Sprint 4 - Completeness & Polish** (In Progress):
+
+- ✅ **Edge Case Tests**: 150 comprehensive tests across RT60, HVAC, database, and export modules
+- ✅ **Silencer Integration**: Silencer product selection in HVAC component dialog with insertion loss calculations
+- ✅ **Wall Type Library**: WallType model and UI dialog for user-defined wall codes with STC ratings (LEED compliance)
+- 🔄 **Performance Profiling**: Optimization of calculation engines and UI responsiveness
+- 🔄 **Documentation Update**: API documentation and user guide updates
+- 🔄 **UAT Preparation**: User acceptance testing materials and checklists
 
 ## Development Setup
 
@@ -218,11 +227,12 @@ deploy.bat
 - ✅ Core module imports
 - ✅ Database operations (CRUD)
 - ✅ RT60 calculation engine
-- ✅ HVAC noise calculation engine  
+- ✅ HVAC noise calculation engine
 - ✅ NC rating analysis
 - ✅ Data libraries (components, materials, fittings)
 - ✅ Excel export functionality
 - ✅ GUI component initialization
+- ✅ Edge case tests (150 tests): RT60, HVAC, database, NC rating, Excel export
 
 **Run Tests:**
 ```bash
@@ -231,10 +241,16 @@ python test_mvp.py
 
 # Run specific test categories
 python test_hvac_integration.py     # HVAC system integration
-python test_dialog_integration.py   # UI dialog functionality  
+python test_dialog_integration.py   # UI dialog functionality
 python test_material_search.py      # Material search system
 python test_space_drawing_integration.py  # Space-drawing integration
 python test_structure.py            # Basic structure validation
+
+# Edge case tests (150 tests total)
+pytest tests/test_rt60_edge_cases.py      # RT60 calculator edge cases
+pytest tests/test_hvac_edge_cases.py      # HVAC calculator edge cases
+pytest tests/test_database_edge_cases.py  # Database operations edge cases
+pytest tests/test_calculations_export_edge_cases.py  # NC rating & Excel export edge cases
 
 # Development testing (for debugging)
 python test_dialog_simulation.py    # Dialog behavior simulation
@@ -332,10 +348,11 @@ python src/calculations/hvac_validation.py
 - `Drawing`: PDF drawings with scale information and element storage
 - `Space`: Acoustic spaces with RT60 calculations and material assignments
 - `RoomBoundary`: Rectangle boundaries drawn on PDFs with area calculations
-- `HVACComponent`: Equipment placed on drawings (AHU, VAV, diffusers, etc.)
+- `HVACComponent`: Equipment placed on drawings (AHU, VAV, diffusers, silencers with product selection)
 - `HVACPath`: Complete air paths from source to terminal with noise calculations
 - `HVACSegment`: Individual duct segments with attenuation properties
 - `SegmentFitting`: Fittings within segments (elbows, tees, etc.)
+- `WallType`: User-defined wall type codes with STC ratings for LEED compliance
 
 **Calculation Engines:**
 - **RT60Calculator**: Professional reverberation time using Sabine/Eyring formulas with frequency-specific coefficients

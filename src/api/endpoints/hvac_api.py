@@ -32,6 +32,7 @@ from src.api.schemas.hvac_schemas import (
     ElementAttenuationResponse,
 )
 from src.api.validators.hvac_validators import HVACValidator
+from src.calculations.acoustic_utilities import SpectrumProcessor
 
 
 # Module-level cache for loaded modules
@@ -459,12 +460,15 @@ class HVACNoiseService:
             nc_result = nc_analyzer.analyze_octave_band_data(octave_data, target_nc)
 
             # Build exceedances list
+            # nc_result.exceedances: (frequency, dB_over_limit) where exc = measured - limit
             exceedances = []
             for freq, exc in nc_result.exceedances:
+                measured = octave_data.to_list()[list(OCTAVE_BANDS_8).index(freq)]
+                nc_curve_limit_db = measured - exc  # limit = measured - exceedance
                 exceedances.append(FrequencyExceedance(
                     frequency_hz=freq,
-                    measured_level_db=octave_data.to_list()[list(OCTAVE_BANDS_8).index(freq)],
-                    nc_curve_limit_db=exc,
+                    measured_level_db=measured,
+                    nc_curve_limit_db=nc_curve_limit_db,
                     exceedance_db=exc
                 ))
 
@@ -537,64 +541,90 @@ class HVACNoiseService:
         try:
             engine = self._get_hvac_engine()
 
-            # Calculate attenuation based on element type and shape
-            attenuation_spectrum = {}
+            # Calculate attenuation based on element_type (duct, elbow, flex_duct)
+            attenuation_spectrum: Dict[int, float] = {}
 
-            if request.duct_shape == "rectangular":
-                from src.calculations.rectangular_duct_calculations import RectangularDuctCalculator
-                calc = RectangularDuctCalculator()
+            if request.element_type == "duct":
+                # Straight duct attenuation - rectangular or circular
+                if request.duct_shape == "rectangular":
+                    from src.calculations.rectangular_duct_calculations import RectangularDuctCalculator
+                    calc = RectangularDuctCalculator()
 
-                if request.lining_thickness_inches > 0:
-                    # Lined duct
-                    attenuation = calc.get_lined_attenuation(
-                        length_ft=request.length_ft,
-                        width_in=request.width_inches,
-                        height_in=request.height_inches,
-                        lining_thickness=request.lining_thickness_inches
-                    )
+                    if request.lining_thickness_inches > 0:
+                        if request.lining_thickness_inches <= 1.0:
+                            spectrum = calc.get_1inch_lining_insertion_loss(
+                                request.width_inches,
+                                request.height_inches,
+                                request.length_ft
+                            )
+                        else:
+                            spectrum = calc.get_2inch_lining_attenuation(
+                                request.width_inches,
+                                request.height_inches,
+                                request.length_ft
+                            )
+                    else:
+                        spectrum = calc.get_unlined_attenuation(
+                            request.width_inches,
+                            request.height_inches,
+                            request.length_ft
+                        )
                 else:
-                    # Unlined duct
-                    attenuation = calc.get_unlined_attenuation(
-                        length_ft=request.length_ft,
-                        width_in=request.width_inches,
-                        height_in=request.height_inches
-                    )
+                    from src.calculations.circular_duct_calculations import CircularDuctCalculator
+                    calc = CircularDuctCalculator()
+
+                    if request.lining_thickness_inches > 0:
+                        spectrum = calc.get_lined_insertion_loss_spectrum(
+                            request.diameter_inches,
+                            request.lining_thickness_inches,
+                            request.length_ft
+                        )
+                    else:
+                        spectrum = calc.get_unlined_attenuation_spectrum(
+                            request.diameter_inches,
+                            request.length_ft
+                        )
 
                 for i, freq in enumerate(OCTAVE_BANDS_8):
-                    if i < len(attenuation):
-                        attenuation_spectrum[freq] = round(attenuation[i], 2)
+                    val = spectrum.get(str(freq), 0.0)
+                    attenuation_spectrum[freq] = round(float(val) if val is not None else 0.0, 2)
 
-            elif request.duct_shape == "circular":
-                from src.calculations.circular_duct_calculations import CircularDuctCalculator
-                calc = CircularDuctCalculator()
-
-                if request.lining_thickness_inches > 0:
-                    attenuation = calc.get_lined_attenuation(
-                        length_ft=request.length_ft,
-                        diameter_in=request.diameter_inches,
-                        lining_thickness=request.lining_thickness_inches
-                    )
-                else:
-                    attenuation = calc.get_unlined_attenuation(
-                        length_ft=request.length_ft,
-                        diameter_in=request.diameter_inches
-                    )
-
+            elif request.element_type == "elbow":
+                # Elbow insertion loss (rectangular only, per validator)
+                from src.calculations.rectangular_elbows_calculations import RectangularElbowsCalculator
+                calc = RectangularElbowsCalculator()
+                lined = request.lining_thickness_inches > 0
                 for i, freq in enumerate(OCTAVE_BANDS_8):
-                    if i < len(attenuation):
-                        attenuation_spectrum[freq] = round(attenuation[i], 2)
+                    loss = calc.calculate_elbow_insertion_loss(
+                        frequency=freq,
+                        width=request.width_inches,
+                        elbow_type="square_no_vanes",
+                        lined=lined
+                    )
+                    attenuation_spectrum[freq] = round(float(loss), 2)
 
-            # Calculate total A-weighted attenuation
-            a_weights = {
-                63: -26.2, 125: -16.1, 250: -8.6, 500: -3.2,
-                1000: 0.0, 2000: 1.2, 4000: 1.0, 8000: -1.1
-            }
+            elif request.element_type == "flex_duct":
+                # Flex duct insertion loss (circular only, per validator)
+                from src.calculations.flex_duct_calculations import FlexDuctCalculator
+                calc = FlexDuctCalculator()
+                spectrum = calc.get_insertion_loss(
+                    diameter=request.diameter_inches,
+                    length=request.length_ft,
+                    frequency=None
+                )
+                for i, freq in enumerate(OCTAVE_BANDS_8):
+                    val = spectrum.get(freq)
+                    attenuation_spectrum[freq] = round(float(val), 2) if val is not None else 0.0
 
-            # Weighted average of attenuation
-            total_atten = sum(
-                attenuation_spectrum.get(freq, 0) * (1 + a_weights[freq] / 100)
-                for freq in OCTAVE_BANDS_8
-            ) / 8
+            # Calculate total A-weighted attenuation using correct acoustics:
+            # 1. A-weighting corrections are ADDITIVE in dB (not multiplicative)
+            # 2. Combine bands via power summation: 10*log10(sum(10^((attenuation + A)/10)))
+            attenuation_list = [
+                attenuation_spectrum.get(freq, 0) for freq in OCTAVE_BANDS_8
+            ]
+            total_atten = SpectrumProcessor.calculate_dba_from_spectrum(
+                attenuation_list
+            )
 
             return ElementAttenuationResponse(
                 status="success",

@@ -63,22 +63,22 @@ DEFAULT_PRESSURE_DROP_INWG: float = 0.0
 # CFM (AIRFLOW) CONSTANTS
 # =============================================================================
 
-# Default CFM values by component type
+# Default CFM values by component type (industry-standard typical values)
 DEFAULT_CFM_VALUES = {
-    'ahu': 100.0,        # Air Handling Unit - typical building AHU
-    'fan': 100.0,        # Exhaust/Supply Fan
-    'vav': 100.0,         # Variable Air Volume box
-    'diffuser': 100.0,    # Supply air diffuser
-    'grille': 100.0,      # Return air grille
-    'damper': 100.0,      # Volume damper (minimal flow)
-    'silencer': 100.0,   # Duct silencer (pass-through)
-    'coil': 100.0,        # Heating/cooling coil
-    'elbow': 100.0,       # Duct elbow (minimal restriction)
-    'branch': 100.0,      # Duct branch/tee
-    'doas': 100.0,       # Dedicated Outdoor Air System
-    'rtu': 100.0,        # Rooftop Unit
-    'rf': 100.0,         # Return Fan
-    'sf': 100.0,         # Supply Fan
+    'ahu': 5000.0,       # Air Handling Unit - typical small/medium building AHU
+    'fan': 2000.0,       # Exhaust/Supply Fan - typical exhaust fan
+    'vav': 400.0,        # Variable Air Volume box - typical office zone
+    'diffuser': 150.0,   # Supply air diffuser - typical ceiling diffuser
+    'grille': 200.0,     # Return air grille - typical return grille
+    'damper': 500.0,     # Volume damper - pass-through, inherits upstream
+    'silencer': 2000.0,  # Duct silencer - pass-through at main duct
+    'coil': 1000.0,      # Heating/cooling coil - typical zone coil
+    'elbow': 500.0,      # Duct elbow - pass-through, inherits upstream
+    'branch': 300.0,     # Duct branch/tee - typical branch flow
+    'doas': 3000.0,      # Dedicated Outdoor Air System - typical DOAS unit
+    'rtu': 8000.0,       # Rooftop Unit - typical small commercial RTU
+    'rf': 4000.0,        # Return Fan - typically matches supply
+    'sf': 5000.0,        # Supply Fan - matches AHU capacity
     'custom': 500.0,     # Custom component - use component's stored value
 }
 

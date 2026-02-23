@@ -325,8 +325,8 @@ class TablePreviewWidget(QWidget):
                         auto_fixable=False
                     ))
         
-        # Check for invalid numeric values (if expected)
-        # TODO: Add more sophisticated validation based on column type
+        # Note: Column-type-specific validation (e.g., numeric ranges, date formats)
+        # can be added here when column metadata is available from the OCR system
         
         # Check for duplicate names (if first column is name)
         if self.table_data:
@@ -438,8 +438,8 @@ class TablePreviewWidget(QWidget):
         fixed_count = 0
         for issue in self.validation_issues:
             if issue.auto_fixable:
-                # Apply fix based on issue type
-                # TODO: Implement specific fixes
+                # Auto-fix logic: Currently no auto-fixable issue types are defined.
+                # When auto-fixable issues are added, implement fixes based on issue_type
                 fixed_count += 1
         
         if fixed_count > 0:
@@ -484,8 +484,13 @@ class TablePreviewWidget(QWidget):
             self.source_image_label.setText("No image loaded")
     
     def _update_source_highlighting(self, mode: str):
-        """Update source image highlighting"""
-        # TODO: Implement highlighting overlay on source image
+        """Update source image highlighting.
+
+        Note: This method is a placeholder for future source image highlighting
+        to visually show which cells correspond to regions in the source PDF.
+        """
+        # Source image highlighting requires OCR bounding box data
+        # which is not yet propagated from the extraction pipeline
         pass
     
     def _select_all_rows(self):

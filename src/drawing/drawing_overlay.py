@@ -1324,13 +1324,6 @@ class DrawingOverlay(QWidget):
     
     # ---------------------- Drawing primitives ----------------------
     def draw_components(self, painter):
-        # #region agent log
-        import json
-        try:
-            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"location": "drawing_overlay.py:draw_components", "message": "Drawing components", "data": {"total_components": len(self.components), "hidden_paths": list(self.hidden_paths), "path_only_mode": self.path_only_mode, "visible_paths": list(self.visible_paths.keys()), "current_page": self.current_page, "path_element_mapping_keys": list(self.path_element_mapping.keys())}, "timestamp": __import__('time').time()*1000, "sessionId": "debug-session", "hypothesisId": "A,B,C"}) + '\n')
-        except: pass
-        # #endregion
         drawn_count = 0
         skipped_count = 0
         page_skipped = 0
@@ -1360,14 +1353,7 @@ class DrawingOverlay(QWidget):
             x = comp.get('x', 0)
             y = comp.get('y', 0)
             comp_type = comp.get('component_type', 'unknown')
-            # #region agent log
-            import json
-            try:
-                with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
-                    f.write(json.dumps({"location": "drawing_overlay.py:draw_components:draw", "message": "Drawing single component", "data": {"x": x, "y": y, "type": comp_type, "db_comp_id": comp.get('db_component_id'), "hvac_comp_id": comp.get('hvac_component_id'), "db_path_id": comp.get('db_path_id'), "hvac_path_id": comp.get('hvac_path_id'), "saved_zoom": comp.get('saved_zoom'), "_element_id": comp.get('_element_id')}, "timestamp": __import__('time').time()*1000, "sessionId": "debug-session", "hypothesisId": "A,C"}) + '\n')
-            except: pass
-            # #endregion
-            
+
             # Check for highlighting from analysis panel
             is_highlighted = self._is_element_highlighted(comp, 'component')
             is_selected = self._is_element_selected(comp, 'component')
@@ -1423,14 +1409,6 @@ class DrawingOverlay(QWidget):
         drawn_count = 0
         skipped_count = 0
         page_skipped = 0
-        # #region agent log
-        import json, time
-        try:
-            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
-                seg_details = [{"start_x": s.get('start_x'), "start_y": s.get('start_y'), "db_seg_id": s.get('db_segment_id'), "hvac_path_id": s.get('hvac_path_id'), "page_number": s.get('page_number')} for s in self.segments[:5]]
-                f.write(json.dumps({"location": "drawing_overlay.py:draw_segments", "message": "Drawing segments", "data": {"total_segments": len(self.segments), "hidden_paths": list(self.hidden_paths), "path_only_mode": self.path_only_mode, "visible_paths": list(self.visible_paths), "current_page": self.current_page, "segment_sample": seg_details}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "F"}) + '\n')
-        except: pass
-        # #endregion
         for seg in self.segments:
             # Skip segments that belong to a different page
             seg_page = seg.get('page_number')
@@ -1581,13 +1559,6 @@ class DrawingOverlay(QWidget):
         comp_elem_id = comp.get('_element_id')
         hidden_match = False
         visible_match = False
-        # #region agent log
-        import json
-        try:
-            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"location": "drawing_overlay.py:_is_component_in_hidden_path:start", "message": "Checking if component is in hidden path", "data": {"comp_x": comp.get('x'), "comp_y": comp.get('y'), "comp_type": comp.get('component_type'), "comp_db_id": comp_db_id, "comp_elem_id": comp_elem_id, "comp_db_path_id": comp.get('db_path_id'), "comp_hvac_path_id": comp.get('hvac_path_id'), "hidden_paths": list(self.hidden_paths), "path_mapping_keys": list(self.path_element_mapping.keys())}, "timestamp": __import__('time').time()*1000, "sessionId": "debug-session", "hypothesisId": "C,D"}) + '\n')
-        except: pass
-        # #endregion
 
         for path_id, mapping in self.path_element_mapping.items():
             for registered_comp in mapping.get('components', []):
@@ -1613,13 +1584,6 @@ class DrawingOverlay(QWidget):
                         visible_match = True
 
         should_hide = hidden_match and not visible_match
-        # #region agent log
-        import json
-        try:
-            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"location": "drawing_overlay.py:_is_component_in_hidden_path:result", "message": "Hidden path check result", "data": {"comp_x": comp.get('x'), "comp_y": comp.get('y'), "comp_type": comp.get('component_type'), "comp_db_id": comp_db_id, "hidden_match": hidden_match, "visible_match": visible_match, "should_hide": should_hide}, "timestamp": __import__('time').time()*1000, "sessionId": "debug-session", "hypothesisId": "C,D"}) + '\n')
-        except: pass
-        # #endregion
         return should_hide
 
     def _is_segment_in_hidden_path(self, seg):
@@ -2679,15 +2643,6 @@ class DrawingOverlay(QWidget):
             if a_page is None or b_page is None:
                 return True
             return a_page == b_page
-        
-        # #region agent log
-        import json
-        try:
-            comp_details = [{"x": c.get('x'), "y": c.get('y'), "type": c.get('component_type'), "db_id": c.get('db_component_id'), "elem_id": c.get('_element_id'), "saved_zoom": c.get('saved_zoom')} for c in (components or [])[:5]]
-            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"location": "drawing_overlay.py:register_path_elements:start", "message": "Registering path elements in overlay", "data": {"path_id": path_id, "num_input_components": len(components or []), "num_input_segments": len(segments or []), "num_overlay_components": len(self.components), "num_overlay_segments": len(self.segments), "sample_input_comps": comp_details}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "C"}) + '\n')
-        except: pass
-        # #endregion
 
         print(f"\n=== PATH ELEMENT REGISTRATION DEBUG: Path {path_id} ===\n")
         print(f"DEBUG: Registering {len(components or [])} components and {len(segments or [])} segments")

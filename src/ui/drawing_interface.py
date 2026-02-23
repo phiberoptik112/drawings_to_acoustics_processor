@@ -4553,14 +4553,6 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 # Reconstruct component visuals - only for components on this drawing AND page
                 for db_comp in [segment.from_component, segment.to_component]:
                     if db_comp and db_comp.id not in seen_comp_ids:
-                        # #region agent log
-                        import json, time
-                        try:
-                            on_current_page = db_comp.id in components_on_current_page if components_on_current_page else True
-                            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({"location": "drawing_interface.py:_reconstruct_path_visuals_from_db:check_comp", "message": "Checking component for reconstruction", "data": {"db_comp_id": db_comp.id, "db_comp_drawing_id": db_comp.drawing_id, "db_comp_x": db_comp.x_position, "db_comp_y": db_comp.y_position, "db_comp_type": db_comp.component_type, "current_drawing_id": current_drawing_id, "current_page": current_page, "on_current_page": on_current_page, "will_skip_drawing": current_drawing_id and db_comp.drawing_id != current_drawing_id, "will_skip_page": components_on_current_page and db_comp.id not in components_on_current_page}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "B,E"}) + '\n')
-                        except: pass
-                        # #endregion
                         # Skip components that are not on the current drawing
                         if current_drawing_id and db_comp.drawing_id != current_drawing_id:
                             continue
@@ -4656,25 +4648,11 @@ class DrawingInterface(HelpMixin, QMainWindow):
                     if components_on_current_page:
                         if from_comp.id not in components_on_current_page or to_comp.id not in components_on_current_page:
                             print(f"DEBUG: Skipping segment {segment.id} - endpoints not on page {current_page}")
-                            # #region agent log
-                            import json, time
-                            try:
-                                with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
-                                    f.write(json.dumps({"location": "drawing_interface.py:reconstruct_segment_skip", "message": "Skipping segment - wrong page (endpoints)", "data": {"seg_id": segment.id, "current_page": current_page, "from_comp_id": from_comp.id, "to_comp_id": to_comp.id, "components_on_page": list(components_on_current_page)[:10]}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "F"}) + '\n')
-                            except: pass
-                            # #endregion
                             continue
                     
                     # Also skip if segment's DrawingElement is not on the current page
                     if segments_on_current_page and segment.id not in segments_on_current_page:
                         print(f"DEBUG: Skipping segment {segment.id} - not in DrawingElements on page {current_page}")
-                        # #region agent log
-                        import json, time
-                        try:
-                            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({"location": "drawing_interface.py:reconstruct_segment_skip", "message": "Skipping segment - wrong page (DrawingElement)", "data": {"seg_id": segment.id, "current_page": current_page, "segments_on_page": list(segments_on_current_page)[:10]}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "F"}) + '\n')
-                        except: pass
-                        # #endregion
                         continue
                     
                     # Check if this segment already exists in overlay by DB ID
@@ -4725,15 +4703,7 @@ class DrawingInterface(HelpMixin, QMainWindow):
                             seg_visual['length_formatted'] = fmtr(segment.length or 0)
                         except Exception:
                             seg_visual['length_formatted'] = f"{segment.length:.1f} ft" if segment.length else "0 ft"
-                        
-                        # #region agent log
-                        import json, time
-                        try:
-                            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
-                                f.write(json.dumps({"location": "drawing_interface.py:reconstruct_segment_add", "message": "Adding reconstructed segment", "data": {"seg_id": segment.id, "current_page": current_page, "start_x": seg_visual['start_x'], "start_y": seg_visual['start_y'], "end_x": seg_visual['end_x'], "end_y": seg_visual['end_y'], "hvac_path_id": hvac_path.id}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "F"}) + '\n')
-                        except: pass
-                        # #endregion
-                        
+
                         # DEFENSIVE: Check for existing segment at same position before appending
                         is_seg_duplicate = False
                         for existing_seg in self.drawing_overlay.segments:
@@ -5060,20 +5030,10 @@ class DrawingInterface(HelpMixin, QMainWindow):
     
     def toggle_path_visibility(self, path_id: int, visible: bool, button: QPushButton):
         """Toggle a path's visibility using the eye button.
-        
+
         visible=True (checked) means path should be shown
         visible=False (unchecked) means path should be hidden
         """
-        # #region agent log
-        import json, time
-        try:
-            mapping = self.drawing_overlay.path_element_mapping.get(path_id, {}) if self.drawing_overlay else {}
-            reg_comps = mapping.get('components', [])
-            reg_segs = mapping.get('segments', [])
-            with open('/Users/jakepfitsch/Documents/drawings_to_acoustics_processor/.cursor/debug.log', 'a') as f:
-                f.write(json.dumps({"location": "drawing_interface.py:toggle_path_visibility", "message": "Toggling path visibility", "data": {"path_id": path_id, "visible": visible, "hidden_paths_before": list(self.drawing_overlay.hidden_paths) if self.drawing_overlay else [], "num_registered_comps": len(reg_comps), "num_registered_segs": len(reg_segs), "sample_reg_comps": [{"x": c.get('x'), "y": c.get('y'), "type": c.get('component_type'), "db_id": c.get('db_component_id')} for c in reg_comps[:3]], "total_overlay_comps": len(self.drawing_overlay.components) if self.drawing_overlay else 0}, "timestamp": time.time()*1000, "sessionId": "debug-session", "hypothesisId": "C,D"}) + '\n')
-        except: pass
-        # #endregion
         # Update button appearance
         if visible:
             button.setText("👁️")  # Open eye for visible
