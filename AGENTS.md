@@ -10,11 +10,13 @@ Acoustic Analysis Tool — a PySide6 desktop application for LEED acoustic certi
 
 ```bash
 source .venv/bin/activate
-# Headless (for testing/CI):
+# On the VM desktop (for GUI interaction via computerUse subagent):
+DISPLAY=:1 python src/main.py
+# Headless (for automated tests only):
 QT_QPA_PLATFORM=offscreen xvfb-run -a python src/main.py
-# With virtual display (for GUI interaction):
-DISPLAY=:99 python src/main.py   # after starting Xvfb on :99
 ```
+
+The app MUST be launched on `DISPLAY=:1` (the VM's desktop) for GUI interaction via the computerUse subagent. Do NOT use a separate Xvfb on `:99` — the computerUse subagent cannot see or interact with displays other than `:1`.
 
 ### Running tests
 
