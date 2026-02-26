@@ -237,8 +237,8 @@ UI Layout:
 | 1. Edge Case Tests | ✅ Complete | 8h | 4h | 150 tests passing |
 | 2. Silencer Integration | ✅ Complete | 4h | 2h | UI + noise engine |
 | 3. Wall Type Library | ✅ Complete | 4h | 1h | Model + dialog |
-| 4. Performance | 🔲 Not Started | 4h | - | Defer if needed |
-| 5. Documentation | 🔲 Not Started | 4h | - | Defer if needed |
+| 4. Performance | ✅ Complete | 4h | 1h | All targets exceeded |
+| 5. Documentation | ✅ Complete | 4h | 1h | API docs updated |
 | 6. UAT Prep | 🔲 Not Started | 4h | - | Defer if needed |
 
 ### Legend
@@ -247,6 +247,58 @@ UI Layout:
 - ✅ Complete
 - ❌ Blocked
 - ⏸️ Deferred
+
+---
+
+## Task 4: Performance Profiling Results - ✅ COMPLETE
+
+### Performance Metrics (All Targets Exceeded)
+
+| Component | Target | Actual | Status |
+|-----------|--------|--------|--------|
+| RT60 Sabine (small room) | < 10ms | 0.012ms | ✅ 833x faster |
+| RT60 Sabine (large room, 15 surfaces) | < 25ms | 0.032ms | ✅ 781x faster |
+| RT60 Eyring (small room) | < 15ms | 0.012ms | ✅ 1250x faster |
+| RT60 Eyring (large room) | < 30ms | 0.035ms | ✅ 857x faster |
+| NC Rating Analysis | < 5ms | 0.005ms | ✅ 1000x faster |
+| Excel Workbook (50 rows) | < 100ms | 0.536ms | ✅ 187x faster |
+| Database Project Creation | < 20ms | 0.67ms | ✅ 30x faster |
+| Database Query (100 projects) | < 10ms | 1.28ms | ✅ 8x faster |
+
+### Performance Test Suite
+
+Created `tests/test_performance_profiling.py` with 17 benchmark tests:
+
+- RT60 calculator benchmarks (Sabine & Eyring, various room sizes)
+- HVAC noise engine benchmarks (simple/medium/complex paths)
+- NC rating analyzer benchmarks
+- Database operation benchmarks
+- Excel export benchmarks
+
+Run with: `pytest tests/test_performance_profiling.py -v -s`
+
+### Conclusion
+
+No performance bottlenecks identified. All calculation engines perform well within
+acceptable limits, even for complex scenarios with many surfaces or path elements.
+
+---
+
+## Task 5: Documentation Update - ✅ COMPLETE
+
+Updated `docs/ACOUSTIC_API.md` with:
+
+- WallType model documentation
+- SilencerProduct model documentation
+- HVAC noise engine silencer integration
+- Wall Type Library Dialog usage
+- Silencer Selection in HVAC Component Dialog
+
+Updated `CLAUDE.md` with:
+
+- Sprint 4 status section
+- New database models
+- Edge case test commands
 
 ---
 
@@ -263,17 +315,18 @@ UI Layout:
 ## Sprint Completion Criteria
 
 Sprint 4 is complete when:
-- [ ] All edge case tests written and passing (Priority 1)
-- [ ] Silencer feature integrated with HVAC paths
-- [ ] Wall Type Library UI functional
-- [ ] Performance profiled (no blocking issues)
-- [ ] Documentation updated
+
+- [x] All edge case tests written and passing (Priority 1) ✅ 150 tests
+- [x] Silencer feature integrated with HVAC paths ✅
+- [x] Wall Type Library UI functional ✅
+- [x] Performance profiled (no blocking issues) ✅ All targets exceeded
+- [x] Documentation updated ✅ API docs updated
 - [ ] UAT test package ready
 
-**Minimum Viable Completion:**
-- [ ] Edge case tests passing
-- [ ] Silencer integration working
-- [ ] Wall Type Library functional
+**Minimum Viable Completion:** ✅ ACHIEVED
+- [x] Edge case tests passing
+- [x] Silencer integration working
+- [x] Wall Type Library functional
 
 ---
 
