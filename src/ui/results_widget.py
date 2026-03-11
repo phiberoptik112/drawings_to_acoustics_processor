@@ -319,7 +319,12 @@ class ResultsWidget(QWidget):
             session = get_session()
             
             # Get all project data, eagerly loading relationships used after the session closes
-            spaces = session.query(Space).filter(Space.project_id == self.project_id).all()
+            spaces = (
+                session.query(Space)
+                .options(selectinload(Space.surface_materials))
+                .filter(Space.project_id == self.project_id)
+                .all()
+            )
             hvac_paths = (
                 session.query(HVACPath)
                 .options(

@@ -154,6 +154,7 @@ class ProjectDashboard(HelpMixin, QMainWindow):
         reports_menu = menubar.addMenu('Reports')
         reports_menu.addAction('Project Summary', self.show_project_summary)
         reports_menu.addAction('Export to Excel', self.export_to_excel)
+        reports_menu.addAction('Export RT60 Report...', self.export_rt_report)
         
         # Settings menu
         settings_menu = menubar.addMenu('Settings')
@@ -1586,7 +1587,107 @@ class ProjectDashboard(HelpMixin, QMainWindow):
                 
         except Exception as e:
             QMessageBox.critical(self, "Export Error", f"Failed to export to Excel:\n{str(e)}")
-    
+
+    def export_rt_report(self):
+        """Export per-space RT60 acoustic reports to PDF or PNG."""
+        try:
+            from ui.dialogs.rt_export_dialog import RTExportDialog
+            from data.rt_report_exporter import RTReportExporter
+            from PySide6.QtWidgets import QProgressDialog
+            from PySide6.QtCore import Qt as _Qt
+
+            # Check that the project has spaces
+            session = get_session()
+            try:
+                from models.space import Space as _Space
+                space_count = (
+                    session.query(_Space)
+                    .filter(_Space.project_id == self.project_id)
+                    .count()
+                )
+            finally:
+                session.close()
+
+            if space_count == 0:
+                QMessageBox.information(
+                    self, 'No Spaces',
+                    'This project has no spaces yet.\n'
+                    'Add acoustic spaces before exporting RT60 reports.',
+                )
+                return
+
+            # Open space-selection / export-options dialog
+            dialog = RTExportDialog(self, self.project_id)
+            if dialog.exec() != QDialog.Accepted:
+                return
+
+            exporter = RTReportExporter()
+            total = len(dialog.selected_space_ids)
+
+            # Progress dialog
+            progress = QProgressDialog(
+                'Preparing RT60 reports…', 'Cancel', 0, total, self
+            )
+            progress.setWindowTitle('Exporting RT60 Report')
+            progress.setWindowModality(_Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.setValue(0)
+
+            def on_progress(idx, _total, name):
+                if progress.wasCanceled():
+                    return
+                progress.setValue(idx)
+                progress.setLabelText(f'Generating: {name}')
+
+            if dialog.export_format == 'pdf':
+                success, message = exporter.export_pdf(
+                    dialog.selected_space_ids,
+                    dialog.export_path,
+                    progress_callback=on_progress,
+                )
+            else:
+                success, message = exporter.export_png(
+                    dialog.selected_space_ids,
+                    dialog.export_path,
+                    progress_callback=on_progress,
+                )
+
+            progress.setValue(total)
+            progress.close()
+
+            if success:
+                reply = QMessageBox.information(
+                    self, 'Export Complete',
+                    f'Successfully exported RT60 report for {total} space(s).\n\n'
+                    f'{message}\n\nWould you like to open the output?',
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if reply == QMessageBox.Yes:
+                    import subprocess
+                    import platform
+                    path = dialog.export_path
+                    try:
+                        if platform.system() == 'Darwin':
+                            subprocess.call(['open', path])
+                        elif platform.system() == 'Windows':
+                            os.startfile(path)
+                        else:
+                            subprocess.call(['xdg-open', path])
+                    except Exception:
+                        pass
+            else:
+                QMessageBox.critical(
+                    self, 'Export Failed',
+                    f'RT60 report export failed:\n\n{message}',
+                )
+
+        except Exception as exc:
+            QMessageBox.critical(
+                self, 'Export Error',
+                f'An error occurred during RT60 report export:\n{str(exc)}',
+            )
+
     def on_spaces_selection_changed(self, current, _previous):
         """When the selection in the Spaces tab changes, refresh the HVAC table."""
         try:
