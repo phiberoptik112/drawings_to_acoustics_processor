@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 try:
     from utils import ensure_user_data_directory, is_bundled_executable, log_environment_info
 except ImportError:
-    # Fallback if utils not available - use correct user data directory
+    # Fallback if utils not available - use ~/Library/Application Support (not Documents,
+    # which is iCloud-synced and may have files evicted to cloud storage)
     def ensure_user_data_directory():
-        # Always use the correct user data directory, not debug_data
-        user_dir = os.path.expanduser("~/Documents/AcousticAnalysis")
+        user_dir = os.path.expanduser("~/Library/Application Support/AcousticAnalysis")
         os.makedirs(user_dir, exist_ok=True)
         return user_dir
     
@@ -66,15 +66,14 @@ def initialize_database(db_path=None):
 		
 		# If no custom path, use default
 		if db_path is None:
-			# Always use user's Documents directory for project database
-			# This ensures user data persists and is accessible even after app updates
+			# Use ~/Library/Application Support — excluded from iCloud Drive sync so
+			# macOS will never evict this file as a "dataless" iCloud placeholder.
 			user_dir = ensure_user_data_directory()
 			db_path = os.path.join(user_dir, "acoustic_analysis.db")
 		
 		# Ensure we're using the correct path - never use debug_data
-		# If somehow we got the wrong path, correct it
 		if "debug_data" in db_path:
-			user_dir = os.path.expanduser("~/Documents/AcousticAnalysis")
+			user_dir = os.path.expanduser("~/Library/Application Support/AcousticAnalysis")
 			os.makedirs(user_dir, exist_ok=True)
 			db_path = os.path.join(user_dir, "acoustic_analysis.db")
 			logger.warning(f"Corrected database path from debug_data to: {db_path}")
@@ -109,6 +108,24 @@ def initialize_database(db_path=None):
 			logger.warning(f"Database path changed from {current_url} to {new_url}")
 			logger.info(f"Reinitializing with correct path: {db_path}")
 	
+	# Guard against iCloud-evicted (dataless) database files.
+	# macOS can evict files in ~/Documents to iCloud to save space, leaving a
+	# zero-block placeholder that reports a non-zero st_size but is unreadable.
+	# Detect this before SQLAlchemy tries to open the file.
+	if os.path.exists(db_path):
+		stat = os.stat(db_path)
+		if stat.st_size > 0 and stat.st_blocks == 0:
+			raise RuntimeError(
+				f"The database file appears to have been evicted to iCloud Drive and is "
+				f"no longer available locally:\n\n{db_path}\n\n"
+				f"To recover your data:\n"
+				f"  1. Open Finder and navigate to the file's location.\n"
+				f"  2. Right-click the file and choose 'Download Now'.\n"
+				f"  3. Wait for the download to complete, then relaunch the application.\n\n"
+				f"If iCloud Drive is not available, the data may be lost. "
+				f"You can delete the placeholder file to start fresh."
+			)
+
 	# Create engine
 	engine = create_engine(f'sqlite:///{db_path}', echo=False)
 	

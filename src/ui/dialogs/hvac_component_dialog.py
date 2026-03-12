@@ -4,7 +4,7 @@ HVAC Component Dialog - Add and edit HVAC components with noise properties
 
 from typing import Union, Optional
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
-                             QLabel, QLineEdit, QTextEdit, QComboBox, 
+                             QLabel, QLineEdit, QTextEdit, QComboBox, QWidget,
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QMessageBox, QSpinBox, QCheckBox)
 from PySide6.QtCore import Qt, Signal

@@ -62,24 +62,54 @@ def get_application_directory():
 
 def get_user_data_directory():
     """
-    Get the user data directory for storing project databases
-    This remains consistent between development and deployment
-    
+    Get the user data directory for storing project databases.
+
+    Uses ~/Library/Application Support/AcousticAnalysis/ which macOS explicitly
+    excludes from iCloud Drive syncing and storage-optimization eviction, preventing
+    the database from being made 'dataless' (unreadable) by iCloud.
+
     Returns:
         str: Absolute path to user data directory
     """
-    return os.path.expanduser("~/Documents/AcousticAnalysis/")
+    return os.path.expanduser("~/Library/Application Support/AcousticAnalysis/")
 
 
 def ensure_user_data_directory():
     """
-    Ensure the user data directory exists
-    
+    Ensure the user data directory exists and migrate legacy data if needed.
+
+    Migrates the database from the old ~/Documents/AcousticAnalysis/ path to the
+    new ~/Library/Application Support/AcousticAnalysis/ path on first run so that
+    existing user projects are not lost.
+
     Returns:
         str: Absolute path to created user data directory
     """
     user_dir = get_user_data_directory()
     os.makedirs(user_dir, exist_ok=True)
+
+    # One-time migration from the legacy Documents-based location
+    legacy_dir = os.path.expanduser("~/Documents/AcousticAnalysis/")
+    legacy_db = os.path.join(legacy_dir, "acoustic_analysis.db")
+    new_db = os.path.join(user_dir, "acoustic_analysis.db")
+
+    if os.path.exists(legacy_db) and not os.path.exists(new_db):
+        import shutil
+        try:
+            # Verify the legacy file is a readable SQLite database before migrating
+            import sqlite3
+            conn = sqlite3.connect(legacy_db)
+            conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchone()
+            conn.close()
+            shutil.copy2(legacy_db, new_db)
+            import logging
+            logging.getLogger(__name__).info(
+                f"Migrated database from {legacy_db} to {new_db}"
+            )
+        except Exception:
+            # Legacy file is unreadable (e.g. iCloud-evicted placeholder) — skip migration
+            pass
+
     return user_dir
 
 

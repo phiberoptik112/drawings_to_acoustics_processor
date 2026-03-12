@@ -1593,7 +1593,7 @@ class HVACPathDialog(HelpMixin, QDialog):
                 return
             component = current_item.data(Qt.UserRole)
         
-        dialog = HVACComponentDialog(self, self.project_id, None, component)
+        dialog = HVACComponentDialog(self, self.project_id, None, component=component)
         # If we have recent analysis, provide context for passive components
         try:
             if hasattr(self, '_last_element_results') and self._last_element_results:
