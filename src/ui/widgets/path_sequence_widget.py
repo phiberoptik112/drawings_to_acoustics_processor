@@ -35,6 +35,8 @@ class PathSequenceItem(QListWidgetItem):
     
     def _get_icon(self) -> str:
         """Get emoji icon for element type"""
+        if self.element_type == 'silencer':
+            return '🔇'
         if self.element_type == 'component':
             comp_type = self.extra_info.get('component_type', '').lower()
             icons = {
@@ -59,10 +61,11 @@ class PathSequenceItem(QListWidgetItem):
     
     def _apply_style(self):
         """Apply visual style based on element type"""
-        # Always set dark text color for proper contrast
         self.setForeground(QColor('#333333'))
         
-        if self.element_type == 'component':
+        if self.element_type == 'silencer':
+            self.setBackground(QColor('#f3e5f5'))  # Light purple for silencers
+        elif self.element_type == 'component':
             comp_type = self.extra_info.get('component_type', '').lower()
             if comp_type in ('ahu', 'fan', 'mechanical_unit'):
                 self.setBackground(QColor('#fff3e0'))  # Light orange for sources
@@ -93,6 +96,7 @@ class PathSequenceWidget(QWidget):
     sequence_changed = Signal(list)  # Emits new sequence when changed
     element_selected = Signal(str, int)  # Emits (element_type, element_id) when selected
     element_double_clicked = Signal(str, int)  # For edit requests
+    silencer_removed = Signal(int)  # Emits component_id of removed silencer
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -226,6 +230,26 @@ class PathSequenceWidget(QWidget):
         self.move_bottom_btn.setEnabled(False)
         buttons_layout.addWidget(self.move_bottom_btn)
         
+        buttons_layout.addSpacing(16)
+        
+        self.remove_silencer_btn = QPushButton("✕ Remove")
+        self.remove_silencer_btn.setToolTip("Remove selected silencer from path")
+        self.remove_silencer_btn.clicked.connect(self._on_remove_silencer)
+        self.remove_silencer_btn.setFixedWidth(70)
+        self.remove_silencer_btn.setEnabled(False)
+        self.remove_silencer_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffcdd2;
+                color: #b71c1c;
+                border: 1px solid #ef9a9a;
+                border-radius: 3px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover { background-color: #ef9a9a; }
+            QPushButton:disabled { background-color: #f0f0f0; color: #999; border: 1px solid #ccc; }
+        """)
+        buttons_layout.addWidget(self.remove_silencer_btn)
+        
         buttons_layout.addStretch()
         content_layout.addLayout(buttons_layout)
         
@@ -312,14 +336,24 @@ class PathSequenceWidget(QWidget):
                     list_item = PathSequenceItem('component', element_id, display_name, extra_info)
                     self.list_widget.addItem(list_item)
             
+            elif element_type == 'silencer':
+                comp_data = self.components_map.get(element_id)
+                if comp_data:
+                    display_name = comp_data.get('name', f'Silencer {element_id}')
+                    extra_info = {
+                        'component_type': 'silencer',
+                        'selected_product_id': comp_data.get('selected_product_id'),
+                        'silencer_model': comp_data.get('silencer_model', ''),
+                    }
+                    list_item = PathSequenceItem('silencer', element_id, display_name, extra_info)
+                    self.list_widget.addItem(list_item)
+            
             elif element_type == 'segment':
                 seg_data = self.segments_map.get(element_id)
                 if seg_data:
-                    # Build display name from segment data
                     length = seg_data.get('length', 0)
                     shape = seg_data.get('duct_shape', 'rectangular')
                     
-                    # Get from/to component names
                     from_id = seg_data.get('from_component_id')
                     to_id = seg_data.get('to_component_id')
                     from_name = self.components_map.get(from_id, {}).get('name', '?')
@@ -357,6 +391,13 @@ class PathSequenceWidget(QWidget):
         self.move_top_btn.setEnabled(has_selection and current_row > 0)
         self.move_down_btn.setEnabled(has_selection and current_row < count - 1)
         self.move_bottom_btn.setEnabled(has_selection and current_row < count - 1)
+        
+        is_silencer = (
+            has_selection
+            and isinstance(selected, PathSequenceItem)
+            and selected.element_type == 'silencer'
+        )
+        self.remove_silencer_btn.setEnabled(is_silencer)
     
     def _on_selection_changed(self):
         """Handle selection change in list"""
@@ -412,18 +453,73 @@ class PathSequenceWidget(QWidget):
             self._emit_sequence_changed()
     
     def _on_auto_order(self):
-        """Auto-order elements based on connectivity"""
-        # Get all segments and recompute sequence
+        """Auto-order elements based on connectivity, preserving silencer positions"""
         segments = list(self.segments_map.values())
         if not segments:
             return
         
-        # Recompute sequence from connectivity
-        sequence = self._compute_sequence_from_segments(segments)
-        self._populate_from_sequence(sequence)
-        self._emit_sequence_changed()
+        # Capture existing silencer entries and their relative positions
+        old_sequence = self.get_sequence()
+        silencer_positions = {}
+        for i, item in enumerate(old_sequence):
+            if item['type'] == 'silencer':
+                prev_item = old_sequence[i - 1] if i > 0 else None
+                silencer_positions[item['id']] = prev_item
         
+        base_sequence = self._compute_sequence_from_segments(segments)
+        
+        # Re-insert silencers after the same preceding element
+        for sil_id, prev_item in silencer_positions.items():
+            insert_idx = len(base_sequence)
+            if prev_item:
+                for j, entry in enumerate(base_sequence):
+                    if entry['type'] == prev_item['type'] and entry['id'] == prev_item['id']:
+                        insert_idx = j + 1
+                        break
+            base_sequence.insert(insert_idx, {'type': 'silencer', 'id': sil_id})
+        
+        self._populate_from_sequence(base_sequence)
+        self._emit_sequence_changed()
         self.info_label.setText("Sequence reordered based on connectivity")
+    
+    def insert_silencer_at(self, row: int, component_id: int, silencer_data: Dict):
+        """Insert a silencer element after the given row index.
+        
+        Args:
+            row: Row index after which to insert (-1 to append at end)
+            component_id: The HVACComponent id for this silencer
+            silencer_data: Dict with 'name', 'selected_product_id', 'silencer_model', etc.
+        """
+        self.components_map[component_id] = silencer_data
+        
+        display_name = silencer_data.get('name', f'Silencer {component_id}')
+        extra_info = {
+            'component_type': 'silencer',
+            'selected_product_id': silencer_data.get('selected_product_id'),
+            'silencer_model': silencer_data.get('silencer_model', ''),
+        }
+        list_item = PathSequenceItem('silencer', component_id, display_name, extra_info)
+        
+        insert_row = row + 1 if row >= 0 else self.list_widget.count()
+        self.list_widget.insertItem(insert_row, list_item)
+        self.list_widget.setCurrentRow(insert_row)
+        self._emit_sequence_changed()
+    
+    def _on_remove_silencer(self):
+        """Remove the selected silencer from the sequence"""
+        current = self.list_widget.currentItem()
+        if not isinstance(current, PathSequenceItem) or current.element_type != 'silencer':
+            return
+        
+        component_id = current.element_id
+        row = self.list_widget.currentRow()
+        self.list_widget.takeItem(row)
+        
+        if component_id in self.components_map:
+            del self.components_map[component_id]
+        
+        self.silencer_removed.emit(component_id)
+        self._emit_sequence_changed()
     
     def _emit_sequence_changed(self):
         """Emit the sequence_changed signal with current sequence"""

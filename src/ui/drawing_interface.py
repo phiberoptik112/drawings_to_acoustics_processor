@@ -5229,6 +5229,7 @@ class DrawingInterface(HelpMixin, QMainWindow):
 
         if self.drawing and self.drawing.id == drawing_id:
             self._jump_to_page_and_center(page_number, center_x, center_y)
+            self.show()
             self.raise_()
             self.activateWindow()
             return

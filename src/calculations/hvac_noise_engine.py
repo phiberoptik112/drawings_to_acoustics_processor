@@ -1743,6 +1743,24 @@ class HVACNoiseEngine:
         for i, segment in enumerate(segments):
             element_type = self._determine_element_type(segment)
             
+            # Silencer elements get special PathElement construction
+            if element_type == 'silencer':
+                il_data = segment.get('insertion_loss_data')
+                if isinstance(il_data, dict):
+                    il_dict = {str(k): float(v) for k, v in il_data.items()}
+                else:
+                    il_dict = None
+                silencer_element = PathElement(
+                    element_type='silencer',
+                    element_id=f'silencer_{i+1}',
+                    silencer_product_id=segment.get('silencer_product_id'),
+                    insertion_loss_data=il_dict,
+                )
+                elements.append(silencer_element)
+                if debug_export_enabled:
+                    print(f"DEBUG_HNE_LEGACY: Created silencer PathElement {i+1} with IL data: {il_dict}")
+                continue
+            
             # Normalize duct shape nomenclature ('round' -> 'circular')
             shape = segment.get('duct_shape', 'rectangular')
             if isinstance(shape, str):
@@ -1887,7 +1905,7 @@ class HVACNoiseEngine:
                 # Normalize common aliases
                 if ot == 'flex':
                     ot = 'flex_duct'
-                allowed = {'duct', 'junction', 'elbow', 'flex_duct', 'terminal', 'source'}
+                allowed = {'duct', 'junction', 'elbow', 'flex_duct', 'terminal', 'source', 'silencer'}
                 if ot in allowed:
                     if debug_export_enabled:
                         print(f"DEBUG_HNE_LEGACY: Explicit element_type override detected: {ot}")

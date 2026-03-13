@@ -2249,17 +2249,55 @@ class SpaceEditDialog(HelpMixin, QDialog):
     def _navigate_to_location(self, loc):
         """Call navigate_to_location on the parent DrawingInterface."""
         from ui.drawing_interface import DrawingInterface
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QTimer
+
+        # 1. Try the Qt parent chain first (dialog opened from DrawingInterface)
         parent = self.parent()
         while parent is not None:
             if isinstance(parent, DrawingInterface):
                 parent.navigate_to_location(
-                    loc.drawing_id,
-                    loc.page_number or 1,
-                    loc.center_x,
-                    loc.center_y,
+                    loc.drawing_id, loc.page_number or 1, loc.center_x, loc.center_y,
                 )
                 return
             parent = parent.parent()
+
+        # 2. Scan all open top-level windows for a matching DrawingInterface
+        for widget in QApplication.topLevelWidgets():
+            if (isinstance(widget, DrawingInterface)
+                    and widget.drawing
+                    and widget.drawing.id == loc.drawing_id):
+                widget.navigate_to_location(
+                    loc.drawing_id, loc.page_number or 1, loc.center_x, loc.center_y,
+                )
+                return
+
+        # 3. No DrawingInterface open for this drawing — create one
+        project_id = self._resolve_project_id()
+        if project_id is None or loc.drawing_id is None:
+            return
+        new_iface = DrawingInterface(loc.drawing_id, project_id)
+        _page = loc.page_number or 1
+        _cx, _cy = loc.center_x, loc.center_y
+        QTimer.singleShot(300, lambda: new_iface._jump_to_page_and_center(_page, _cx, _cy))
+        new_iface.show()
+
+    def _resolve_project_id(self):
+        """Return the project_id for the current space, checking space.drawing then parent chain."""
+        from ui.project_dashboard import ProjectDashboard
+        # Prefer getting project_id from the space's drawing relationship
+        try:
+            if self.space and self.space.drawing and self.space.drawing.project_id:
+                return self.space.drawing.project_id
+        except Exception:
+            pass
+        # Fallback: walk parent chain for ProjectDashboard
+        p = self.parent()
+        while p is not None:
+            if isinstance(p, ProjectDashboard):
+                return p.project_id
+            p = p.parent()
+        return None
 
     def show_all_locations(self):
         """Show a picker dialog listing all location bookmarks with Navigate buttons."""

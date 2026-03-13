@@ -7,9 +7,98 @@ from typing import Dict, List, Optional, Any
 import json
 from sqlalchemy.orm import Session
 
-from models.hvac import HVACPath, HVACSegment
+from models.hvac import HVACPath, HVACSegment, HVACComponent, SilencerProduct
 from models.mechanical import MechanicalUnit
 from .hvac_constants import NUM_OCTAVE_BANDS, FREQUENCY_BAND_LABELS
+
+
+def inject_silencer_elements(segment_data_list: List[Dict], hvac_path: HVACPath, session: Session) -> List[Dict]:
+    """Inject silencer element dicts into the segment data list based on the path's element_sequence.
+    
+    Silencer entries in the element_sequence are positioned relative to other segments.
+    This function reads those positions and inserts silencer dicts with their
+    insertion loss data so the noise engine can process them.
+    """
+    element_sequence = None
+    try:
+        if hasattr(hvac_path, 'get_element_sequence'):
+            element_sequence = hvac_path.get_element_sequence()
+        elif hasattr(hvac_path, 'element_sequence') and hvac_path.element_sequence:
+            element_sequence = json.loads(hvac_path.element_sequence)
+    except Exception:
+        pass
+    
+    if not element_sequence:
+        return segment_data_list
+    
+    silencer_entries = [
+        (i, entry) for i, entry in enumerate(element_sequence)
+        if entry.get('type') == 'silencer'
+    ]
+    
+    if not silencer_entries:
+        return segment_data_list
+    
+    # Build a mapping from sequence index to segment data list index.
+    # The element_sequence contains component, segment, and silencer entries interleaved.
+    # Segments in element_sequence map 1:1 to segment_data_list entries (in order).
+    seg_indices_in_seq = [
+        i for i, entry in enumerate(element_sequence)
+        if entry.get('type') == 'segment'
+    ]
+    
+    result = list(segment_data_list)
+    insertion_offset = 0
+    
+    for seq_idx, sil_entry in silencer_entries:
+        sil_component_id = sil_entry.get('id')
+        if not sil_component_id:
+            continue
+        
+        try:
+            comp = session.query(HVACComponent).filter(HVACComponent.id == sil_component_id).first()
+            if not comp or not comp.is_silencer:
+                continue
+            
+            il_data = {}
+            if comp.selected_product_id:
+                product = session.query(SilencerProduct).filter(
+                    SilencerProduct.id == comp.selected_product_id
+                ).first()
+                if product:
+                    il_data = {
+                        '63': float(product.insertion_loss_63 or 0),
+                        '125': float(product.insertion_loss_125 or 0),
+                        '250': float(product.insertion_loss_250 or 0),
+                        '500': float(product.insertion_loss_500 or 0),
+                        '1000': float(product.insertion_loss_1000 or 0),
+                        '2000': float(product.insertion_loss_2000 or 0),
+                        '4000': float(product.insertion_loss_4000 or 0),
+                        '8000': float(product.insertion_loss_8000 or 0),
+                    }
+            
+            silencer_dict = {
+                'element_type': 'silencer',
+                'silencer_product_id': comp.selected_product_id,
+                'insertion_loss_data': il_data,
+            }
+            
+            # Determine insert position: find the preceding segment in the sequence
+            preceding_seg_list_idx = -1
+            for s_list_idx, s_seq_idx in enumerate(seg_indices_in_seq):
+                if s_seq_idx < seq_idx:
+                    preceding_seg_list_idx = s_list_idx
+                else:
+                    break
+            
+            insert_pos = preceding_seg_list_idx + 1 + insertion_offset
+            result.insert(insert_pos, silencer_dict)
+            insertion_offset += 1
+            
+        except Exception:
+            continue
+    
+    return result
 
 
 class SourceComponentBuilder:
@@ -404,6 +493,8 @@ class PathDataBuilder:
         
         # Step 3: Process segments
         segment_data_list = self.segment_processor.process_segments(segments)
+        # Inject silencer elements from element_sequence
+        segment_data_list = inject_silencer_elements(segment_data_list, hvac_path, session)
         # Pipeline visibility for segment ordering and types
         try:
             print("NOISE_PIPELINE: Emitted path elements (order):")
