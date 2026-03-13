@@ -544,9 +544,27 @@ class DrawingOverlay(QWidget):
             self.update()
             
     # ---------------------- Element lifecycle ----------------------
+    def _warn_if_scale_uncalibrated(self):
+        """Warn when the scale_ratio is still a default/placeholder value.
+
+        A scale_ratio of 1.0 (raw default) or the architectural-scale placeholder
+        of 10.0 means no real calibration has been performed.  Areas calculated
+        against these values will be wildly inaccurate.
+        """
+        ratio = getattr(self.scale_manager, 'scale_ratio', 1.0)
+        needs_cal = getattr(self.scale_manager, '_needs_calibration', False)
+        if needs_cal or ratio in (1.0, 10.0):
+            print(
+                f"WARNING: drawing_overlay: scale_ratio={ratio} is a placeholder "
+                f"(_needs_calibration={needs_cal}). "
+                f"Areas calculated now will be inaccurate until the drawing scale "
+                f"is properly calibrated via the Scale dialog."
+            )
+
     def handle_element_created(self, element_data):
         element_type = element_data.get('type')
         if element_type == 'rectangle':
+            self._warn_if_scale_uncalibrated()
             width_real = self.scale_manager.pixels_to_real(element_data['width'])
             height_real = self.scale_manager.pixels_to_real(element_data['height'])
             area_real = width_real * height_real
@@ -560,6 +578,7 @@ class DrawingOverlay(QWidget):
             self._base_dirty = True
 
         elif element_type == 'polygon':
+            self._warn_if_scale_uncalibrated()
             try:
                 from calculations.geometry import compute_polygon_metrics
                 points = element_data.get('points') or []

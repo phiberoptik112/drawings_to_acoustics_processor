@@ -5217,6 +5217,51 @@ class DrawingInterface(HelpMixin, QMainWindow):
         except Exception as e:
             print(f"DEBUG: pan_to_element_on_drawing error: {e}")
     
+    def navigate_to_location(self, drawing_id: int, page_number: int,
+                             center_x: float = None, center_y: float = None):
+        """Navigate the viewer to a specific drawing page and optional position.
+
+        If drawing_id matches this window's drawing, jumps to the page directly.
+        Otherwise, looks for an existing DrawingInterface for that drawing or opens
+        a new one, then navigates to the requested page.
+        """
+        from PySide6.QtWidgets import QApplication
+
+        if self.drawing and self.drawing.id == drawing_id:
+            self._jump_to_page_and_center(page_number, center_x, center_y)
+            self.raise_()
+            self.activateWindow()
+            return
+
+        # Find an already-open DrawingInterface for the target drawing
+        for widget in QApplication.topLevelWidgets():
+            if (isinstance(widget, DrawingInterface)
+                    and widget.drawing
+                    and widget.drawing.id == drawing_id):
+                widget.navigate_to_location(drawing_id, page_number, center_x, center_y)
+                widget.raise_()
+                widget.activateWindow()
+                return
+
+        # Open a new DrawingInterface for the target drawing and navigate after load
+        new_iface = DrawingInterface(drawing_id, self.project_id)
+
+        def _on_loaded():
+            new_iface._jump_to_page_and_center(page_number, center_x, center_y)
+
+        QTimer.singleShot(300, _on_loaded)
+        new_iface.show()
+
+    def _jump_to_page_and_center(self, page_number: int,
+                                 center_x: float = None, center_y: float = None):
+        """Jump the PDF viewer to page_number (1-indexed) and optionally center."""
+        if not self.pdf_viewer:
+            return
+        if page_number:
+            self.pdf_viewer.go_to_page(page_number)
+        if center_x is not None and center_y is not None:
+            self.pdf_viewer.center_on_point(center_x, center_y)
+
     def _find_element_position(self, element_id: object, element_type: str):
         """Find the position of an element on the drawing"""
         if not element_id:
