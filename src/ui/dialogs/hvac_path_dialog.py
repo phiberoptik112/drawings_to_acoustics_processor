@@ -3,12 +3,12 @@ HVAC Path Dialog - Create and manage complete HVAC paths with components and seg
 """
 
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
-                             QLabel, QLineEdit, QTextEdit, QComboBox, 
+                             QGridLayout, QLabel, QLineEdit, QTextEdit, QComboBox,
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QMessageBox, QSpinBox, QCheckBox, QTableWidget,
                              QTableWidgetItem, QHeaderView, QListWidget,
-                             QListWidgetItem, QSplitter, QTabWidget, QWidget,
-                             QPlainTextEdit, QSizePolicy)
+                             QListWidgetItem, QScrollArea, QSplitter, QTabWidget,
+                             QWidget, QPlainTextEdit, QSizePolicy)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
@@ -379,10 +379,12 @@ class HVACPathDialog(HelpMixin, QDialog):
         self.description_text.setPlaceholderText("Description of this HVAC path...")
         info_layout.addRow("Description:", self.description_text)
 
-        # Location bookmarks
+        # Location bookmarks — clicking navigates to that page
         self.location_label = QLabel("No location bookmarks")
         self.location_label.setStyleSheet("color: #666; font-style: italic;")
         self.location_label.setWordWrap(True)
+        self.location_label.setCursor(Qt.PointingHandCursor)
+        self.location_label.mousePressEvent = self._on_location_label_clicked
         info_layout.addRow("Locations:", self.location_label)
 
         self.view_locations_btn = QPushButton("📍 View All Locations")
@@ -1488,36 +1490,35 @@ class HVACPathDialog(HelpMixin, QDialog):
             locations = self.path.get_drawing_locations()
 
             if not locations:
-                # Fallback to legacy drawing set field
                 location_text = self.path.get_primary_location_label()
                 self.location_label.setText(location_text)
                 self.location_label.setStyleSheet("color: #999; font-style: italic;")
+                self.location_label.setCursor(Qt.ArrowCursor)
             else:
-                # Show first location with count indicator
                 first_loc = locations[0]
                 location_text = first_loc.get_location_label()
                 if len(locations) > 1:
-                    location_text += f" (+{len(locations) - 1} more)"
+                    location_text += f" (+{len(locations) - 1} more — click to navigate)"
+                else:
+                    location_text += "  (click to navigate)"
                 self.location_label.setText(location_text)
-                self.location_label.setStyleSheet("color: #A5D6A7; font-weight: bold;")  # Light green
+                self.location_label.setStyleSheet(
+                    "color: #A5D6A7; font-weight: bold; text-decoration: underline;"
+                )
+                self.location_label.setCursor(Qt.PointingHandCursor)
         except Exception as e:
             print(f"Error updating location display: {e}")
 
     def show_all_locations(self):
-        """Show detailed information about all location bookmarks"""
+        """Show a picker dialog listing all location bookmarks with Navigate buttons."""
         if not self.path:
-            QMessageBox.information(
-                self,
-                "No Path",
-                "No HVAC path is currently loaded."
-            )
+            QMessageBox.information(self, "No Path", "No HVAC path is currently loaded.")
             return
 
         try:
             locations = self.path.get_drawing_locations()
 
             if not locations:
-                # Show fallback info
                 location_info = self.path.get_primary_location_label()
                 QMessageBox.information(
                     self,
@@ -1529,33 +1530,118 @@ class HVACPathDialog(HelpMixin, QDialog):
                 )
                 return
 
-            # Build detailed message
-            msg = f"<h3>{self.path.name}</h3>"
-            msg += f"<p><b>Found {len(locations)} location bookmark{'s' if len(locations) != 1 else ''}:</b></p>"
-            msg += "<ul>"
-
-            for i, loc in enumerate(locations, 1):
-                drawing_name = loc.get_drawing_name()
-                set_name_str = loc.get_drawing_set_name()
-                set_name = f" ({set_name_str})" if set_name_str else ""
-
-                msg += f"<li><b>Location {i}:</b> {drawing_name}{set_name}, Page {loc.page_number}"
-
-                if loc.has_bbox:
-                    msg += f"<br>&nbsp;&nbsp;&nbsp;&nbsp;Position: ({loc.center_x:.1f}, {loc.center_y:.1f})"
-
-                msg += "</li>"
-
-            msg += "</ul>"
-
-            QMessageBox.information(self, "Location Bookmarks", msg)
+            self._show_location_picker(locations)
 
         except Exception as e:
-            QMessageBox.warning(
-                self,
-                "Error",
-                f"Failed to retrieve location bookmarks:\n{e}"
+            QMessageBox.warning(self, "Error", f"Failed to retrieve location bookmarks:\n{e}")
+
+    def _on_location_label_clicked(self, event):
+        """Handle click on the location label — navigate directly for a single location."""
+        if not self.path:
+            return
+        try:
+            locations = self.path.get_drawing_locations()
+            if not locations:
+                return
+            if len(locations) == 1:
+                self._navigate_to_location(locations[0])
+            else:
+                self.show_all_locations()
+        except Exception as e:
+            print(f"Error handling location click: {e}")
+
+    def _navigate_to_location(self, loc):
+        """Open (or bring to front) a DrawingInterface for the given location."""
+        from ui.drawing_interface import DrawingInterface
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QTimer
+
+        # 1. Try Qt parent chain first (dialog opened from a DrawingInterface)
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, DrawingInterface):
+                parent.navigate_to_location(
+                    loc.drawing_id, loc.page_number or 1, loc.center_x, loc.center_y,
+                )
+                return
+            parent = parent.parent()
+
+        # 2. Scan all open top-level windows for a matching DrawingInterface
+        for widget in QApplication.topLevelWidgets():
+            if (isinstance(widget, DrawingInterface)
+                    and widget.drawing
+                    and widget.drawing.id == loc.drawing_id):
+                widget.navigate_to_location(
+                    loc.drawing_id, loc.page_number or 1, loc.center_x, loc.center_y,
+                )
+                return
+
+        # 3. No matching window open — create one using self.project_id
+        if self.project_id is None or loc.drawing_id is None:
+            return
+        new_iface = DrawingInterface(loc.drawing_id, self.project_id)
+        _page = loc.page_number or 1
+        _cx, _cy = loc.center_x, loc.center_y
+        QTimer.singleShot(300, lambda: new_iface._jump_to_page_and_center(_page, _cx, _cy))
+        new_iface.show()
+
+    def _show_location_picker(self, locations):
+        """Display a compact dialog listing locations with per-row Navigate buttons."""
+        picker = QDialog(self)
+        picker.setWindowTitle(f"Locations — {self.path.name}")
+        picker.setMinimumWidth(480)
+
+        outer_layout = QVBoxLayout(picker)
+        outer_layout.setSpacing(8)
+
+        header = QLabel(f"<b>{len(locations)} location(s) for '{self.path.name}'</b>")
+        outer_layout.addWidget(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(320)
+        container = QWidget()
+        grid = QGridLayout(container)
+        grid.setSpacing(6)
+        grid.setContentsMargins(4, 4, 4, 4)
+
+        for row, loc in enumerate(locations):
+            label_text = loc.get_location_label()
+            if loc.page_number:
+                label_text += f"  |  Page {loc.page_number}"
+            if loc.center_x is not None and loc.center_y is not None:
+                label_text += f"  ({loc.center_x:.0f}, {loc.center_y:.0f})"
+
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("color: #e0e0e0;")
+            lbl.setWordWrap(True)
+            grid.addWidget(lbl, row, 0)
+
+            nav_btn = QPushButton("Navigate")
+            nav_btn.setFixedWidth(80)
+            nav_btn.setStyleSheet(
+                "QPushButton { background-color: #1565C0; color: white; border-radius: 4px; }"
+                "QPushButton:hover { background-color: #1976D2; }"
             )
+
+            def _make_handler(location, dialog):
+                def _handler():
+                    self._navigate_to_location(location)
+                    dialog.accept()
+                return _handler
+
+            nav_btn.clicked.connect(_make_handler(loc, picker))
+            grid.addWidget(nav_btn, row, 1)
+
+        grid.setColumnStretch(0, 1)
+        scroll.setWidget(container)
+        outer_layout.addWidget(scroll)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(picker.reject)
+        outer_layout.addWidget(close_btn, alignment=Qt.AlignRight)
+
+        picker.exec()
 
     def _ordered_components_from_segments(self):
         """Return components ordered by connectivity traversal if possible.
