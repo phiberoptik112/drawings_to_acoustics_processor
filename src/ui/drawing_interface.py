@@ -2209,7 +2209,7 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         self.drawing_overlay.enable_clearing()
             
             dialog.path_saved.connect(on_path_saved)
-            dialog.set_drawing_data(components, ordered_segments, self.drawing.id)
+            dialog.set_drawing_data(components, ordered_segments, self.drawing.id, self.current_page_number)
             
             if dialog.exec() == QDialog.Accepted:
                 hvac_path = dialog.path
@@ -2660,7 +2660,7 @@ class DrawingInterface(HelpMixin, QMainWindow):
             dialog.path_saved.connect(on_path_saved)
             
             # Pass drawing data to the dialog
-            dialog.set_drawing_data(components, segments, self.drawing.id)
+            dialog.set_drawing_data(components, segments, self.drawing.id, self.current_page_number)
             
             if dialog.exec() == QDialog.Accepted:
                 QMessageBox.information(self, "HVAC Path Created", 

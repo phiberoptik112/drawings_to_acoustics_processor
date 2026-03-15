@@ -135,6 +135,7 @@ class HVACPathDialog(HelpMixin, QDialog):
         self.drawing_components = []
         self.drawing_segments = []
         self.drawing_id = None
+        self.drawing_page_number = 1
         
         # Calculator
         self.path_calculator = HVACPathCalculator(self.project_id)
@@ -151,13 +152,14 @@ class HVACPathDialog(HelpMixin, QDialog):
         else:
             self.load_project_components()
     
-    def set_drawing_data(self, components, segments, drawing_id):
+    def set_drawing_data(self, components, segments, drawing_id, page_number=1):
         """Set drawing data for creating path from drawing elements"""
-        print(f"DEBUG: set_drawing_data called with {len(components)} components and {len(segments)} segments")
+        print(f"DEBUG: set_drawing_data called with {len(components)} components and {len(segments)} segments, page={page_number}")
         
         self.drawing_components = components
         self.drawing_segments = segments
         self.drawing_id = drawing_id
+        self.drawing_page_number = page_number
         
         # Convert drawing components to dialog format
         self.components = []
@@ -2239,6 +2241,24 @@ class HVACPathDialog(HelpMixin, QDialog):
                 if debug_enabled:
                     print(f"\nDEBUG_UI: Using database-backed path calculation for path_id={self.path_id}")
                 
+                # Persist current element sequence (including silencers) to DB
+                # before running the DB-backed calculator, which reads element_sequence
+                # from the database via inject_silencer_elements().
+                current_seq = getattr(self, '_current_element_sequence', None)
+                if current_seq:
+                    try:
+                        seq_session = get_session()
+                        seq_db_path = seq_session.query(HVACPath).filter(
+                            HVACPath.id == int(self.path_id)
+                        ).first()
+                        if seq_db_path:
+                            seq_db_path.set_element_sequence(current_seq)
+                            seq_session.commit()
+                        seq_session.close()
+                    except Exception as seq_e:
+                        if debug_enabled:
+                            print(f"DEBUG_UI: Failed to persist element sequence before calc: {seq_e}")
+                
                 res = self.path_calculator.calculate_path_noise(int(self.path_id))
                 
                 if debug_enabled:
@@ -2633,6 +2653,14 @@ class HVACPathDialog(HelpMixin, QDialog):
         except Exception as e:
             return f"<p style='color: red;'>Error generating comparison: {str(e)}</p>"
     
+    def _sync_path_location(self, path_id):
+        """Create or update the location bookmark for a saved path."""
+        try:
+            from utils.location_manager import LocationManager
+            LocationManager.auto_sync_path_locations(path_id)
+        except Exception as e:
+            print(f"DEBUG: Failed to sync path location bookmark: {e}")
+
     def save_path(self):
         """Save the HVAC path"""
         # Validate inputs
@@ -2652,9 +2680,11 @@ class HVACPathDialog(HelpMixin, QDialog):
         try:
             # If we have drawing data AND we are creating a new path, use the calculator
             if (not self.is_editing) and self.drawing_components and self.drawing_segments:
-                # Add drawing ID to components
+                # Add drawing ID and page number to components
                 for comp in self.drawing_components:
                     comp['drawing_id'] = self.drawing_id
+                    if 'page_number' not in comp:
+                        comp['page_number'] = getattr(self, 'drawing_page_number', 1)
                 
                 drawing_data = {
                     'components': self.drawing_components,
@@ -2676,6 +2706,7 @@ class HVACPathDialog(HelpMixin, QDialog):
                             session.close()
                             QMessageBox.warning(self, "Creation Warning", "Path was created but could not be reloaded for update.")
                             self.path = created_path
+                            self._sync_path_location(created_path.id)
                             self.path_saved.emit(created_path)
                             self.accept()
                             return
@@ -2704,6 +2735,7 @@ class HVACPathDialog(HelpMixin, QDialog):
                         session.commit()
                         # Assign updated object back for emit
                         self.path = db_path
+                        self._sync_path_location(db_path.id)
                         self.path_saved.emit(db_path)
                         self.accept()
                     finally:
@@ -2856,7 +2888,33 @@ class HVACPathDialog(HelpMixin, QDialog):
                         
                         # Commit handled by context manager
                 
+                # Recalculate noise with the now-committed element_sequence
+                # so calculated_noise/calculated_nc reflect silencer changes
+                path_id_for_recalc = getattr(path, 'id', None)
+                if path_id_for_recalc:
+                    try:
+                        self.path_calculator.calculate_path_noise(int(path_id_for_recalc))
+                    except Exception:
+                        pass
+                
+                # Re-fetch path with eager-loaded relationships so the
+                # emitted object is not detached and has fresh noise values
+                if path_id_for_recalc:
+                    try:
+                        from sqlalchemy.orm import selectinload
+                        fresh_session = get_session()
+                        fresh_path = fresh_session.query(HVACPath).options(
+                            selectinload(HVACPath.target_space),
+                            selectinload(HVACPath.segments)
+                        ).filter(HVACPath.id == path_id_for_recalc).first()
+                        fresh_session.close()
+                        if fresh_path:
+                            path = fresh_path
+                    except Exception:
+                        pass
+                
                 self.path = path
+                self._sync_path_location(path.id)
                 self.path_saved.emit(path)
                 self.accept()
             

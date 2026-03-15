@@ -237,21 +237,23 @@ class LocationManager:
             if not path or not path.segments:
                 return []
 
-            # Find unique drawings from components
-            drawings = set()
+            # Find unique (drawing_id, page_number) pairs from components
+            drawing_pages = set()
             for segment in path.segments:
                 if segment.from_component and segment.from_component.drawing_id:
-                    drawings.add(segment.from_component.drawing_id)
+                    page = segment.from_component.page_number or 1
+                    drawing_pages.add((segment.from_component.drawing_id, page))
                 if segment.to_component and segment.to_component.drawing_id:
-                    drawings.add(segment.to_component.drawing_id)
+                    page = segment.to_component.page_number or 1
+                    drawing_pages.add((segment.to_component.drawing_id, page))
 
             locations = []
-            for drawing_id in drawings:
+            for drawing_id, page_number in drawing_pages:
                 loc = LocationManager.create_or_update_hvac_path_location(
                     path_id=path_id,
                     drawing_id=drawing_id,
                     drawing_set_id=path.drawing_set_id if path.drawing_set_id else None,
-                    page_number=1  # Default to page 1
+                    page_number=page_number
                 )
                 if loc:
                     locations.append(loc)
