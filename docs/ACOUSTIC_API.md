@@ -11,6 +11,13 @@ A pure Python API for acoustic calculations designed for LLM agentic workflows. 
   - [HVAC Noise Service](#hvac-noise-service)
   - [Materials Service](#materials-service)
   - [Simulation Service](#simulation-service)
+- [Database Models - Sprint 4 Additions](#database-models---sprint-4-additions)
+  - [WallType Model](#walltype-model)
+  - [SilencerProduct Model](#silencerproduct-model)
+- [HVAC Noise Engine - Silencer Integration](#hvac-noise-engine---silencer-integration)
+- [UI Components - Sprint 4 Additions](#ui-components---sprint-4-additions)
+  - [Wall Type Library Dialog](#wall-type-library-dialog)
+  - [Silencer Selection in HVAC Component Dialog](#silencer-selection-in-hvac-component-dialog)
 - [Schema Discovery](#schema-discovery)
 - [Strict Validation](#strict-validation)
 - [Error Handling](#error-handling)
@@ -618,6 +625,294 @@ print(f"Compliance: {nc_check.compliance_status}")
 
 ---
 
+## Database Models - Sprint 4 Additions
+
+### WallType Model
+
+User-defined wall type codes with STC ratings for LEED acoustic compliance tracking.
+
+**Location:** `src/models/wall_type.py`
+
+```python
+from models import WallType, get_session
+
+# Create a new wall type
+session = get_session()
+wall_type = WallType(
+    project_id=1,
+    code="W1",              # Wall type code from drawings (e.g., W1, W2, P1)
+    stc_rating=50,          # STC value (typically 30-65)
+    description="GWB on metal stud",  # Optional description
+    notes="Used for corridor partitions"  # Optional notes
+)
+session.add(wall_type)
+session.commit()
+
+# Query wall types for a project
+wall_types = (
+    session.query(WallType)
+    .filter(WallType.project_id == project_id)
+    .order_by(WallType.code)
+    .all()
+)
+
+# Serialize to dictionary
+wall_type_dict = wall_type.to_dict()
+# {
+#     'id': 1,
+#     'project_id': 1,
+#     'code': 'W1',
+#     'description': 'GWB on metal stud',
+#     'stc_rating': 50,
+#     'notes': 'Used for corridor partitions',
+#     'created_date': '2025-02-22T...',
+#     'modified_date': '2025-02-22T...'
+# }
+
+# Create from dictionary
+new_wall_type = WallType.from_dict({
+    'code': 'W2',
+    'stc_rating': 45,
+    'description': 'CMU wall'
+}, project_id=1)
+```
+
+**Model Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | Integer | Primary key |
+| `project_id` | Integer | Foreign key to Project |
+| `code` | String(50) | Wall type code from drawings (required) |
+| `description` | String(200) | Optional description |
+| `stc_rating` | Integer | STC value (required, typically 30-65) |
+| `notes` | Text | Optional notes |
+| `created_date` | DateTime | Auto-set on creation |
+| `modified_date` | DateTime | Auto-updated on modification |
+
+### SilencerProduct Model
+
+Silencer product database with insertion loss data for HVAC noise calculations.
+
+**Location:** `src/models/hvac.py`
+
+```python
+from models.hvac import SilencerProduct
+
+# Query silencer products
+silencers = (
+    session.query(SilencerProduct)
+    .filter(SilencerProduct.flow_rate_max >= required_cfm)
+    .filter(SilencerProduct.flow_rate_min <= required_cfm)
+    .all()
+)
+
+# Access insertion loss data
+for silencer in silencers:
+    print(f"{silencer.manufacturer} {silencer.model_number}")
+    print(f"  Size: {silencer.length}\" L × {silencer.width}\" W × {silencer.height}\" H")
+    print(f"  Flow: {silencer.flow_rate_min}-{silencer.flow_rate_max} CFM")
+    print(f"  Insertion Loss @ 500Hz: {silencer.insertion_loss_500} dB")
+```
+
+**Model Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | Integer | Primary key |
+| `manufacturer` | String(100) | Manufacturer name |
+| `model_number` | String(100) | Model number |
+| `silencer_type` | String(50) | Type: 'reactive', 'dissipative', 'hybrid' |
+| `length` | Float | Length in inches |
+| `width` | Float | Width in inches |
+| `height` | Float | Height in inches |
+| `weight` | Float | Weight in lbs |
+| `flow_rate_min` | Float | Minimum flow rate (CFM) |
+| `flow_rate_max` | Float | Maximum flow rate (CFM) |
+| `velocity_max` | Float | Maximum velocity (FPM) |
+| `insertion_loss_63` | Float | Insertion loss at 63 Hz (dB) |
+| `insertion_loss_125` | Float | Insertion loss at 125 Hz (dB) |
+| `insertion_loss_250` | Float | Insertion loss at 250 Hz (dB) |
+| `insertion_loss_500` | Float | Insertion loss at 500 Hz (dB) |
+| `insertion_loss_1000` | Float | Insertion loss at 1000 Hz (dB) |
+| `insertion_loss_2000` | Float | Insertion loss at 2000 Hz (dB) |
+| `insertion_loss_4000` | Float | Insertion loss at 4000 Hz (dB) |
+| `insertion_loss_8000` | Float | Insertion loss at 8000 Hz (dB) |
+
+---
+
+## HVAC Noise Engine - Silencer Integration
+
+The HVAC noise calculation engine now supports silencer elements with product-specific insertion loss data.
+
+### PathElement with Silencer Support
+
+```python
+from calculations.hvac_noise_engine import PathElement, HVACNoiseEngine
+
+# Create a silencer element with product data
+silencer_element = PathElement(
+    element_type='silencer',
+    element_id='silencer_1',
+    silencer_product_id=42,  # Reference to SilencerProduct.id
+    insertion_loss_data={
+        '63': 10.0,
+        '125': 14.0,
+        '250': 20.0,
+        '500': 26.0,
+        '1000': 30.0,
+        '2000': 28.0,
+        '4000': 22.0,
+        '8000': 15.0
+    }
+)
+
+# Or use default insertion loss (typical values)
+silencer_element_default = PathElement(
+    element_type='silencer',
+    element_id='silencer_2'
+    # No insertion_loss_data = uses typical values
+)
+```
+
+### Silencer Calculation
+
+The engine's `_calculate_silencer_effect()` method applies frequency-specific insertion loss:
+
+```python
+# Internal calculation flow
+def _calculate_silencer_effect(self, element: PathElement) -> Dict[str, Any]:
+    """Calculate silencer insertion loss effect."""
+
+    if element.insertion_loss_data:
+        # Use product-specific insertion loss
+        for freq in [63, 125, 250, 500, 1000, 2000, 4000, 8000]:
+            loss = element.insertion_loss_data.get(str(freq), 0.0)
+            output_levels[freq] = input_levels[freq] - loss
+    else:
+        # Use typical insertion loss values
+        typical_il = [10.0, 14.0, 20.0, 26.0, 30.0, 28.0, 22.0, 15.0]
+        # Apply typical values...
+```
+
+### Complete Path with Silencer Example
+
+```python
+from calculations.hvac_noise_engine import HVACNoiseEngine, PathElement
+
+engine = HVACNoiseEngine()
+
+# Build path with silencer
+path_elements = [
+    PathElement(
+        element_type='source',
+        element_id='ahu_1',
+        sound_power_data={63: 85, 125: 90, 250: 92, 500: 88, 1000: 84, 2000: 80, 4000: 76, 8000: 72}
+    ),
+    PathElement(
+        element_type='duct',
+        element_id='main_supply',
+        length_ft=40.0,
+        duct_shape='rectangular',
+        width_inches=24,
+        height_inches=18,
+        duct_type='sheet_metal',
+        lining_thickness=1.0,
+        flow_rate_cfm=2500
+    ),
+    PathElement(
+        element_type='silencer',
+        element_id='inline_silencer',
+        silencer_product_id=42,
+        insertion_loss_data={
+            '63': 8, '125': 12, '250': 18, '500': 24,
+            '1000': 28, '2000': 26, '4000': 20, '8000': 14
+        }
+    ),
+    PathElement(
+        element_type='terminal',
+        element_id='diffuser_1'
+    )
+]
+
+# Calculate path noise
+result = engine.calculate_path(path_elements, receiver_config)
+print(f"Terminal NC: {result['nc_rating']}")
+print(f"Terminal dBA: {result['total_dba']}")
+```
+
+---
+
+## UI Components - Sprint 4 Additions
+
+### Wall Type Library Dialog
+
+A complete CRUD interface for managing wall type codes with STC ratings.
+
+**Location:** `src/ui/dialogs/wall_type_library_dialog.py`
+
+```python
+from ui.dialogs.wall_type_library_dialog import (
+    WallTypeLibraryDialog,
+    WallTypeEditDialog,
+    show_wall_type_library
+)
+
+# Show the library dialog (convenience function)
+result = show_wall_type_library(parent=main_window, project_id=project.id)
+
+# Or create dialog directly
+dialog = WallTypeLibraryDialog(parent=main_window, project_id=project.id)
+dialog.wall_types_changed.connect(on_wall_types_updated)  # Signal when data changes
+dialog.show()
+
+# Edit dialog for single wall type
+edit_dialog = WallTypeEditDialog(parent=dialog, wall_type=existing_wall_type)
+if edit_dialog.exec():
+    data = edit_dialog.get_data()
+    # {'code': 'W1', 'stc_rating': 50, 'description': '...', 'notes': '...'}
+```
+
+**Dialog Features:**
+
+- Table view with Code, STC, Description, Notes columns
+- Add/Edit/Delete buttons
+- Double-click to edit
+- STC reference guide panel
+- Signal emission on data changes
+
+### Silencer Selection in HVAC Component Dialog
+
+The HVAC Component Dialog now includes silencer product selection for silencer component types.
+
+**Location:** `src/ui/dialogs/hvac_component_dialog.py`
+
+```python
+from ui.dialogs.hvac_component_dialog import HVACComponentDialog
+
+# Create component dialog
+dialog = HVACComponentDialog(
+    parent=main_window,
+    project_id=project.id,
+    drawing_id=drawing.id
+)
+
+# When component_type is 'silencer', the silencer_group is visible
+# User can click "Select Silencer Product..." to open SilencerFilterDialog
+# Selected product ID is stored and saved with the component
+
+# Signal emitted when component is saved
+dialog.component_saved.connect(on_component_saved)
+```
+
+**Key Methods:**
+
+- `open_silencer_selection()` - Opens SilencerFilterDialog
+- `_apply_silencer_product(product)` - Applies selected silencer to UI
+- Component's `selected_product_id` field stores the silencer product reference
+
+---
+
 ## Expansion Ideas
 
 ### Near-Term Enhancements
@@ -631,6 +926,7 @@ print(f"Compliance: {nc_check.compliance_status}")
    - Sound Transmission Class calculations
    - Outdoor-Indoor Transmission Class
    - Partition performance analysis
+   - **Integration with WallType model for wall STC data**
 
 3. **Background Noise Addition**
    - Combine HVAC noise with other sources

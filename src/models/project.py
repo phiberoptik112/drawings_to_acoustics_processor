@@ -38,7 +38,10 @@ class Project(Base):
     # Partition types library and reference documents
     partition_types = relationship("PartitionType", back_populates="project", cascade="all, delete-orphan")
     partition_schedule_documents = relationship("PartitionScheduleDocument", back_populates="project", cascade="all, delete-orphan")
-    
+
+    # Wall types library (user-defined wall type codes with STC values)
+    wall_types = relationship("WallType", back_populates="project", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<Project(id={self.id}, name='{self.name}')>"
     

@@ -584,8 +584,12 @@ class MechanicalScheduleImportWizard(QDialog):
         return widget
     
     def _on_final_import(self):
-        """Execute the final import to database"""
-        # TODO: Implement actual import logic
+        """Execute the final import to database.
+
+        Note: This wizard is part of the mechanical schedule PDF import feature
+        which is under active development. The import logic will create
+        MechanicalUnit records from the validated OCR data.
+        """
         QMessageBox.information(
             self,
             "Import Complete",

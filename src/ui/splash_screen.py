@@ -36,6 +36,8 @@ class SplashScreen(QWidget):
         
     def init_database(self):
         """Initialize the database connection"""
+        # Set default fallback so init_ui always has db_path available
+        self.db_path = os.path.expanduser("~/Documents/AcousticAnalysis/acoustic_analysis.db")
         try:
             self.db_path = initialize_database()
             print(f"DEBUG: Splash screen initialized database at: {self.db_path}")

@@ -3,18 +3,18 @@ HVAC Path Dialog - Create and manage complete HVAC paths with components and seg
 """
 
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
-                             QLabel, QLineEdit, QTextEdit, QComboBox, 
+                             QGridLayout, QLabel, QLineEdit, QTextEdit, QComboBox,
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QMessageBox, QSpinBox, QCheckBox, QTableWidget,
                              QTableWidgetItem, QHeaderView, QListWidget,
-                             QListWidgetItem, QSplitter, QTabWidget, QWidget,
-                             QPlainTextEdit, QSizePolicy)
+                             QListWidgetItem, QScrollArea, QSplitter, QTabWidget,
+                             QWidget, QPlainTextEdit, QSizePolicy)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from models import get_session
 from models.mechanical import MechanicalUnit
-from models.hvac import HVACPath, HVACComponent, HVACSegment
+from models.hvac import HVACPath, HVACComponent, HVACSegment, SilencerProduct
 from sqlalchemy.orm import selectinload
 from models.space import Space
 from calculations.hvac_path_calculator import HVACPathCalculator
@@ -135,6 +135,7 @@ class HVACPathDialog(HelpMixin, QDialog):
         self.drawing_components = []
         self.drawing_segments = []
         self.drawing_id = None
+        self.drawing_page_number = 1
         
         # Calculator
         self.path_calculator = HVACPathCalculator(self.project_id)
@@ -151,13 +152,14 @@ class HVACPathDialog(HelpMixin, QDialog):
         else:
             self.load_project_components()
     
-    def set_drawing_data(self, components, segments, drawing_id):
+    def set_drawing_data(self, components, segments, drawing_id, page_number=1):
         """Set drawing data for creating path from drawing elements"""
-        print(f"DEBUG: set_drawing_data called with {len(components)} components and {len(segments)} segments")
+        print(f"DEBUG: set_drawing_data called with {len(components)} components and {len(segments)} segments, page={page_number}")
         
         self.drawing_components = components
         self.drawing_segments = segments
         self.drawing_id = drawing_id
+        self.drawing_page_number = page_number
         
         # Convert drawing components to dialog format
         self.components = []
@@ -379,10 +381,12 @@ class HVACPathDialog(HelpMixin, QDialog):
         self.description_text.setPlaceholderText("Description of this HVAC path...")
         info_layout.addRow("Description:", self.description_text)
 
-        # Location bookmarks
+        # Location bookmarks — clicking navigates to that page
         self.location_label = QLabel("No location bookmarks")
         self.location_label.setStyleSheet("color: #666; font-style: italic;")
         self.location_label.setWordWrap(True)
+        self.location_label.setCursor(Qt.PointingHandCursor)
+        self.location_label.mousePressEvent = self._on_location_label_clicked
         info_layout.addRow("Locations:", self.location_label)
 
         self.view_locations_btn = QPushButton("📍 View All Locations")
@@ -552,10 +556,10 @@ class HVACPathDialog(HelpMixin, QDialog):
         widget = QWidget()
         layout = QVBoxLayout()
         
-        # Info label
         info_label = QLabel(
             "This tab shows the ordered sequence of components and segments in the path. "
-            "Drag items or use the buttons to reorder elements."
+            "Drag items or use the buttons to reorder elements. "
+            "Select a position, then insert a silencer from the table below."
         )
         info_label.setWordWrap(True)
         info_label.setStyleSheet("color: #666; margin-bottom: 10px;")
@@ -566,10 +570,214 @@ class HVACPathDialog(HelpMixin, QDialog):
         self.path_sequence_widget.sequence_changed.connect(self._on_sequence_changed)
         self.path_sequence_widget.element_selected.connect(self._on_sequence_element_selected)
         self.path_sequence_widget.element_double_clicked.connect(self._on_sequence_element_double_clicked)
+        self.path_sequence_widget.silencer_removed.connect(self._on_silencer_removed)
         layout.addWidget(self.path_sequence_widget, 1)
+        
+        # Silencer insertion section
+        silencer_group = QGroupBox("Insert Silencer")
+        silencer_layout = QVBoxLayout()
+        
+        insert_btn_layout = QHBoxLayout()
+        self.insert_silencer_btn = QPushButton("Insert Silencer After Selected")
+        self.insert_silencer_btn.setToolTip(
+            "Insert the selected silencer product into the path after the currently selected element"
+        )
+        self.insert_silencer_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #7b1fa2;
+                color: white;
+                padding: 6px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #6a1b9a; }
+            QPushButton:disabled { background-color: #ccc; color: #888; }
+        """)
+        self.insert_silencer_btn.clicked.connect(self._on_insert_silencer)
+        insert_btn_layout.addWidget(self.insert_silencer_btn)
+        insert_btn_layout.addStretch()
+        silencer_layout.addLayout(insert_btn_layout)
+        
+        # Silencer product table
+        self.silencer_table = QTableWidget()
+        self.silencer_table.setColumnCount(8)
+        self.silencer_table.setHorizontalHeaderLabels([
+            "Manufacturer", "Model", "Type", "Size (L×W×H)",
+            "Flow Range (CFM)", "IL@500Hz", "IL@1kHz", "Cost"
+        ])
+        self.silencer_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.silencer_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.silencer_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.silencer_table.horizontalHeader().setStretchLastSection(True)
+        self.silencer_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.silencer_table.setMinimumHeight(120)
+        self.silencer_table.setMaximumHeight(200)
+        self.silencer_table.setStyleSheet("""
+            QTableWidget { border: 1px solid #ddd; background-color: #fff; color: #333; }
+            QTableWidget::item:selected { background-color: #ce93d8; color: #333; }
+            QHeaderView::section { background-color: #e1bee7; color: #333; padding: 4px; border: 1px solid #ccc; }
+        """)
+        silencer_layout.addWidget(self.silencer_table)
+        
+        silencer_group.setLayout(silencer_layout)
+        layout.addWidget(silencer_group)
+        
+        self._populate_silencer_table()
         
         widget.setLayout(layout)
         return widget
+
+    def _populate_silencer_table(self):
+        """Load silencer products from the database into the table"""
+        try:
+            session = get_session()
+            products = session.query(SilencerProduct).all()
+            
+            self._silencer_products = []
+            self.silencer_table.setRowCount(len(products))
+            
+            for row, product in enumerate(products):
+                self._silencer_products.append(product)
+                
+                self.silencer_table.setItem(row, 0, QTableWidgetItem(product.manufacturer or ""))
+                self.silencer_table.setItem(row, 1, QTableWidgetItem(product.model_number or ""))
+                self.silencer_table.setItem(row, 2, QTableWidgetItem((product.silencer_type or "").title()))
+                
+                size_str = f'{int(product.length or 0)}×{int(product.width or 0)}×{int(product.height or 0)}"'
+                self.silencer_table.setItem(row, 3, QTableWidgetItem(size_str))
+                
+                flow_str = f"{int(product.flow_rate_min or 0)}-{int(product.flow_rate_max or 0)}"
+                self.silencer_table.setItem(row, 4, QTableWidgetItem(flow_str))
+                
+                il_500 = QTableWidgetItem(f"{product.insertion_loss_500 or 0:.0f} dB")
+                il_500.setTextAlignment(Qt.AlignCenter)
+                self.silencer_table.setItem(row, 5, il_500)
+                
+                il_1k = QTableWidgetItem(f"{product.insertion_loss_1000 or 0:.0f} dB")
+                il_1k.setTextAlignment(Qt.AlignCenter)
+                self.silencer_table.setItem(row, 6, il_1k)
+                
+                cost_str = f"${product.cost_estimate or 0:,.0f}"
+                self.silencer_table.setItem(row, 7, QTableWidgetItem(cost_str))
+            
+            session.close()
+        except Exception as e:
+            self._silencer_products = []
+            self.silencer_table.setRowCount(0)
+
+    def _on_insert_silencer(self):
+        """Handle Insert Silencer button click"""
+        # Validate sequence element selection
+        current_row = self.path_sequence_widget.list_widget.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(
+                self, "No Position Selected",
+                "Please select an element in the path sequence above to insert the silencer after."
+            )
+            return
+        
+        # Validate silencer product selection
+        selected_rows = self.silencer_table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(
+                self, "No Silencer Selected",
+                "Please select a silencer product from the table below."
+            )
+            return
+        
+        table_row = selected_rows[0].row()
+        if table_row < 0 or table_row >= len(self._silencer_products):
+            return
+        
+        product = self._silencer_products[table_row]
+        
+        try:
+            session = get_session()
+            
+            # Resolve a drawing_id: prefer the dialog's drawing, fall back to an existing component's
+            drawing_id = self.drawing_id
+            if not drawing_id:
+                for c in self.components:
+                    did = getattr(c, 'drawing_id', None)
+                    if did:
+                        drawing_id = did
+                        break
+            if not drawing_id:
+                # Last resort: query the first drawing for this project
+                from models.project import Drawing
+                first_drawing = session.query(Drawing).filter(
+                    Drawing.project_id == self.project_id
+                ).first()
+                if first_drawing:
+                    drawing_id = first_drawing.id
+            
+            if not drawing_id:
+                QMessageBox.warning(
+                    self, "No Drawing",
+                    "Cannot insert silencer: no drawing is associated with this project."
+                )
+                session.close()
+                return
+            
+            silencer_component = HVACComponent(
+                project_id=self.project_id,
+                drawing_id=drawing_id,
+                name=f"Silencer: {product.manufacturer} {product.model_number}",
+                component_type='silencer',
+                x_position=0.0,
+                y_position=0.0,
+                is_silencer=True,
+                silencer_type=product.silencer_type,
+                selected_product_id=product.id,
+                noise_level=-15.0,
+                cfm=float((product.flow_rate_min or 0) + (product.flow_rate_max or 0)) / 2.0,
+            )
+            session.add(silencer_component)
+            session.commit()
+            
+            component_id = silencer_component.id
+            self.components.append(silencer_component)
+            
+            silencer_data = {
+                'id': component_id,
+                'name': silencer_component.name,
+                'component_type': 'silencer',
+                'is_silencer': True,
+                'selected_product_id': product.id,
+                'silencer_model': product.model_number,
+                'noise_level': -15.0,
+            }
+            
+            self.path_sequence_widget.insert_silencer_at(current_row, component_id, silencer_data)
+            
+            session.close()
+            
+            self.update_path_diagram()
+            
+            if getattr(self, 'auto_calculate_cb', None) and self.auto_calculate_cb.isChecked():
+                self.calculate_path_noise()
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to insert silencer:\n{str(e)}")
+
+    def _on_silencer_removed(self, component_id):
+        """Handle silencer removal from the path sequence widget"""
+        self.components = [c for c in self.components if getattr(c, 'id', None) != component_id]
+        
+        try:
+            session = get_session()
+            comp = session.query(HVACComponent).filter(HVACComponent.id == component_id).first()
+            if comp and comp.is_silencer:
+                session.delete(comp)
+                session.commit()
+            session.close()
+        except Exception:
+            pass
+        
+        self.update_path_diagram()
+        
+        if getattr(self, 'auto_calculate_cb', None) and self.auto_calculate_cb.isChecked():
+            self.calculate_path_noise()
 
     def _on_sequence_changed(self, sequence):
         """Handle sequence changes from the path sequence widget"""
@@ -644,8 +852,7 @@ class HVACPathDialog(HelpMixin, QDialog):
         """Update the path sequence widget with current components and segments"""
         if not hasattr(self, 'path_sequence_widget'):
             return
-        
-        # Convert components to dict format
+
         components_data = []
         for comp in self.components:
             comp_dict = {
@@ -653,10 +860,23 @@ class HVACPathDialog(HelpMixin, QDialog):
                 'name': getattr(comp, 'name', 'Unknown'),
                 'component_type': getattr(comp, 'component_type', 'unknown'),
                 'noise_level': getattr(comp, 'noise_level', None),
+                'is_silencer': getattr(comp, 'is_silencer', False),
+                'selected_product_id': getattr(comp, 'selected_product_id', None),
+                'silencer_model': '',
             }
+            if comp_dict['is_silencer'] and comp_dict['selected_product_id']:
+                try:
+                    session = get_session()
+                    prod = session.query(SilencerProduct).filter(
+                        SilencerProduct.id == comp_dict['selected_product_id']
+                    ).first()
+                    if prod:
+                        comp_dict['silencer_model'] = prod.model_number
+                    session.close()
+                except Exception:
+                    pass
             components_data.append(comp_dict)
-        
-        # Convert segments to dict format
+
         segments_data = []
         for seg in self.segments:
             seg_dict = {
@@ -668,11 +888,8 @@ class HVACPathDialog(HelpMixin, QDialog):
                 'segment_order': getattr(seg, 'segment_order', 0),
             }
             segments_data.append(seg_dict)
-        
-        # Get existing sequence if we have one stored
+
         sequence = getattr(self, '_current_element_sequence', None)
-        
-        # Set data in the widget
         self.path_sequence_widget.set_data(components_data, segments_data, sequence)
         
     def create_analysis_tab(self):
@@ -1073,6 +1290,25 @@ class HVACPathDialog(HelpMixin, QDialog):
         except Exception:
             self._current_element_sequence = None
         
+        # Load silencer components referenced in the element sequence
+        if self._current_element_sequence:
+            existing_ids = {getattr(c, 'id', None) for c in self.components}
+            silencer_ids = [
+                entry['id'] for entry in self._current_element_sequence
+                if entry.get('type') == 'silencer' and entry.get('id') not in existing_ids
+            ]
+            if silencer_ids:
+                try:
+                    session = get_session()
+                    sil_comps = session.query(HVACComponent).filter(
+                        HVACComponent.id.in_(silencer_ids)
+                    ).all()
+                    for sc in sil_comps:
+                        self.components.append(sc)
+                    session.close()
+                except Exception:
+                    pass
+        
         self.update_component_list()
         self.update_segment_list()
         self.update_summary()
@@ -1256,36 +1492,35 @@ class HVACPathDialog(HelpMixin, QDialog):
             locations = self.path.get_drawing_locations()
 
             if not locations:
-                # Fallback to legacy drawing set field
                 location_text = self.path.get_primary_location_label()
                 self.location_label.setText(location_text)
                 self.location_label.setStyleSheet("color: #999; font-style: italic;")
+                self.location_label.setCursor(Qt.ArrowCursor)
             else:
-                # Show first location with count indicator
                 first_loc = locations[0]
                 location_text = first_loc.get_location_label()
                 if len(locations) > 1:
-                    location_text += f" (+{len(locations) - 1} more)"
+                    location_text += f" (+{len(locations) - 1} more — click to navigate)"
+                else:
+                    location_text += "  (click to navigate)"
                 self.location_label.setText(location_text)
-                self.location_label.setStyleSheet("color: #A5D6A7; font-weight: bold;")  # Light green
+                self.location_label.setStyleSheet(
+                    "color: #A5D6A7; font-weight: bold; text-decoration: underline;"
+                )
+                self.location_label.setCursor(Qt.PointingHandCursor)
         except Exception as e:
             print(f"Error updating location display: {e}")
 
     def show_all_locations(self):
-        """Show detailed information about all location bookmarks"""
+        """Show a picker dialog listing all location bookmarks with Navigate buttons."""
         if not self.path:
-            QMessageBox.information(
-                self,
-                "No Path",
-                "No HVAC path is currently loaded."
-            )
+            QMessageBox.information(self, "No Path", "No HVAC path is currently loaded.")
             return
 
         try:
             locations = self.path.get_drawing_locations()
 
             if not locations:
-                # Show fallback info
                 location_info = self.path.get_primary_location_label()
                 QMessageBox.information(
                     self,
@@ -1297,33 +1532,118 @@ class HVACPathDialog(HelpMixin, QDialog):
                 )
                 return
 
-            # Build detailed message
-            msg = f"<h3>{self.path.name}</h3>"
-            msg += f"<p><b>Found {len(locations)} location bookmark{'s' if len(locations) != 1 else ''}:</b></p>"
-            msg += "<ul>"
-
-            for i, loc in enumerate(locations, 1):
-                drawing_name = loc.get_drawing_name()
-                set_name_str = loc.get_drawing_set_name()
-                set_name = f" ({set_name_str})" if set_name_str else ""
-
-                msg += f"<li><b>Location {i}:</b> {drawing_name}{set_name}, Page {loc.page_number}"
-
-                if loc.has_bbox:
-                    msg += f"<br>&nbsp;&nbsp;&nbsp;&nbsp;Position: ({loc.center_x:.1f}, {loc.center_y:.1f})"
-
-                msg += "</li>"
-
-            msg += "</ul>"
-
-            QMessageBox.information(self, "Location Bookmarks", msg)
+            self._show_location_picker(locations)
 
         except Exception as e:
-            QMessageBox.warning(
-                self,
-                "Error",
-                f"Failed to retrieve location bookmarks:\n{e}"
+            QMessageBox.warning(self, "Error", f"Failed to retrieve location bookmarks:\n{e}")
+
+    def _on_location_label_clicked(self, event):
+        """Handle click on the location label — navigate directly for a single location."""
+        if not self.path:
+            return
+        try:
+            locations = self.path.get_drawing_locations()
+            if not locations:
+                return
+            if len(locations) == 1:
+                self._navigate_to_location(locations[0])
+            else:
+                self.show_all_locations()
+        except Exception as e:
+            print(f"Error handling location click: {e}")
+
+    def _navigate_to_location(self, loc):
+        """Open (or bring to front) a DrawingInterface for the given location."""
+        from ui.drawing_interface import DrawingInterface
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QTimer
+
+        # 1. Try Qt parent chain first (dialog opened from a DrawingInterface)
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, DrawingInterface):
+                parent.navigate_to_location(
+                    loc.drawing_id, loc.page_number or 1, loc.center_x, loc.center_y,
+                )
+                return
+            parent = parent.parent()
+
+        # 2. Scan all open top-level windows for a matching DrawingInterface
+        for widget in QApplication.topLevelWidgets():
+            if (isinstance(widget, DrawingInterface)
+                    and widget.drawing
+                    and widget.drawing.id == loc.drawing_id):
+                widget.navigate_to_location(
+                    loc.drawing_id, loc.page_number or 1, loc.center_x, loc.center_y,
+                )
+                return
+
+        # 3. No matching window open — create one using self.project_id
+        if self.project_id is None or loc.drawing_id is None:
+            return
+        new_iface = DrawingInterface(loc.drawing_id, self.project_id)
+        _page = loc.page_number or 1
+        _cx, _cy = loc.center_x, loc.center_y
+        QTimer.singleShot(300, lambda: new_iface._jump_to_page_and_center(_page, _cx, _cy))
+        new_iface.show()
+
+    def _show_location_picker(self, locations):
+        """Display a compact dialog listing locations with per-row Navigate buttons."""
+        picker = QDialog(self)
+        picker.setWindowTitle(f"Locations — {self.path.name}")
+        picker.setMinimumWidth(480)
+
+        outer_layout = QVBoxLayout(picker)
+        outer_layout.setSpacing(8)
+
+        header = QLabel(f"<b>{len(locations)} location(s) for '{self.path.name}'</b>")
+        outer_layout.addWidget(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(320)
+        container = QWidget()
+        grid = QGridLayout(container)
+        grid.setSpacing(6)
+        grid.setContentsMargins(4, 4, 4, 4)
+
+        for row, loc in enumerate(locations):
+            label_text = loc.get_location_label()
+            if loc.page_number:
+                label_text += f"  |  Page {loc.page_number}"
+            if loc.center_x is not None and loc.center_y is not None:
+                label_text += f"  ({loc.center_x:.0f}, {loc.center_y:.0f})"
+
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("color: #e0e0e0;")
+            lbl.setWordWrap(True)
+            grid.addWidget(lbl, row, 0)
+
+            nav_btn = QPushButton("Navigate")
+            nav_btn.setFixedWidth(80)
+            nav_btn.setStyleSheet(
+                "QPushButton { background-color: #1565C0; color: white; border-radius: 4px; }"
+                "QPushButton:hover { background-color: #1976D2; }"
             )
+
+            def _make_handler(location, dialog):
+                def _handler():
+                    self._navigate_to_location(location)
+                    dialog.accept()
+                return _handler
+
+            nav_btn.clicked.connect(_make_handler(loc, picker))
+            grid.addWidget(nav_btn, row, 1)
+
+        grid.setColumnStretch(0, 1)
+        scroll.setWidget(container)
+        outer_layout.addWidget(scroll)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(picker.reject)
+        outer_layout.addWidget(close_btn, alignment=Qt.AlignRight)
+
+        picker.exec()
 
     def _ordered_components_from_segments(self):
         """Return components ordered by connectivity traversal if possible.
@@ -1379,8 +1699,6 @@ class HVACPathDialog(HelpMixin, QDialog):
         if not hasattr(self, 'diagram_text'):
             return
 
-        # Map line index -> (kind, ref)
-        # kind in { 'component', 'segment', 'source', 'receiver' }
         self._diagram_line_to_item = {}
 
         components = self._ordered_components_from_segments()
@@ -1388,7 +1706,6 @@ class HVACPathDialog(HelpMixin, QDialog):
             self.diagram_text.setPlainText("No components yet.")
             return
 
-        # Resolve receiver space name
         space_name = None
         try:
             idx = self.space_combo.currentIndex() if hasattr(self, 'space_combo') else -1
@@ -1404,12 +1721,35 @@ class HVACPathDialog(HelpMixin, QDialog):
             "| " + text + " |",
             "+" + "-" * (len(text) + 2) + "+",
         ]
+        silencer_box = lambda text: [
+            "[" + "=" * (len(text) + 2) + "]",
+            "[ " + text + " ]",
+            "[" + "=" * (len(text) + 2) + "]",
+        ]
 
-        # Helper to register mapping for a box just appended
         def register_box_mapping(start_line, kind, ref):
-            # Map center text line primarily, but include all three lines
             for offset in range(3):
                 self._diagram_line_to_item[start_line + offset] = (kind, ref)
+
+        # Build a component lookup by id for silencer rendering
+        comp_by_id = {}
+        for c in self.components:
+            cid = getattr(c, 'id', None)
+            if cid is not None:
+                comp_by_id[cid] = c
+
+        # Collect silencer positions from element sequence
+        silencer_after_segment = {}
+        elem_seq = getattr(self, '_current_element_sequence', None) or []
+        seg_counter = 0
+        for entry in elem_seq:
+            etype = entry.get('type')
+            if etype == 'segment':
+                seg_counter += 1
+            elif etype == 'silencer':
+                sil_comp = comp_by_id.get(entry.get('id'))
+                if sil_comp:
+                    silencer_after_segment.setdefault(seg_counter, []).append(sil_comp)
 
         # Top: source/mechanical component
         top_label = f"Source: {getattr(components[0], 'name', 'Unknown')}"
@@ -1417,14 +1757,22 @@ class HVACPathDialog(HelpMixin, QDialog):
         lines.extend(box(top_label))
         register_box_mapping(start_idx, 'source', components[0])
 
-        # Iterate segments between components
+        # Render silencers placed before first segment (after source, seg_counter==0)
+        for sil_comp in silencer_after_segment.get(0, []):
+            lines.append("     |")
+            sil_label = f"Silencer: {getattr(sil_comp, 'name', 'Silencer')}"
+            start_idx = len(lines)
+            for sl in silencer_box(sil_label):
+                lines.append("     " + sl)
+            register_box_mapping(start_idx, 'silencer', sil_comp)
+
         segs = sorted(self.segments, key=lambda s: getattr(s, 'segment_order', 0)) if self.segments else []
         def seg_label(seg, idx):
             length = getattr(seg, 'length', 0) or 0
             shape = getattr(seg, 'duct_shape', '') or ''
             if shape.lower() == 'circular':
                 d = getattr(seg, 'diameter', 0) or 0
-                dim = f" Ø{int(d)}" if d else ""
+                dim = f" O{int(d)}" if d else ""
             else:
                 w = getattr(seg, 'duct_width', '') or ''
                 h = getattr(seg, 'duct_height', '') or ''
@@ -1432,7 +1780,6 @@ class HVACPathDialog(HelpMixin, QDialog):
             return f"segment {idx}: {length:.1f} ft{dim} {shape}".strip()
 
         for i, comp in enumerate(components[1:], start=1):
-            # arrow + segment info block if available
             lines.append("     |")
             if i-1 < len(segs):
                 seg_text = seg_label(segs[i-1], i)
@@ -1440,16 +1787,24 @@ class HVACPathDialog(HelpMixin, QDialog):
                 for l in box(seg_text):
                     lines.append("     " + l)
                 lines.append("     v")
-                # map three lines of the segment box (shifted by 1 indent)
                 register_box_mapping(start_idx, 'segment', segs[i-1])
             else:
                 lines.append("     v")
+
+            # Render silencers placed after this segment
+            for sil_comp in silencer_after_segment.get(i, []):
+                sil_label = f"Silencer: {getattr(sil_comp, 'name', 'Silencer')}"
+                start_idx = len(lines)
+                for sl in silencer_box(sil_label):
+                    lines.append("     " + sl)
+                lines.append("     v")
+                register_box_mapping(start_idx, 'silencer', sil_comp)
+
             comp_label = getattr(comp, 'name', 'Component')
             start_idx = len(lines)
             lines.extend(box(comp_label))
             register_box_mapping(start_idx, 'component', comp)
 
-        # Receiver space at bottom
         if space_name:
             lines.append("     |")
             lines.append("     v")
@@ -1484,8 +1839,20 @@ class HVACPathDialog(HelpMixin, QDialog):
                     self.segment_list.setCurrentRow(row)
                     break
             self.edit_segment(ref)
+        elif kind == 'silencer':
+            # Switch to Path Sequence tab and highlight the silencer
+            try:
+                seq_tab_idx = next(
+                    i for i in range(self.tabs.count())
+                    if 'sequence' in (self.tabs.tabText(i) or '').lower()
+                )
+                self.tabs.setCurrentIndex(seq_tab_idx)
+                sil_id = getattr(ref, 'id', None)
+                if sil_id is not None:
+                    self.path_sequence_widget.highlight_element('silencer', sil_id)
+            except Exception:
+                pass
         elif kind in ('receiver', 'source'):
-            # For 'source' click: open component library selector to choose primary Mechanical Unit
             if kind == 'source':
                 self.select_primary_source_from_library()
             else:
@@ -1593,7 +1960,7 @@ class HVACPathDialog(HelpMixin, QDialog):
                 return
             component = current_item.data(Qt.UserRole)
         
-        dialog = HVACComponentDialog(self, self.project_id, None, component)
+        dialog = HVACComponentDialog(self, self.project_id, None, component=component)
         # If we have recent analysis, provide context for passive components
         try:
             if hasattr(self, '_last_element_results') and self._last_element_results:
@@ -1874,6 +2241,24 @@ class HVACPathDialog(HelpMixin, QDialog):
                 if debug_enabled:
                     print(f"\nDEBUG_UI: Using database-backed path calculation for path_id={self.path_id}")
                 
+                # Persist current element sequence (including silencers) to DB
+                # before running the DB-backed calculator, which reads element_sequence
+                # from the database via inject_silencer_elements().
+                current_seq = getattr(self, '_current_element_sequence', None)
+                if current_seq:
+                    try:
+                        seq_session = get_session()
+                        seq_db_path = seq_session.query(HVACPath).filter(
+                            HVACPath.id == int(self.path_id)
+                        ).first()
+                        if seq_db_path:
+                            seq_db_path.set_element_sequence(current_seq)
+                            seq_session.commit()
+                        seq_session.close()
+                    except Exception as seq_e:
+                        if debug_enabled:
+                            print(f"DEBUG_UI: Failed to persist element sequence before calc: {seq_e}")
+                
                 res = self.path_calculator.calculate_path_noise(int(self.path_id))
                 
                 if debug_enabled:
@@ -1984,6 +2369,54 @@ class HVACPathDialog(HelpMixin, QDialog):
                     segment_data['fitting_type'] = first_fitting_type
 
                 path_data['segments'].append(segment_data)
+
+            # Inject silencer elements from element sequence into segments list
+            elem_seq = getattr(self, '_current_element_sequence', None) or []
+            silencer_entries = [(i, e) for i, e in enumerate(elem_seq) if e.get('type') == 'silencer']
+            if silencer_entries:
+                seg_indices = [i for i, e in enumerate(elem_seq) if e.get('type') == 'segment']
+                comp_by_id = {getattr(c, 'id', None): c for c in self.components}
+                offset = 0
+                for seq_idx, sil_entry in silencer_entries:
+                    sil_comp = comp_by_id.get(sil_entry.get('id'))
+                    if not sil_comp or not getattr(sil_comp, 'is_silencer', False):
+                        continue
+                    il_data = {}
+                    product_id = getattr(sil_comp, 'selected_product_id', None)
+                    if product_id:
+                        try:
+                            session = get_session()
+                            product = session.query(SilencerProduct).filter(
+                                SilencerProduct.id == product_id
+                            ).first()
+                            if product:
+                                il_data = {
+                                    '63': float(product.insertion_loss_63 or 0),
+                                    '125': float(product.insertion_loss_125 or 0),
+                                    '250': float(product.insertion_loss_250 or 0),
+                                    '500': float(product.insertion_loss_500 or 0),
+                                    '1000': float(product.insertion_loss_1000 or 0),
+                                    '2000': float(product.insertion_loss_2000 or 0),
+                                    '4000': float(product.insertion_loss_4000 or 0),
+                                    '8000': float(product.insertion_loss_8000 or 0),
+                                }
+                            session.close()
+                        except Exception:
+                            pass
+                    # Find the preceding segment to determine insert position
+                    preceding_seg_idx = -1
+                    for s_list_idx, s_seq_idx in enumerate(seg_indices):
+                        if s_seq_idx < seq_idx:
+                            preceding_seg_idx = s_list_idx
+                        else:
+                            break
+                    insert_pos = preceding_seg_idx + 1 + offset
+                    path_data['segments'].insert(insert_pos, {
+                        'element_type': 'silencer',
+                        'silencer_product_id': product_id,
+                        'insertion_loss_data': il_data,
+                    })
+                    offset += 1
 
             import os
             debug_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
@@ -2220,6 +2653,14 @@ class HVACPathDialog(HelpMixin, QDialog):
         except Exception as e:
             return f"<p style='color: red;'>Error generating comparison: {str(e)}</p>"
     
+    def _sync_path_location(self, path_id):
+        """Create or update the location bookmark for a saved path."""
+        try:
+            from utils.location_manager import LocationManager
+            LocationManager.auto_sync_path_locations(path_id)
+        except Exception as e:
+            print(f"DEBUG: Failed to sync path location bookmark: {e}")
+
     def save_path(self):
         """Save the HVAC path"""
         # Validate inputs
@@ -2239,9 +2680,11 @@ class HVACPathDialog(HelpMixin, QDialog):
         try:
             # If we have drawing data AND we are creating a new path, use the calculator
             if (not self.is_editing) and self.drawing_components and self.drawing_segments:
-                # Add drawing ID to components
+                # Add drawing ID and page number to components
                 for comp in self.drawing_components:
                     comp['drawing_id'] = self.drawing_id
+                    if 'page_number' not in comp:
+                        comp['page_number'] = getattr(self, 'drawing_page_number', 1)
                 
                 drawing_data = {
                     'components': self.drawing_components,
@@ -2263,6 +2706,7 @@ class HVACPathDialog(HelpMixin, QDialog):
                             session.close()
                             QMessageBox.warning(self, "Creation Warning", "Path was created but could not be reloaded for update.")
                             self.path = created_path
+                            self._sync_path_location(created_path.id)
                             self.path_saved.emit(created_path)
                             self.accept()
                             return
@@ -2291,6 +2735,7 @@ class HVACPathDialog(HelpMixin, QDialog):
                         session.commit()
                         # Assign updated object back for emit
                         self.path = db_path
+                        self._sync_path_location(db_path.id)
                         self.path_saved.emit(db_path)
                         self.accept()
                     finally:
@@ -2443,7 +2888,33 @@ class HVACPathDialog(HelpMixin, QDialog):
                         
                         # Commit handled by context manager
                 
+                # Recalculate noise with the now-committed element_sequence
+                # so calculated_noise/calculated_nc reflect silencer changes
+                path_id_for_recalc = getattr(path, 'id', None)
+                if path_id_for_recalc:
+                    try:
+                        self.path_calculator.calculate_path_noise(int(path_id_for_recalc))
+                    except Exception:
+                        pass
+                
+                # Re-fetch path with eager-loaded relationships so the
+                # emitted object is not detached and has fresh noise values
+                if path_id_for_recalc:
+                    try:
+                        from sqlalchemy.orm import selectinload
+                        fresh_session = get_session()
+                        fresh_path = fresh_session.query(HVACPath).options(
+                            selectinload(HVACPath.target_space),
+                            selectinload(HVACPath.segments)
+                        ).filter(HVACPath.id == path_id_for_recalc).first()
+                        fresh_session.close()
+                        if fresh_path:
+                            path = fresh_path
+                    except Exception:
+                        pass
+                
                 self.path = path
+                self._sync_path_location(path.id)
                 self.path_saved.emit(path)
                 self.accept()
             

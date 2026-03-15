@@ -8,16 +8,20 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import os
 import sys
+import logging
 from contextlib import contextmanager
+
+# Configure module logger
+logger = logging.getLogger(__name__)
 
 # Import utilities for deployment detection
 try:
     from utils import ensure_user_data_directory, is_bundled_executable, log_environment_info
 except ImportError:
-    # Fallback if utils not available - use correct user data directory
+    # Fallback if utils not available - use ~/Library/Application Support (not Documents,
+    # which is iCloud-synced and may have files evicted to cloud storage)
     def ensure_user_data_directory():
-        # Always use the correct user data directory, not debug_data
-        user_dir = os.path.expanduser("~/Documents/AcousticAnalysis")
+        user_dir = os.path.expanduser("~/Library/Application Support/AcousticAnalysis")
         os.makedirs(user_dir, exist_ok=True)
         return user_dir
     
@@ -25,7 +29,7 @@ except ImportError:
         return getattr(sys, 'frozen', False)
     
     def log_environment_info():
-        print(f"Database initialization - Bundled: {is_bundled_executable()}")
+        logger.info(f"Database initialization - Bundled: {is_bundled_executable()}")
 
 # Create base class for declarative models
 Base = declarative_base()
@@ -56,24 +60,23 @@ def initialize_database(db_path=None):
 			custom_path = settings_manager.get_database_path()
 			if custom_path:
 				db_path = custom_path
-				print(f"Using custom database path from settings: {db_path}")
+				logger.info(f"Using custom database path from settings: {db_path}")
 		except Exception as e:
-			print(f"Warning: Could not load custom database path from settings: {e}")
+			logger.warning(f"Could not load custom database path from settings: {e}")
 		
 		# If no custom path, use default
 		if db_path is None:
-			# Always use user's Documents directory for project database
-			# This ensures user data persists and is accessible even after app updates
+			# Use ~/Library/Application Support — excluded from iCloud Drive sync so
+			# macOS will never evict this file as a "dataless" iCloud placeholder.
 			user_dir = ensure_user_data_directory()
 			db_path = os.path.join(user_dir, "acoustic_analysis.db")
 		
 		# Ensure we're using the correct path - never use debug_data
-		# If somehow we got the wrong path, correct it
 		if "debug_data" in db_path:
-			user_dir = os.path.expanduser("~/Documents/AcousticAnalysis")
+			user_dir = os.path.expanduser("~/Library/Application Support/AcousticAnalysis")
 			os.makedirs(user_dir, exist_ok=True)
 			db_path = os.path.join(user_dir, "acoustic_analysis.db")
-			print(f"WARNING: Corrected database path from debug_data to: {db_path}")
+			logger.warning(f"Corrected database path from debug_data to: {db_path}")
 		
 		# Create a README for users on first run
 		readme_path = os.path.join(user_dir, "README.txt")
@@ -89,9 +92,9 @@ def initialize_database(db_path=None):
 				f.write("but all your existing projects will be lost.\n")
 	
 	if is_bundled_executable():
-		print(f"Initializing database for bundled deployment: {db_path}")
+		logger.info(f"Initializing database for bundled deployment: {db_path}")
 	else:
-		print(f"Initializing database for development: {db_path}")
+		logger.info(f"Initializing database for development: {db_path}")
 	
 	# If engine already exists and is using the same path, don't reinitialize
 	# This prevents reinitialization with wrong paths
@@ -99,12 +102,30 @@ def initialize_database(db_path=None):
 		current_url = str(engine.url)
 		new_url = f'sqlite:///{db_path}'
 		if current_url == new_url:
-			print(f"Database already initialized with correct path: {db_path}")
+			logger.debug(f"Database already initialized with correct path: {db_path}")
 			return db_path
 		else:
-			print(f"WARNING: Database path changed from {current_url} to {new_url}")
-			print(f"Reinitializing with correct path: {db_path}")
+			logger.warning(f"Database path changed from {current_url} to {new_url}")
+			logger.info(f"Reinitializing with correct path: {db_path}")
 	
+	# Guard against iCloud-evicted (dataless) database files.
+	# macOS can evict files in ~/Documents to iCloud to save space, leaving a
+	# zero-block placeholder that reports a non-zero st_size but is unreadable.
+	# Detect this before SQLAlchemy tries to open the file.
+	if os.path.exists(db_path):
+		stat = os.stat(db_path)
+		if stat.st_size > 0 and stat.st_blocks == 0:
+			raise RuntimeError(
+				f"The database file appears to have been evicted to iCloud Drive and is "
+				f"no longer available locally:\n\n{db_path}\n\n"
+				f"To recover your data:\n"
+				f"  1. Open Finder and navigate to the file's location.\n"
+				f"  2. Right-click the file and choose 'Download Now'.\n"
+				f"  3. Wait for the download to complete, then relaunch the application.\n\n"
+				f"If iCloud Drive is not available, the data may be lost. "
+				f"You can delete the placeholder file to start fresh."
+			)
+
 	# Create engine
 	engine = create_engine(f'sqlite:///{db_path}', echo=False)
 	
@@ -133,66 +154,83 @@ def initialize_database(db_path=None):
 	Base.metadata.create_all(bind=engine)
 	
 	# Run idempotent schema migrations for legacy DBs
+	# Each migration should be idempotent (safe to run multiple times)
+	migration_errors = []
+
+	def run_migration(name, migration_func, *args):
+		"""Run a migration and log any errors without crashing."""
+		try:
+			migration_func(*args)
+			logger.debug(f"Migration '{name}' completed successfully")
+		except Exception as e:
+			migration_errors.append((name, str(e)))
+			logger.warning(f"Migration '{name}' failed: {e}")
+
+	# HVAC schema
 	try:
 		from .migrate_hvac_schema import ensure_hvac_schema
-		ensure_hvac_schema()
-	except Exception as e:
-		# Avoid crashing startup; downstream code may still operate on fresh DBs
-		# If migration fails, it will surface when querying; better to log minimal info here
-		print(f"Warning: HVAC schema migration failed: {e}")
-	
-	# New: drawing sets schema/migration
+		run_migration("HVAC schema", ensure_hvac_schema)
+	except ImportError:
+		pass
+
+	# Drawing sets schema
 	try:
 		from .migrate_drawing_sets import ensure_drawing_sets_schema
-		ensure_drawing_sets_schema()
-	except Exception as e:
-		print(f"Warning: Drawing sets schema migration failed: {e}")
-	
-	# New: HVAC paths drawing set association
+		run_migration("Drawing sets schema", ensure_drawing_sets_schema)
+	except ImportError:
+		pass
+
+	# HVAC drawing sets association
 	try:
 		from .migrate_hvac_drawing_sets import ensure_hvac_drawing_sets_schema
-		ensure_hvac_drawing_sets_schema()
-	except Exception as e:
-		print(f"Warning: HVAC drawing sets schema migration failed: {e}")
-	
-	# New: Spaces drawing set association
+		run_migration("HVAC drawing sets schema", ensure_hvac_drawing_sets_schema)
+	except ImportError:
+		pass
+
+	# Spaces drawing set association
 	try:
 		from .migrate_space_drawing_sets import ensure_space_drawing_sets_schema
-		ensure_space_drawing_sets_schema()
-	except Exception as e:
-		print(f"Warning: Space drawing sets schema migration failed: {e}")
-	
-	# New: space polygon column migration
+		run_migration("Space drawing sets schema", ensure_space_drawing_sets_schema)
+	except ImportError:
+		pass
+
+	# Space polygon column
 	try:
 		from .migrate_space_polygon_schema import ensure_space_polygon_schema
-		ensure_space_polygon_schema()
-	except Exception as e:
-		print(f"Warning: Space polygon schema migration failed: {e}")
-	
-	# New: drawing element HVAC linkage columns
+		run_migration("Space polygon schema", ensure_space_polygon_schema)
+	except ImportError:
+		pass
+
+	# Drawing element HVAC linkage
 	try:
 		from .migrate_drawing_element_hvac import ensure_drawing_element_hvac_schema
-		ensure_drawing_element_hvac_schema()
-	except Exception as e:
-		print(f"Warning: Drawing element HVAC schema migration failed: {e}")
-	
-	# New: partition isolation schema
+		run_migration("Drawing element HVAC schema", ensure_drawing_element_hvac_schema)
+	except ImportError:
+		pass
+
+	# Partition isolation schema
 	try:
 		from .migrate_partition_schema import ensure_partition_schema
-		ensure_partition_schema()
-	except Exception as e:
-		print(f"Warning: Partition schema migration failed: {e}")
-	
-	# New: path element sequence column for ordering
+		run_migration("Partition schema", ensure_partition_schema)
+	except ImportError:
+		pass
+
+	# Path element sequence column
 	try:
 		from .migrate_path_element_sequence import migrate_path_element_sequence_schema
 		session = SessionLocal()
 		try:
-			migrate_path_element_sequence_schema(session)
+			run_migration("Path element sequence schema", migrate_path_element_sequence_schema, session)
 		finally:
 			session.close()
-	except Exception as e:
-		print(f"Warning: Path element sequence schema migration failed: {e}")
+	except ImportError:
+		pass
+
+	# Log summary of migration issues
+	if migration_errors:
+		logger.error(f"Database migrations completed with {len(migration_errors)} errors:")
+		for name, error in migration_errors:
+			logger.error(f"  - {name}: {error}")
 	
 	return db_path
 
@@ -222,13 +260,13 @@ def get_hvac_session():
 		session.commit()
 	except Exception as e:
 		session.rollback()
-		print(f"DEBUG: HVAC session rolled back due to error: {e}")
+		logger.debug(f"HVAC session rolled back due to error: {e}")
 		raise
 	finally:
 		try:
 			session.close()
 		except Exception as cleanup_error:
-			print(f"DEBUG: Session cleanup error: {cleanup_error}")
+			logger.debug(f"Session cleanup error: {cleanup_error}")
 
 
 def close_database():

@@ -71,6 +71,9 @@ class PathElement:
     branch_takeoff_choice: Optional[str] = None
     # Terminal end condition for End Reflection Loss: 'flush' (grille/diffuser) or 'free' (open to space)
     termination_type: Optional[str] = None
+    # Silencer-specific properties
+    silencer_product_id: Optional[int] = None
+    insertion_loss_data: Optional[Dict[str, float]] = None  # {freq: loss} e.g., {'63': 10.0, '125': 14.0, ...}
 
 
 @dataclass
@@ -806,6 +809,10 @@ class HVACNoiseEngine:
                 if debug_export_enabled:
                     print(f"DEBUG_ENGINE:     -> Calling _calculate_terminal_effect for {element.element_id}")
                 result = self._calculate_terminal_effect(element)
+            elif element.element_type == 'silencer':
+                if debug_export_enabled:
+                    print(f"DEBUG_ENGINE:     -> Calling _calculate_silencer_effect for {element.element_id}")
+                result = self._calculate_silencer_effect(element)
             else:
                 # Unknown element type - pass through
                 if debug_export_enabled:
@@ -1476,9 +1483,81 @@ class HVACNoiseEngine:
             result['error'] = f"Terminal calculation error: {str(e)}"
             if debug_export_enabled:
                 print(f"DEBUG_ERL: Terminal calculation error: {e}")
-            
+
         return result
-    
+
+    def _calculate_silencer_effect(self, element: PathElement) -> Dict[str, Any]:
+        """Calculate silencer insertion loss effect.
+
+        Silencers provide significant attenuation across all frequency bands.
+        If a specific silencer product is selected (via selected_product_id),
+        we use its exact insertion loss values. Otherwise, we use typical
+        values for the silencer type.
+        """
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
+
+        result: Dict[str, Any] = {
+            'attenuation_spectrum': [0.0] * NUM_OCTAVE_BANDS,
+            'generated_spectrum': [0.0] * NUM_OCTAVE_BANDS,
+            'attenuation_dba': 0.0,
+            'generated_dba': 0.0
+        }
+
+        try:
+            # Check if element has silencer product data
+            silencer_product_id = getattr(element, 'silencer_product_id', None)
+            insertion_loss_data = getattr(element, 'insertion_loss_data', None)
+
+            if insertion_loss_data and isinstance(insertion_loss_data, dict):
+                # Use provided insertion loss data from silencer product
+                freq_keys = ['63', '125', '250', '500', '1000', '2000', '4000', '8000']
+                for i, freq_key in enumerate(freq_keys):
+                    il_value = insertion_loss_data.get(freq_key, 0.0)
+                    if il_value is not None:
+                        result['attenuation_spectrum'][i] = float(il_value)
+
+                if debug_export_enabled:
+                    print(f"DEBUG_SILENCER: Using product insertion loss data")
+                    print(f"DEBUG_SILENCER:   Product ID: {silencer_product_id}")
+                    print(f"DEBUG_SILENCER:   IL spectrum: {result['attenuation_spectrum']}")
+
+            else:
+                # Use typical silencer insertion loss values
+                # These are representative values for a medium-sized dissipative silencer
+                typical_il = [10.0, 14.0, 20.0, 26.0, 30.0, 28.0, 22.0, 15.0]
+                result['attenuation_spectrum'] = typical_il.copy()
+
+                if debug_export_enabled:
+                    print(f"DEBUG_SILENCER: Using typical insertion loss values")
+                    print(f"DEBUG_SILENCER:   IL spectrum: {result['attenuation_spectrum']}")
+
+            # Calculate A-weighted attenuation
+            result['attenuation_dba'] = self._calculate_dba_from_spectrum(
+                result['attenuation_spectrum']
+            )
+
+            if debug_export_enabled:
+                print(f"DEBUG_SILENCER:   Attenuation A-weighted: {result['attenuation_dba']:.2f} dB")
+
+            # Silencers can generate some self-noise at high velocities
+            # For now, we assume negligible generated noise
+            flow_rate = getattr(element, 'flow_rate', 0.0) or 0.0
+            if flow_rate > 3000:  # High flow rate - some self-noise
+                # Very minor self-noise at high frequencies
+                result['generated_spectrum'] = [0.0, 0.0, 0.0, 5.0, 8.0, 10.0, 8.0, 5.0]
+                result['generated_dba'] = self._calculate_dba_from_spectrum(
+                    result['generated_spectrum']
+                )
+                if debug_export_enabled:
+                    print(f"DEBUG_SILENCER:   High flow ({flow_rate} CFM) - self-noise added")
+
+        except Exception as e:
+            result['error'] = f"Silencer calculation error: {str(e)}"
+            if debug_export_enabled:
+                print(f"DEBUG_SILENCER: Silencer calculation error: {e}")
+
+        return result
+
     def _calculate_duct_area(self, element: PathElement) -> float:
         """Calculate duct cross-sectional area in square feet"""
         if element.duct_shape == 'circular':
@@ -1664,6 +1743,24 @@ class HVACNoiseEngine:
         for i, segment in enumerate(segments):
             element_type = self._determine_element_type(segment)
             
+            # Silencer elements get special PathElement construction
+            if element_type == 'silencer':
+                il_data = segment.get('insertion_loss_data')
+                if isinstance(il_data, dict):
+                    il_dict = {str(k): float(v) for k, v in il_data.items()}
+                else:
+                    il_dict = None
+                silencer_element = PathElement(
+                    element_type='silencer',
+                    element_id=f'silencer_{i+1}',
+                    silencer_product_id=segment.get('silencer_product_id'),
+                    insertion_loss_data=il_dict,
+                )
+                elements.append(silencer_element)
+                if debug_export_enabled:
+                    print(f"DEBUG_HNE_LEGACY: Created silencer PathElement {i+1} with IL data: {il_dict}")
+                continue
+            
             # Normalize duct shape nomenclature ('round' -> 'circular')
             shape = segment.get('duct_shape', 'rectangular')
             if isinstance(shape, str):
@@ -1808,7 +1905,7 @@ class HVACNoiseEngine:
                 # Normalize common aliases
                 if ot == 'flex':
                     ot = 'flex_duct'
-                allowed = {'duct', 'junction', 'elbow', 'flex_duct', 'terminal', 'source'}
+                allowed = {'duct', 'junction', 'elbow', 'flex_duct', 'terminal', 'source', 'silencer'}
                 if ot in allowed:
                     if debug_export_enabled:
                         print(f"DEBUG_HNE_LEGACY: Explicit element_type override detected: {ot}")

@@ -15,6 +15,7 @@ from .general_utils import (
     get_about_text,
     log_environment_info
 )
+from .logging_config import get_logger, configure_logging
 
 __all__ = [
     'LocationManager',
@@ -27,5 +28,7 @@ __all__ = [
     'get_version_info',
     'get_application_title',
     'get_about_text',
-    'log_environment_info'
+    'log_environment_info',
+    'get_logger',
+    'configure_logging',
 ]

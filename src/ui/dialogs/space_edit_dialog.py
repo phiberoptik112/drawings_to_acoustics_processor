@@ -2,8 +2,11 @@
 Space Edit Dialog - Edit properties of existing spaces
 """
 
+import json
+import math
+
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
-                             QLabel, QLineEdit, QTextEdit, QComboBox, 
+                             QGridLayout, QLabel, QLineEdit, QTextEdit, QComboBox,
                              QPushButton, QGroupBox, QDoubleSpinBox,
                              QMessageBox, QTabWidget, QWidget, QListWidget,
                              QListWidgetItem, QScrollArea, QSizePolicy, QSplitter,
@@ -12,7 +15,8 @@ from PySide6.QtCore import Qt, Signal, QTimer
 
 from models import get_session
 from models.database import get_hvac_session
-from models.space import Space, SpaceNoiseSource, SurfaceType
+from models.space import Space, SpaceNoiseSource, SurfaceType, RoomBoundary
+from models.drawing import Drawing
 from models.partition import PartitionType, SpacePartition
 from data.materials import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS, get_materials_by_category
 from data.partition_stc_standards import (
@@ -590,13 +594,15 @@ class SpaceEditDialog(HelpMixin, QDialog):
         self.drawing_label.setStyleSheet("color: #666; font-style: italic;")
         basic_layout.addRow("Associated Drawing:", self.drawing_label)
 
-        # Show location bookmarks
+        # Show location bookmarks — clicking navigates to that page
         self.location_label = QLabel("No location bookmarks")
         self.location_label.setStyleSheet("color: #666; font-style: italic;")
         self.location_label.setWordWrap(True)
+        self.location_label.setCursor(Qt.PointingHandCursor)
+        self.location_label.mousePressEvent = self._on_location_label_clicked
         basic_layout.addRow("Locations:", self.location_label)
 
-        # Button to view all locations
+        # Button to view / navigate all locations
         self.view_locations_btn = QPushButton("📍 View All Locations")
         self.view_locations_btn.setMaximumWidth(150)
         self.view_locations_btn.clicked.connect(self.show_all_locations)
@@ -1452,7 +1458,8 @@ class SpaceEditDialog(HelpMixin, QDialog):
         # Load location information
         self.update_location_display()
         
-        # Load geometry
+        # Load geometry — then immediately recalculate from boundary pixels
+        # so that a mis-calibrated scale at draw-time doesn't persist.
         if self.space.floor_area:
             self.area_spin.setValue(self.space.floor_area)
         if self.space.ceiling_height:
@@ -1461,6 +1468,11 @@ class SpaceEditDialog(HelpMixin, QDialog):
         if self.space.wall_area is not None:
             self.wall_area_spin.setValue(self.space.wall_area)
             print(f"DEBUG: Loaded wall_area = {self.space.wall_area} for space '{self.space.name}'")
+
+        # Recalculate floor_area and wall_area from the stored boundary pixel
+        # dimensions using the drawing's authoritative calibrated scale_ratio.
+        # This corrects values that were stored using a default/placeholder scale.
+        self._recalculate_areas_from_boundary()
             
         # Load acoustic targets
         if self.space.target_rt60:
@@ -1545,6 +1557,145 @@ class SpaceEditDialog(HelpMixin, QDialog):
         if hasattr(self, 'space_insource_table'):
             self._space_refresh_insource_table()
         
+    def _recalculate_areas_from_boundary(self):
+        """Recalculate floor_area and wall_area from raw boundary pixel data.
+
+        The boundary stores dimensions in base-zoom PDF pixels, and the drawing
+        stores the authoritative calibrated scale_ratio (pixels per foot).
+        Dividing pixel dimensions by scale_ratio gives accurate real-world feet
+        regardless of what scale was active when the space was first drawn.
+
+        Updates area_spin and wall_area_spin (and schedules a DB persist) when
+        a meaningful correction is detected (>1% difference from stored values).
+        """
+        if not self.space:
+            return
+
+        try:
+            session = get_session()
+            try:
+                boundary = (
+                    session.query(RoomBoundary)
+                    .filter(RoomBoundary.space_id == self.space.id)
+                    .first()
+                )
+                if boundary is None:
+                    return
+
+                # Fetch the drawing's authoritative scale_ratio
+                drawing = session.query(Drawing).filter(Drawing.id == boundary.drawing_id).first()
+                if drawing is None or not drawing.scale_ratio or drawing.scale_ratio <= 0:
+                    print(
+                        f"DEBUG: _recalculate_areas_from_boundary: no valid scale_ratio "
+                        f"on drawing for space '{self.space.name}', skipping recalc"
+                    )
+                    return
+
+                scale_ratio = drawing.scale_ratio  # pixels per foot (base zoom)
+
+                # --- compute correct floor area ---
+                polygon_pts_json = boundary.polygon_points
+                if polygon_pts_json:
+                    # Polygon boundary: use Shoelace formula on stored base-px points
+                    try:
+                        pts = json.loads(polygon_pts_json)
+                        n = len(pts)
+                        if n >= 3:
+                            area_px2 = 0.0
+                            for i in range(n):
+                                j = (i + 1) % n
+                                area_px2 += float(pts[i].get('x', 0)) * float(pts[j].get('y', 0))
+                                area_px2 -= float(pts[j].get('x', 0)) * float(pts[i].get('y', 0))
+                            area_px2 = abs(area_px2) / 2.0
+                            new_floor_area = area_px2 / (scale_ratio ** 2)
+                            # Perimeter from polygon points
+                            perim_px = 0.0
+                            for i in range(n):
+                                j = (i + 1) % n
+                                dx = float(pts[j].get('x', 0)) - float(pts[i].get('x', 0))
+                                dy = float(pts[j].get('y', 0)) - float(pts[i].get('y', 0))
+                                perim_px += math.sqrt(dx * dx + dy * dy)
+                            new_perimeter = perim_px / scale_ratio
+                        else:
+                            return
+                    except (json.JSONDecodeError, TypeError, KeyError):
+                        return
+                else:
+                    # Rectangle boundary: simple width × height
+                    w_px = boundary.width
+                    h_px = boundary.height
+                    if not w_px or not h_px or w_px <= 0 or h_px <= 0:
+                        return
+                    new_floor_area = (w_px / scale_ratio) * (h_px / scale_ratio)
+                    new_perimeter = 2.0 * (w_px + h_px) / scale_ratio
+
+                ceiling_height = self.ceiling_height_spin.value()
+                new_wall_area = new_perimeter * ceiling_height if ceiling_height > 0 else 0.0
+
+                # --- compare with what is currently displayed ---
+                current_floor = self.area_spin.value()
+                current_wall = self.wall_area_spin.value()
+
+                floor_diff = (
+                    abs(new_floor_area - current_floor) / current_floor
+                    if current_floor > 0
+                    else 1.0
+                )
+                wall_diff = (
+                    abs(new_wall_area - current_wall) / current_wall
+                    if current_wall > 0
+                    else 1.0
+                )
+
+                if floor_diff > 0.01 or wall_diff > 0.01:
+                    print(
+                        f"DEBUG: _recalculate_areas_from_boundary: correcting areas for "
+                        f"space '{self.space.name}': "
+                        f"floor {current_floor:.1f}→{new_floor_area:.1f} sf, "
+                        f"wall {current_wall:.1f}→{new_wall_area:.1f} sf "
+                        f"(scale_ratio={scale_ratio:.4f})"
+                    )
+                    self.area_spin.setValue(new_floor_area)
+                    self.wall_area_spin.setValue(new_wall_area)
+
+                    # Also update the boundary's cached calculated_area
+                    boundary.calculated_area = new_floor_area
+                    session.commit()
+
+                    # Persist corrected values to Space record immediately
+                    self._persist_corrected_areas(new_floor_area, new_wall_area)
+                else:
+                    print(
+                        f"DEBUG: _recalculate_areas_from_boundary: stored areas are "
+                        f"within 1% of recalculated values for space '{self.space.name}', "
+                        f"no correction needed"
+                    )
+
+            finally:
+                session.close()
+
+        except Exception as exc:
+            print(f"DEBUG: _recalculate_areas_from_boundary error: {exc}")
+
+    def _persist_corrected_areas(self, floor_area, wall_area):
+        """Write corrected floor_area and wall_area back to the Space DB record."""
+        try:
+            session = get_session()
+            try:
+                space = session.query(Space).filter(Space.id == self.space.id).first()
+                if space:
+                    space.floor_area = floor_area
+                    space.wall_area = wall_area
+                    session.commit()
+                    print(
+                        f"DEBUG: _persist_corrected_areas: saved floor_area={floor_area:.1f}, "
+                        f"wall_area={wall_area:.1f} for space '{self.space.name}'"
+                    )
+            finally:
+                session.close()
+        except Exception as exc:
+            print(f"DEBUG: _persist_corrected_areas error: {exc}")
+
     def room_type_index_changed(self, index):
         """Handle room type combo box index change"""
         if index >= 0:
@@ -2056,28 +2207,100 @@ class SpaceEditDialog(HelpMixin, QDialog):
             locations = self.space.get_drawing_locations()
 
             if not locations:
-                # Try to get from legacy fields
                 location_text = self.space.get_primary_location_label()
                 self.location_label.setText(location_text)
                 self.location_label.setStyleSheet("color: #999; font-style: italic;")
+                self.location_label.setCursor(Qt.ArrowCursor)
             else:
-                # Show first location and count
                 first_loc = locations[0]
                 location_text = first_loc.get_location_label()
 
                 if len(locations) > 1:
-                    location_text += f" (+{len(locations) - 1} more)"
+                    location_text += f" (+{len(locations) - 1} more — click to navigate)"
+                else:
+                    location_text += "  (click to navigate)"
 
                 self.location_label.setText(location_text)
-                self.location_label.setStyleSheet("color: #90CAF9; font-weight: bold;")
+                self.location_label.setStyleSheet(
+                    "color: #90CAF9; font-weight: bold; text-decoration: underline;"
+                )
+                self.location_label.setCursor(Qt.PointingHandCursor)
 
         except Exception as e:
             print(f"Error updating location display: {e}")
             self.location_label.setText("Error loading locations")
             self.location_label.setStyleSheet("color: #e74c3c; font-style: italic;")
 
+    def _on_location_label_clicked(self, event):
+        """Handle click on the location label — navigate directly if single location."""
+        if not self.space:
+            return
+        try:
+            locations = self.space.get_drawing_locations()
+            if not locations:
+                return
+            if len(locations) == 1:
+                self._navigate_to_location(locations[0])
+            else:
+                self.show_all_locations()
+        except Exception as e:
+            print(f"Error handling location click: {e}")
+
+    def _navigate_to_location(self, loc):
+        """Call navigate_to_location on the parent DrawingInterface."""
+        from ui.drawing_interface import DrawingInterface
+        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QTimer
+
+        # 1. Try the Qt parent chain first (dialog opened from DrawingInterface)
+        parent = self.parent()
+        while parent is not None:
+            if isinstance(parent, DrawingInterface):
+                parent.navigate_to_location(
+                    loc.drawing_id, loc.page_number or 1, loc.center_x, loc.center_y,
+                )
+                return
+            parent = parent.parent()
+
+        # 2. Scan all open top-level windows for a matching DrawingInterface
+        for widget in QApplication.topLevelWidgets():
+            if (isinstance(widget, DrawingInterface)
+                    and widget.drawing
+                    and widget.drawing.id == loc.drawing_id):
+                widget.navigate_to_location(
+                    loc.drawing_id, loc.page_number or 1, loc.center_x, loc.center_y,
+                )
+                return
+
+        # 3. No DrawingInterface open for this drawing — create one
+        project_id = self._resolve_project_id()
+        if project_id is None or loc.drawing_id is None:
+            return
+        new_iface = DrawingInterface(loc.drawing_id, project_id)
+        _page = loc.page_number or 1
+        _cx, _cy = loc.center_x, loc.center_y
+        QTimer.singleShot(300, lambda: new_iface._jump_to_page_and_center(_page, _cx, _cy))
+        new_iface.show()
+
+    def _resolve_project_id(self):
+        """Return the project_id for the current space, checking space.drawing then parent chain."""
+        from ui.project_dashboard import ProjectDashboard
+        # Prefer getting project_id from the space's drawing relationship
+        try:
+            if self.space and self.space.drawing and self.space.drawing.project_id:
+                return self.space.drawing.project_id
+        except Exception:
+            pass
+        # Fallback: walk parent chain for ProjectDashboard
+        p = self.parent()
+        while p is not None:
+            if isinstance(p, ProjectDashboard):
+                return p.project_id
+            p = p.parent()
+        return None
+
     def show_all_locations(self):
-        """Show all location bookmarks for this space"""
+        """Show a picker dialog listing all location bookmarks with Navigate buttons."""
         if not self.space:
             return
 
@@ -2095,22 +2318,65 @@ class SpaceEditDialog(HelpMixin, QDialog):
                 )
                 return
 
-            # Build message
-            msg = f"<h3>Locations for '{self.space.name}'</h3>"
-            msg += f"<p>Found {len(locations)} location bookmark(s):</p>"
-            msg += "<ul>"
-
-            for loc in locations:
-                msg += f"<li><b>{loc.get_location_label()}</b><br>"
-                if loc.page_number and loc.page_number > 1:
-                    msg += f"Page {loc.page_number}, "
-                if loc.center_x and loc.center_y:
-                    msg += f"Position: ({loc.center_x:.1f}, {loc.center_y:.1f})"
-                msg += "</li>"
-
-            msg += "</ul>"
-
-            QMessageBox.information(self, "Space Locations", msg)
+            self._show_location_picker(locations)
 
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to load locations:\n{e}")
+
+    def _show_location_picker(self, locations):
+        """Display a compact dialog listing locations with per-row Navigate buttons."""
+        picker = QDialog(self)
+        picker.setWindowTitle(f"Locations — {self.space.name}")
+        picker.setMinimumWidth(480)
+
+        outer_layout = QVBoxLayout(picker)
+        outer_layout.setSpacing(8)
+
+        header = QLabel(f"<b>{len(locations)} location(s) for '{self.space.name}'</b>")
+        outer_layout.addWidget(header)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setMaximumHeight(320)
+        container = QWidget()
+        grid = QGridLayout(container)
+        grid.setSpacing(6)
+        grid.setContentsMargins(4, 4, 4, 4)
+
+        for row, loc in enumerate(locations):
+            label_text = loc.get_location_label()
+            if loc.page_number:
+                label_text += f"  |  Page {loc.page_number}"
+            if loc.center_x is not None and loc.center_y is not None:
+                label_text += f"  ({loc.center_x:.0f}, {loc.center_y:.0f})"
+
+            lbl = QLabel(label_text)
+            lbl.setStyleSheet("color: #e0e0e0;")
+            lbl.setWordWrap(True)
+            grid.addWidget(lbl, row, 0)
+
+            nav_btn = QPushButton("Navigate")
+            nav_btn.setFixedWidth(80)
+            nav_btn.setStyleSheet(
+                "QPushButton { background-color: #1565C0; color: white; border-radius: 4px; }"
+                "QPushButton:hover { background-color: #1976D2; }"
+            )
+
+            def _make_handler(location, dialog):
+                def _handler():
+                    self._navigate_to_location(location)
+                    dialog.accept()
+                return _handler
+
+            nav_btn.clicked.connect(_make_handler(loc, picker))
+            grid.addWidget(nav_btn, row, 1)
+
+        grid.setColumnStretch(0, 1)
+        scroll.setWidget(container)
+        outer_layout.addWidget(scroll)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(picker.reject)
+        outer_layout.addWidget(close_btn, alignment=Qt.AlignRight)
+
+        picker.exec()

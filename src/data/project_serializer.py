@@ -209,9 +209,14 @@ class ProjectExporter:
                 'space_type': space.space_type,
                 'target_rt60': space.target_rt60,
                 'calculated_rt60': space.calculated_rt60,
-                'ceiling_material': space.ceiling_material,
-                'wall_material': space.wall_material,
-                'floor_material': space.floor_material,
+                # Use new materials system with fallback for serialization
+                'ceiling_material': space.get_primary_ceiling_material(),
+                'wall_material': space.get_primary_wall_material(),
+                'floor_material': space.get_primary_floor_material(),
+                # Include all materials from new system
+                'ceiling_materials': space.get_all_ceiling_materials(),
+                'wall_materials': space.get_all_wall_materials(),
+                'floor_materials': space.get_all_floor_materials(),
                 'calculated_nc': space.calculated_nc,
                 'created_date': space.created_date.isoformat() if space.created_date else None,
                 'modified_date': space.modified_date.isoformat() if space.modified_date else None,

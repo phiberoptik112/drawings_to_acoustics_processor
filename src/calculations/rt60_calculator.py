@@ -2,7 +2,10 @@
 RT60 Calculator - Reverberation time calculation engine using Sabine and Eyring formulas
 """
 
+import logging
 import math
+
+logger = logging.getLogger(__name__)
 try:
     from ..data.materials import STANDARD_MATERIALS
 except ImportError:
@@ -17,6 +20,18 @@ except ImportError:
         if src_dir not in sys.path:
             sys.path.insert(0, src_dir)
         from data.materials import STANDARD_MATERIALS
+
+# Import acoustic constants
+try:
+    from .acoustic_constants import (
+        SABINE_CONSTANT_IMPERIAL, RT60_INVALID_VALUE,
+        MAX_ABSORPTION_COEFFICIENT, RT60_OCTAVE_FREQUENCIES
+    )
+except ImportError:
+    from calculations.acoustic_constants import (
+        SABINE_CONSTANT_IMPERIAL, RT60_INVALID_VALUE,
+        MAX_ABSORPTION_COEFFICIENT, RT60_OCTAVE_FREQUENCIES
+    )
 
 
 class RT60Calculator:
@@ -89,7 +104,7 @@ class RT60Calculator:
         # Standard material lookup with fallback to name matching
         actual_key = self._find_material_by_key_or_name(material_key)
         if not actual_key:
-            print(f"WARNING: Material '{material_key}' not found in materials database")
+            logger.warning(f"Material '{material_key}' not found in materials database")
             return 0.0
         
         material_key = actual_key  # Use the found key
@@ -139,21 +154,24 @@ class RT60Calculator:
     def calculate_rt60_sabine(self, volume, total_absorption):
         """
         Calculate RT60 using Sabine formula
-        
+
         RT60 = 0.049 * V / A (imperial units)
         where V = volume (cubic feet), A = total absorption (sabins)
-        
+
         Args:
             volume: Room volume in cubic feet
             total_absorption: Total absorption in sabins
-            
+
         Returns:
             float: RT60 in seconds
         """
-        if total_absorption <= 0:
+        # Validate inputs
+        if volume is None or volume <= 0:
+            return float('inf')  # Invalid volume
+        if total_absorption is None or total_absorption <= 0:
             return float('inf')  # Infinite reverberation
-            
-        return 0.049 * volume / total_absorption
+
+        return SABINE_CONSTANT_IMPERIAL * volume / total_absorption
         
     def calculate_rt60_eyring(self, volume, surfaces, frequency=None):
         """
@@ -195,23 +213,27 @@ class RT60Calculator:
                 
         if total_area <= 0:
             return float('inf')
-            
+
+        # Validate volume input
+        if volume is None or volume <= 0:
+            return float('inf')
+
         avg_absorption_coeff = weighted_absorption / total_area
-        
+
         # Avoid log(0) or log(negative)
         if avg_absorption_coeff >= 1.0:
-            avg_absorption_coeff = 0.99
+            avg_absorption_coeff = MAX_ABSORPTION_COEFFICIENT
         elif avg_absorption_coeff <= 0:
             return float('inf')
-            
-            try:
-                denominator = -total_area * math.log(1 - avg_absorption_coeff)
-                if denominator <= 0:
-                    return float('inf')
-                    
-                return 0.049 * volume / denominator
-            except (ValueError, ZeroDivisionError):
+
+        try:
+            denominator = -total_area * math.log(1 - avg_absorption_coeff)
+            if denominator <= 0:
                 return float('inf')
+
+            return SABINE_CONSTANT_IMPERIAL * volume / denominator
+        except (ValueError, ZeroDivisionError):
+            return float('inf')
             
     def calculate_space_rt60(self, space_data, method='sabine'):
         """
@@ -282,7 +304,7 @@ class RT60Calculator:
                     # Find material by key or name
                     actual_key = self._find_material_by_key_or_name(material_key)
                     if not actual_key:
-                        print(f"WARNING: Material '{material_key}' not found in materials database for ceiling surface")
+                        logger.warning(f"Material '{material_key}' not found in materials database for ceiling surface")
                         continue
                     surfaces.append({
                         'area': area,
@@ -297,7 +319,7 @@ class RT60Calculator:
                     # Find material by key or name
                     actual_key = self._find_material_by_key_or_name(material_key)
                     if not actual_key:
-                        print(f"WARNING: Material '{material_key}' not found in materials database for ceiling surface")
+                        logger.warning(f"Material '{material_key}' not found in materials database for ceiling surface")
                         continue
                     surfaces.append({
                         'area': area_per_material,
@@ -314,7 +336,7 @@ class RT60Calculator:
                     # Find material by key or name
                     actual_key = self._find_material_by_key_or_name(material_key)
                     if not actual_key:
-                        print(f"WARNING: Material '{material_key}' not found in materials database for wall surface")
+                        logger.warning(f"Material '{material_key}' not found in materials database for wall surface")
                         continue
                     surfaces.append({
                         'area': area, 
@@ -329,7 +351,7 @@ class RT60Calculator:
                     # Find material by key or name
                     actual_key = self._find_material_by_key_or_name(material_key)
                     if not actual_key:
-                        print(f"WARNING: Material '{material_key}' not found in materials database for wall surface")
+                        logger.warning(f"Material '{material_key}' not found in materials database for wall surface")
                         continue
                     surfaces.append({
                         'area': area_per_material,
@@ -346,7 +368,7 @@ class RT60Calculator:
                     # Find material by key or name
                     actual_key = self._find_material_by_key_or_name(material_key)
                     if not actual_key:
-                        print(f"WARNING: Material '{material_key}' not found in materials database for floor surface")
+                        logger.warning(f"Material '{material_key}' not found in materials database for floor surface")
                         continue
                     surfaces.append({
                         'area': area,
@@ -361,7 +383,7 @@ class RT60Calculator:
                     # Find material by key or name
                     actual_key = self._find_material_by_key_or_name(material_key)
                     if not actual_key:
-                        print(f"WARNING: Material '{material_key}' not found in materials database for floor surface")
+                        logger.warning(f"Material '{material_key}' not found in materials database for floor surface")
                         continue
                     surfaces.append({
                         'area': area_per_material,
@@ -388,16 +410,16 @@ class RT60Calculator:
                     })
             
         if not surfaces:
-            print(f"ERROR: No valid surfaces found for RT60 calculation")
-            print(f"  Ceiling materials data: {ceiling_materials_data}")
-            print(f"  Wall materials data: {wall_materials_data}")
-            print(f"  Floor materials data: {floor_materials_data}")
-            print(f"  Materials DB size: {len(self.materials_db)}")
+            logger.error(f"No valid surfaces found for RT60 calculation")
+            logger.debug(f"  Ceiling materials data: {ceiling_materials_data}")
+            logger.debug(f"  Wall materials data: {wall_materials_data}")
+            logger.debug(f"  Floor materials data: {floor_materials_data}")
+            logger.debug(f"  Materials DB size: {len(self.materials_db)}")
             return {
-                'rt60': 999.9,
+                'rt60': RT60_INVALID_VALUE,
                 'method': method,
                 'error': 'No valid surfaces defined',
-                'rt60_by_frequency': {f: 999.9 for f in [125, 250, 500, 1000, 2000, 4000]}
+                'rt60_by_frequency': {f: RT60_INVALID_VALUE for f in RT60_OCTAVE_FREQUENCIES}
             }
             
         # Calculate RT60
@@ -410,7 +432,7 @@ class RT60Calculator:
             
         # Prepare detailed results
         results = {
-            'rt60': rt60 if rt60 != float('inf') else 999.9,
+            'rt60': rt60 if rt60 != float('inf') else RT60_INVALID_VALUE,
             'method': method,
             'volume': volume,
             'surfaces': [],
@@ -522,9 +544,9 @@ class RT60Calculator:
         """
         if current_rt60 <= 0 or target_rt60 <= 0:
             return {'error': 'Invalid RT60 values'}
-            
+
         # Calculate required total absorption for target RT60
-        required_absorption = 0.049 * volume / target_rt60
+        required_absorption = SABINE_CONSTANT_IMPERIAL * volume / target_rt60
         current_absorption = self.calculate_total_absorption(surfaces)
         
         absorption_needed = required_absorption - current_absorption

@@ -216,7 +216,17 @@ class PDFViewer(QWidget):
             self.update_page_navigation()
             self.render_page()
             self.page_changed.emit(self.current_page)
-            
+
+    def go_to_page(self, page_number: int):
+        """Jump directly to a 1-indexed page number."""
+        if not self.pdf_document:
+            return
+        target = max(0, min(page_number - 1, len(self.pdf_document) - 1))
+        self.current_page = target
+        self.update_page_navigation()
+        self.render_page()
+        self.page_changed.emit(self.current_page)
+
     def zoom_in(self):
         """Zoom in by 25%"""
         new_zoom = min(self.zoom_factor * 1.25, 4.0)  # Max 400%

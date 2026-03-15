@@ -262,9 +262,9 @@ class ExcelExporter:
                 space.calculated_rt60 or 0,
                 (int(latest_nc) if latest_nc is not None else None),
                 (float(latest_dba) if latest_dba is not None else None),
-                space.ceiling_material or "",
-                space.wall_material or "",
-                space.floor_material or ""
+                space.get_primary_ceiling_material() or "",
+                space.get_primary_wall_material() or "",
+                space.get_primary_floor_material() or ""
             ]
             
             for col, value in enumerate(data, 1):
@@ -655,14 +655,17 @@ class ExcelExporter:
         for space in spaces:
             row += 1
             
-            # Get surface treatments (materials applied)
+            # Get surface treatments (materials applied) - use new materials system
             surface_treatments = []
-            if space.ceiling_material:
-                surface_treatments.append(f"Ceiling: {space.ceiling_material}")
-            if space.wall_material:
-                surface_treatments.append(f"Wall: {space.wall_material}")
-            if space.floor_material:
-                surface_treatments.append(f"Floor: {space.floor_material}")
+            ceiling_mat = space.get_primary_ceiling_material()
+            wall_mat = space.get_primary_wall_material()
+            floor_mat = space.get_primary_floor_material()
+            if ceiling_mat:
+                surface_treatments.append(f"Ceiling: {ceiling_mat}")
+            if wall_mat:
+                surface_treatments.append(f"Wall: {wall_mat}")
+            if floor_mat:
+                surface_treatments.append(f"Floor: {floor_mat}")
             
             treatments_text = "; ".join(surface_treatments) if surface_treatments else ""
             
@@ -712,19 +715,24 @@ class ExcelExporter:
         spaces = session.query(Space).filter(Space.project_id == project.id).all()
         
         for space in spaces:
+            # Get materials using the new system with fallback
+            ceiling_mat = space.get_primary_ceiling_material()
+            wall_mat = space.get_primary_wall_material()
+            floor_mat = space.get_primary_floor_material()
+
+            # Get room type name from the room_type key
+            room_type_name = ""
+            if space.room_type and space.room_type in ROOM_TYPE_DEFAULTS:
+                room_type_name = ROOM_TYPE_DEFAULTS[space.room_type]['name']
+
             # Add ceiling material if present
-            if space.ceiling_material:
+            if ceiling_mat:
                 row += 1
-                # Get room type name from the room_type key
-                room_type_name = ""
-                if space.room_type and space.room_type in ROOM_TYPE_DEFAULTS:
-                    room_type_name = ROOM_TYPE_DEFAULTS[space.room_type]['name']
-                
                 data = [
                     space.id or "",
                     f"{space.name} / {room_type_name or 'N/A'}",
                     "",  # Surface Material ID
-                    space.ceiling_material or "",
+                    ceiling_mat,
                     "",  # Manufacturer
                     "",  # Absorption Coefficient (500 Hz)
                     "",  # Absorption Coefficient (1000 Hz)
@@ -736,20 +744,15 @@ class ExcelExporter:
                 ]
                 for col, value in enumerate(data, 1):
                     ws.cell(row=row, column=col, value=value)
-            
+
             # Add wall material if present
-            if space.wall_material:
+            if wall_mat:
                 row += 1
-                # Get room type name from the room_type key
-                room_type_name = ""
-                if space.room_type and space.room_type in ROOM_TYPE_DEFAULTS:
-                    room_type_name = ROOM_TYPE_DEFAULTS[space.room_type]['name']
-                
                 data = [
                     space.id or "",
                     f"{space.name} / {room_type_name or 'N/A'}",
                     "",  # Surface Material ID
-                    space.wall_material or "",
+                    wall_mat,
                     "",  # Manufacturer
                     "",  # Absorption Coefficient (500 Hz)
                     "",  # Absorption Coefficient (1000 Hz)
@@ -761,20 +764,15 @@ class ExcelExporter:
                 ]
                 for col, value in enumerate(data, 1):
                     ws.cell(row=row, column=col, value=value)
-            
+
             # Add floor material if present
-            if space.floor_material:
+            if floor_mat:
                 row += 1
-                # Get room type name from the room_type key
-                room_type_name = ""
-                if space.room_type and space.room_type in ROOM_TYPE_DEFAULTS:
-                    room_type_name = ROOM_TYPE_DEFAULTS[space.room_type]['name']
-                
                 data = [
                     space.id or "",
                     f"{space.name} / {room_type_name or 'N/A'}",
                     "",  # Surface Material ID
-                    space.floor_material or "",
+                    floor_mat,
                     "",  # Manufacturer
                     "",  # Absorption Coefficient (500 Hz)
                     "",  # Absorption Coefficient (1000 Hz)
@@ -964,12 +962,13 @@ class ExcelExporter:
         }
         
         for space in spaces:
-            if space.wall_material:
-                materials_by_location['Wall'].add(space.wall_material)
-            if space.ceiling_material:
-                materials_by_location['Ceiling'].add(space.ceiling_material)
-            if space.floor_material:
-                materials_by_location['Floor'].add(space.floor_material)
+            # Use new materials system with fallback to legacy
+            for wall_mat in space.get_all_wall_materials():
+                materials_by_location['Wall'].add(wall_mat)
+            for ceiling_mat in space.get_all_ceiling_materials():
+                materials_by_location['Ceiling'].add(ceiling_mat)
+            for floor_mat in space.get_all_floor_materials():
+                materials_by_location['Floor'].add(floor_mat)
         
         # Add rows for each unique material
         for location in ['Wall', 'Ceiling', 'Floor']:

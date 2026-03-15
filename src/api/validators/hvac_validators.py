@@ -422,6 +422,18 @@ class HVACValidator:
         # Validate duct_shape
         validate_in_list(request.duct_shape, "duct_shape", VALID_DUCT_SHAPES, ctx)
 
+        # Validate element_type + duct_shape compatibility
+        if request.element_type == "elbow" and request.duct_shape == "circular":
+            ctx.add_error(
+                "duct_shape",
+                "Elbow element type requires duct_shape='rectangular'. Circular elbow insertion loss is not supported."
+            )
+        elif request.element_type == "flex_duct" and request.duct_shape == "rectangular":
+            ctx.add_error(
+                "duct_shape",
+                "Flex duct element type requires duct_shape='circular'. Flex duct is circular per ASHRAE."
+            )
+
         # Validate dimensions based on shape
         if request.duct_shape == "rectangular":
             if request.width_inches is None:
@@ -441,7 +453,11 @@ class HVACValidator:
                 validate_positive_number(request.diameter_inches, "diameter_inches", ctx)
 
         # Validate other fields
-        validate_positive_number(request.length_ft, "length_ft", ctx)
+        # Elbow insertion loss does not use length; allow 0 for elbow
+        allow_length_zero = request.element_type == "elbow"
+        validate_positive_number(
+            request.length_ft, "length_ft", ctx, allow_zero=allow_length_zero
+        )
         validate_positive_number(request.lining_thickness_inches, "lining_thickness_inches", ctx, allow_zero=True)
 
         if request.flow_rate_cfm is not None:

@@ -95,6 +95,12 @@ hiddenimports = [
     'data.components',
     'calculations.rt60_calculator',
     'calculations.noise_calculator',
+    'calculations.hvac_path_calculator',
+    'calculations.hvac_noise_engine',
+    'calculations.space_noise_service',
+    'calculations.acoustic_constants',
+    'calculations.result_types',
+    'utils.logging_config',
 ]
 
 # Binaries - additional DLLs that might be needed

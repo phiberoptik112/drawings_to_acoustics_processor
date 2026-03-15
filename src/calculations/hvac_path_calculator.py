@@ -1020,6 +1020,14 @@ class HVACPathCalculator:
                 effective_path_id = 0
             path_data['segments'] = self._build_segments_with_flow_propagation(segments, source_cfm, effective_origin, effective_path_id)
             
+            # Inject silencer elements from the path's element_sequence
+            try:
+                from .path_data_builder import inject_silencer_elements
+                path_data['segments'] = inject_silencer_elements(path_data['segments'], hvac_path, session)
+            except Exception as sil_e:
+                if self.debug_export_enabled:
+                    print(f"DEBUG: Silencer injection failed: {sil_e}")
+            
             # Add validation and debug export
             try:
                 from src.calculations.hvac_validation import HVACValidationFramework
