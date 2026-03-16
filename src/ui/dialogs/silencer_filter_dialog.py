@@ -159,7 +159,10 @@ class SilencerFilterDialog(QDialog):
         type_layout = QFormLayout()
         
         self.silencer_type_combo = QComboBox()
-        self.silencer_type_combo.addItems(["Any Type", "dissipative", "reactive", "hybrid"])
+        self.silencer_type_combo.addItems([
+            "Any Type", "dissipative", "reactive", "hybrid",
+            "rectangular", "elbow", "circular_packless",
+        ])
         self.silencer_type_combo.currentTextChanged.connect(self.update_product_list)
         type_layout.addRow("Type:", self.silencer_type_combo)
         

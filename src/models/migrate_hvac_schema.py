@@ -57,6 +57,9 @@ def ensure_hvac_schema():
                 ("branch_takeoff_choice", "TEXT"),
                 # Page number for multi-page PDF support
                 ("page_number", "INTEGER DEFAULT 1"),
+                # Silencer placement fields
+                ("position_on_path", "REAL"),  # 0.0-1.0 normalized position for straight silencers
+                ("elbow_component_id", "INTEGER"),  # FK to hvac_components for elbow silencers
             ],
         )
 
@@ -165,6 +168,25 @@ def ensure_hvac_schema():
             )
         except Exception:
             # Table may not exist yet; it will be created on fresh DBs
+            pass
+
+        # silencer_products catalog metadata columns
+        try:
+            _ensure_columns(
+                session,
+                "silencer_products",
+                [
+                    ("series", "TEXT"),
+                    ("velocity_class", "TEXT"),
+                    ("max_velocity_fpm", "REAL"),
+                    ("rated_velocity_fpm", "REAL"),
+                    ("pressure_drop_in_wg", "REAL"),
+                    ("self_noise_lw_1k", "REAL"),
+                    ("source_document", "TEXT"),
+                    ("notes", "TEXT"),
+                ],
+            )
+        except Exception:
             pass
 
         # space_noise_sources table (create if missing for legacy DBs)

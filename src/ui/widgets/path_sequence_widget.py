@@ -97,6 +97,7 @@ class PathSequenceWidget(QWidget):
     element_selected = Signal(str, int)  # Emits (element_type, element_id) when selected
     element_double_clicked = Signal(str, int)  # For edit requests
     silencer_removed = Signal(int)  # Emits component_id of removed silencer
+    placement_requested = Signal(int)  # Emits component_id for silencer placement mode
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -249,6 +250,24 @@ class PathSequenceWidget(QWidget):
             QPushButton:disabled { background-color: #f0f0f0; color: #999; border: 1px solid #ccc; }
         """)
         buttons_layout.addWidget(self.remove_silencer_btn)
+
+        self.place_silencer_btn = QPushButton("📍 Place")
+        self.place_silencer_btn.setToolTip("Place silencer on drawing (drag to position)")
+        self.place_silencer_btn.clicked.connect(self._on_place_silencer)
+        self.place_silencer_btn.setFixedWidth(70)
+        self.place_silencer_btn.setEnabled(False)
+        self.place_silencer_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #e8f5e9;
+                color: #2e7d32;
+                border: 1px solid #a5d6a7;
+                border-radius: 3px;
+                padding: 4px 8px;
+            }
+            QPushButton:hover { background-color: #c8e6c9; }
+            QPushButton:disabled { background-color: #f0f0f0; color: #999; border: 1px solid #ccc; }
+        """)
+        buttons_layout.addWidget(self.place_silencer_btn)
         
         buttons_layout.addStretch()
         content_layout.addLayout(buttons_layout)
@@ -398,6 +417,7 @@ class PathSequenceWidget(QWidget):
             and selected.element_type == 'silencer'
         )
         self.remove_silencer_btn.setEnabled(is_silencer)
+        self.place_silencer_btn.setEnabled(is_silencer)
     
     def _on_selection_changed(self):
         """Handle selection change in list"""
@@ -510,16 +530,25 @@ class PathSequenceWidget(QWidget):
         current = self.list_widget.currentItem()
         if not isinstance(current, PathSequenceItem) or current.element_type != 'silencer':
             return
-        
+
         component_id = current.element_id
         row = self.list_widget.currentRow()
         self.list_widget.takeItem(row)
-        
+
         if component_id in self.components_map:
             del self.components_map[component_id]
-        
+
         self.silencer_removed.emit(component_id)
         self._emit_sequence_changed()
+
+    def _on_place_silencer(self):
+        """Request placement mode for the selected silencer"""
+        current = self.list_widget.currentItem()
+        if not isinstance(current, PathSequenceItem) or current.element_type != 'silencer':
+            return
+
+        component_id = current.element_id
+        self.placement_requested.emit(component_id)
     
     def _emit_sequence_changed(self):
         """Emit the sequence_changed signal with current sequence"""

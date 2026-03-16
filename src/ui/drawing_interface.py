@@ -520,6 +520,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
             self.analysis_panel.path_changed.connect(self.on_analysis_path_changed)
             # When edit is requested from analysis panel
             self.analysis_panel.edit_element_requested.connect(self.edit_element_from_analysis)
+            # When silencer placement is requested from analysis panel
+            self.analysis_panel.silencer_placement_requested.connect(self._on_silencer_placement_from_panel)
     
     def _connect_segment_validation_error(self):
         """Connect the SegmentTool's validation_error signal to show error popup."""
@@ -5379,6 +5381,110 @@ class DrawingInterface(HelpMixin, QMainWindow):
         """Refresh the analysis panel data"""
         if hasattr(self, 'analysis_panel') and self.analysis_panel:
             self.analysis_panel.refresh_paths()
+
+    def _on_silencer_placement_from_panel(self, path_id: int, component_id: int, silencer_data: dict):
+        """Handle silencer placement request from the analysis panel"""
+        if not self.drawing_overlay:
+            QMessageBox.warning(self, "Error", "Drawing overlay not available.")
+            return
+
+        # Connect signals from overlay for this placement session
+        try:
+            self.drawing_overlay.silencer_position_changed.disconnect(self._on_silencer_position_changed)
+        except Exception:
+            pass
+        try:
+            self.drawing_overlay.silencer_placement_finished.disconnect(self._on_silencer_placement_finished)
+        except Exception:
+            pass
+        try:
+            self.drawing_overlay.silencer_placement_cancelled.disconnect(self._on_silencer_placement_cancelled)
+        except Exception:
+            pass
+
+        self.drawing_overlay.silencer_position_changed.connect(self._on_silencer_position_changed)
+        self.drawing_overlay.silencer_placement_finished.connect(self._on_silencer_placement_finished)
+        self.drawing_overlay.silencer_placement_cancelled.connect(self._on_silencer_placement_cancelled)
+
+        # Store for later
+        self._placing_silencer_path_id = path_id
+        self._placing_silencer_component_id = component_id
+
+        # Enter placement mode on overlay
+        self.drawing_overlay.enter_silencer_placement_mode(path_id, silencer_data)
+
+        # Show status message
+        self.status_bar.showMessage(
+            "📍 SILENCER PLACEMENT: Drag along path to position. Press Esc to cancel.", 0
+        )
+
+    def _on_silencer_position_changed(self, position_data: dict):
+        """Handle real-time silencer position updates during drag"""
+        # Update analysis panel NC table with live preview
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.update_for_silencer_position(position_data, is_live=True)
+
+    def _on_silencer_placement_finished(self, position_data: dict):
+        """Handle silencer placement completion"""
+        from models import get_session
+        from models.hvac import HVACComponent, HVACSegment
+
+        component_id = position_data.get('component_id')
+        position_on_path = position_data.get('position_on_path')
+        elbow_component_id = position_data.get('elbow_component_id')
+        segment_id = position_data.get('segment_id')
+
+        try:
+            session = get_session()
+            silencer = session.query(HVACComponent).filter(HVACComponent.id == component_id).first()
+            if silencer:
+                silencer.position_on_path = position_on_path
+                silencer.elbow_component_id = elbow_component_id
+
+                # Update position coordinates based on segment if available
+                if segment_id and position_on_path is not None:
+                    seg = session.query(HVACSegment).filter(HVACSegment.id == segment_id).first()
+                    if seg and seg.from_component and seg.to_component:
+                        t = position_on_path
+                        silencer.x_position = seg.from_component.x_position + t * (
+                            seg.to_component.x_position - seg.from_component.x_position)
+                        silencer.y_position = seg.from_component.y_position + t * (
+                            seg.to_component.y_position - seg.from_component.y_position)
+
+                session.commit()
+            session.close()
+        except Exception as e:
+            print(f"Error saving silencer position: {e}")
+
+        # Update analysis panel
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.update_for_silencer_position(position_data, is_live=False)
+            # Recalculate path
+            self.analysis_panel._recalculate_path()
+
+        # Clear status
+        self.status_bar.showMessage("Silencer position saved", 3000)
+
+        # Cleanup
+        if hasattr(self, '_placing_silencer_path_id'):
+            del self._placing_silencer_path_id
+        if hasattr(self, '_placing_silencer_component_id'):
+            del self._placing_silencer_component_id
+
+    def _on_silencer_placement_cancelled(self):
+        """Handle silencer placement cancellation"""
+        # Revert analysis panel NC table
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.revert_nc_table()
+
+        # Clear status
+        self.status_bar.showMessage("Silencer placement cancelled", 3000)
+
+        # Cleanup
+        if hasattr(self, '_placing_silencer_path_id'):
+            del self._placing_silencer_path_id
+        if hasattr(self, '_placing_silencer_component_id'):
+            del self._placing_silencer_component_id
 
     def closeEvent(self, event):
         """Handle window close event"""

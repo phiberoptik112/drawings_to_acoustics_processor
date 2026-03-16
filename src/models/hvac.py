@@ -50,7 +50,11 @@ class HVACComponent(Base):
     frequency_requirements = Column(Text)   # JSON frequency band requirements
     space_constraints = Column(Text)        # JSON space limitations
     selected_product_id = Column(Integer, ForeignKey('silencer_products.id'))
-    
+
+    # Silencer placement fields
+    position_on_path = Column(Float)  # 0.0-1.0 normalized position for straight silencers
+    elbow_component_id = Column(Integer, ForeignKey('hvac_components.id'))  # For elbow silencers
+
     created_date = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -59,6 +63,8 @@ class HVACComponent(Base):
     segments_from = relationship("HVACSegment", foreign_keys="HVACSegment.from_component_id", back_populates="from_component")
     segments_to = relationship("HVACSegment", foreign_keys="HVACSegment.to_component_id", back_populates="to_component")
     selected_product = relationship("SilencerProduct", back_populates="components")
+    # Self-referential relationship for elbow silencer attachment
+    attached_elbow = relationship("HVACComponent", remote_side="HVACComponent.id", foreign_keys=[elbow_component_id])
     
     def __repr__(self):
         return f"<HVACComponent(id={self.id}, name='{self.name}', type='{self.component_type}')>"
@@ -89,6 +95,8 @@ class HVACComponent(Base):
             'frequency_requirements': self.frequency_requirements,
             'space_constraints': self.space_constraints,
             'selected_product_id': self.selected_product_id,
+            'position_on_path': self.position_on_path,
+            'elbow_component_id': self.elbow_component_id,
             'created_date': self.created_date.isoformat() if self.created_date else None,
         }
 
@@ -474,7 +482,8 @@ class SilencerProduct(Base):
     id = Column(Integer, primary_key=True)
     manufacturer = Column(String(100), nullable=False)
     model_number = Column(String(100), nullable=False)
-    silencer_type = Column(String(50), nullable=False)  # 'reactive', 'dissipative', 'hybrid'
+    # 'reactive', 'dissipative', 'hybrid', 'rectangular', 'elbow', 'circular_packless'
+    silencer_type = Column(String(50), nullable=False)
     
     # Physical specifications
     length = Column(Float)  # inches
@@ -500,6 +509,16 @@ class SilencerProduct(Base):
     # Cost information
     cost_estimate = Column(Float)  # USD
     availability = Column(String(50))  # 'in_stock', 'lead_time', 'discontinued'
+    
+    # Catalog metadata (populated from silencer_library catalog entries)
+    series = Column(String(100))
+    velocity_class = Column(String(20))  # 'ULV', 'LV', 'MV', 'HV', or IAC type codes
+    max_velocity_fpm = Column(Float)
+    rated_velocity_fpm = Column(Float)  # velocity at which published IL was measured
+    pressure_drop_in_wg = Column(Float)  # in. w.g. at rated velocity
+    self_noise_lw_1k = Column(Float)  # Lw dB re 10^-12 W at 1 kHz octave band
+    source_document = Column(String(200))  # catalog PDF reference
+    notes = Column(Text)
     
     created_date = Column(DateTime, default=datetime.utcnow)
     

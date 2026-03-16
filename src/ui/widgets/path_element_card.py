@@ -201,6 +201,9 @@ class PathElementCard(QFrame):
         elif self.element_type in ('receiver', 'space'):
             if not self._is_highlighted and not self._is_selected:
                 bg_color = "#e8f5e9"  # Light green
+        elif self.element_type == 'silencer':
+            if not self._is_highlighted and not self._is_selected:
+                bg_color = "#f3e5f5"  # Light purple
         
         self.setStyleSheet(f"""
             PathElementCard {{
