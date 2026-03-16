@@ -240,7 +240,8 @@ class HVACPathDialog(HelpMixin, QDialog):
         """Initialize the user interface"""
         title = "Edit HVAC Path" if self.is_editing else "Create HVAC Path"
         self.setWindowTitle(title)
-        self.setModal(True)
+        self.setWindowModality(Qt.NonModal)
+        self.setWindowFlags(self.windowFlags() | Qt.Window)
         self.resize(900, 700)
         self.setSizeGripEnabled(True)
         

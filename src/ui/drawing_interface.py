@@ -2212,42 +2212,43 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
             dialog.path_saved.connect(on_path_saved)
             dialog.set_drawing_data(components, ordered_segments, self.drawing.id, self.current_page_number)
-            
-            if dialog.exec() == QDialog.Accepted:
-                hvac_path = dialog.path
-                
-                # Keep newly created path elements visible on the drawing.
-                # We no longer prompt to remove them after saving.
-                path_info = f"Successfully created HVAC path: {hvac_path.name}\n\n"
-                path_info += f"Components: {len(components)}\n"
-                path_info += f"Segments: {len(ordered_segments)}\n"
-                
-                if hvac_path.calculated_noise:
-                    path_info += f"Terminal Noise: {hvac_path.calculated_noise:.1f} dB(A)\n"
-                    path_info += f"NC Rating: NC-{hvac_path.calculated_nc:.0f}\n\n"
-                else:
-                    path_info += "Noise calculation pending\n\n"
-                
-                path_info += "Path elements will remain visible on the drawing."
-                
-                QMessageBox.information(
-                    self,
-                    "HVAC Path Created",
-                    path_info
-                )
-                
-                # Update status bar
-                self.status_bar.showMessage(f"Created HVAC path '{hvac_path.name}' with {len(components)} components", 5000)
-                
-                # Add path to UI list without clearing existing registrations
-                # (on_path_saved already registered the elements, don't destroy that)
-                self.add_single_path_to_ui(hvac_path)
-                # Notify listeners (e.g., project dashboard HVAC tab)
-                try:
-                    self.paths_updated.emit()
-                except Exception:
-                    pass
-                
+
+            def on_dialog_finished(result, _dialog=dialog, _components=components, _segments=ordered_segments):
+                if result == QDialog.Accepted:
+                    hvac_path = _dialog.path
+
+                    path_info = f"Successfully created HVAC path: {hvac_path.name}\n\n"
+                    path_info += f"Components: {len(_components)}\n"
+                    path_info += f"Segments: {len(_segments)}\n"
+
+                    if hvac_path.calculated_noise:
+                        path_info += f"Terminal Noise: {hvac_path.calculated_noise:.1f} dB(A)\n"
+                        path_info += f"NC Rating: NC-{hvac_path.calculated_nc:.0f}\n\n"
+                    else:
+                        path_info += "Noise calculation pending\n\n"
+
+                    path_info += "Path elements will remain visible on the drawing."
+
+                    QMessageBox.information(self, "HVAC Path Created", path_info)
+
+                    self.status_bar.showMessage(
+                        f"Created HVAC path '{hvac_path.name}' with {len(_components)} components", 5000
+                    )
+                    self.add_single_path_to_ui(hvac_path)
+                    try:
+                        self.paths_updated.emit()
+                    except Exception:
+                        pass
+
+                if hasattr(self, '_open_hvac_dialogs'):
+                    self._open_hvac_dialogs.discard(_dialog)
+
+            dialog.finished.connect(on_dialog_finished)
+            if not hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs = set()
+            self._open_hvac_dialogs.add(dialog)
+            dialog.show()
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")
     
@@ -2660,18 +2661,28 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
             # Connect the signal before opening dialog
             dialog.path_saved.connect(on_path_saved)
-            
+
             # Pass drawing data to the dialog
             dialog.set_drawing_data(components, segments, self.drawing.id, self.current_page_number)
-            
-            if dialog.exec() == QDialog.Accepted:
-                QMessageBox.information(self, "HVAC Path Created", 
-                                       f"Successfully created HVAC path: {dialog.path.name if dialog.path else 'Unknown'}")
-                
-                # Refresh paths list to show new path
-                self.load_saved_paths()
-                self.paths_updated.emit()
-                
+
+            def on_dialog_finished_2(result, _dialog=dialog):
+                if result == QDialog.Accepted:
+                    QMessageBox.information(
+                        self, "HVAC Path Created",
+                        f"Successfully created HVAC path: {_dialog.path.name if _dialog.path else 'Unknown'}"
+                    )
+                    self.load_saved_paths()
+                    self.paths_updated.emit()
+
+                if hasattr(self, '_open_hvac_dialogs'):
+                    self._open_hvac_dialogs.discard(_dialog)
+
+            dialog.finished.connect(on_dialog_finished_2)
+            if not hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs = set()
+            self._open_hvac_dialogs.add(dialog)
+            dialog.show()
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")
     
@@ -3627,14 +3638,22 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
             # Connect the signal before opening dialog
             dlg.path_saved.connect(on_path_edited_from_item)
-            
-            if dlg.exec() == QDialog.Accepted:
-                # Refresh list and notify listeners
-                self.load_saved_paths()
-                try:
-                    self.paths_updated.emit()
-                except Exception:
-                    pass
+
+            def on_dlg_finished_item(result, _dlg=dlg):
+                if result == QDialog.Accepted:
+                    self.load_saved_paths()
+                    try:
+                        self.paths_updated.emit()
+                    except Exception:
+                        pass
+                if hasattr(self, '_open_hvac_dialogs'):
+                    self._open_hvac_dialogs.discard(_dlg)
+
+            dlg.finished.connect(on_dlg_finished_item)
+            if not hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs = set()
+            self._open_hvac_dialogs.add(dlg)
+            dlg.show()
         except Exception as e:
             QMessageBox.warning(self, "Path Editor", f"Failed to open path editor:\n{e}")
 
@@ -4090,13 +4109,22 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
             # Connect the signal before opening dialog
             dlg.path_saved.connect(on_path_edited)
-            
-            if dlg.exec() == QDialog.Accepted:
-                self.load_saved_paths()
-                try:
-                    self.paths_updated.emit()
-                except Exception:
-                    pass
+
+            def on_dlg_finished(result, _dlg=dlg):
+                if result == QDialog.Accepted:
+                    self.load_saved_paths()
+                    try:
+                        self.paths_updated.emit()
+                    except Exception:
+                        pass
+                if hasattr(self, '_open_hvac_dialogs'):
+                    self._open_hvac_dialogs.discard(_dlg)
+
+            dlg.finished.connect(on_dlg_finished)
+            if not hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs = set()
+            self._open_hvac_dialogs.add(dlg)
+            dlg.show()
         except Exception as e:
             QMessageBox.warning(self, "Path Editor", f"Failed to open path editor:\n{e}")
     

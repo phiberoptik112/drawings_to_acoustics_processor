@@ -1392,11 +1392,20 @@ class ProjectDashboard(HelpMixin, QMainWindow):
         """Create a new HVAC path using the HVACPathDialog"""
         try:
             dialog = HVACPathDialog(self, project_id=self.project_id)
-            if dialog.exec() == QDialog.Accepted:
-                # Dialog emits saved path internally; just refresh
-                self.refresh_hvac_paths()
-                self.update_analysis_status()
-                self.update_space_hvac_paths_table()
+
+            def on_finished(result, _dialog=dialog):
+                if result == QDialog.Accepted:
+                    self.refresh_hvac_paths()
+                    self.update_analysis_status()
+                    self.update_space_hvac_paths_table()
+                if hasattr(self, '_open_hvac_dialogs'):
+                    self._open_hvac_dialogs.discard(_dialog)
+
+            dialog.finished.connect(on_finished)
+            if not hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs = set()
+            self._open_hvac_dialogs.add(dialog)
+            dialog.show()
         except Exception as e:
             QMessageBox.critical(self, "New HVAC Path", f"Failed to create HVAC path:\n{str(e)}")
         
@@ -1432,11 +1441,20 @@ class ProjectDashboard(HelpMixin, QMainWindow):
                 QMessageBox.warning(self, "Edit HVAC Path", "Selected path not found.")
                 return
             dialog = HVACPathDialog(self, project_id=self.project_id, path=path)
-            if dialog.exec() == QDialog.Accepted:
-                self.refresh_hvac_paths()
-                self.update_analysis_status()
-                self.update_space_hvac_paths_table()
-                self.update_space_hvac_paths_table()
+
+            def on_edit_finished(result, _dialog=dialog):
+                if result == QDialog.Accepted:
+                    self.refresh_hvac_paths()
+                    self.update_analysis_status()
+                    self.update_space_hvac_paths_table()
+                if hasattr(self, '_open_hvac_dialogs'):
+                    self._open_hvac_dialogs.discard(_dialog)
+
+            dialog.finished.connect(on_edit_finished)
+            if not hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs = set()
+            self._open_hvac_dialogs.add(dialog)
+            dialog.show()
         except Exception as e:
             QMessageBox.critical(self, "Edit HVAC Path", f"Failed to edit HVAC path:\n{str(e)}")
         
@@ -1765,10 +1783,20 @@ class ProjectDashboard(HelpMixin, QMainWindow):
                 QMessageBox.warning(self, "Edit HVAC Path", "Selected path not found.")
                 return
             dialog = HVACPathDialog(self, project_id=self.project_id, path=path)
-            if dialog.exec() == QDialog.Accepted:
-                self.refresh_hvac_paths()
-                self.update_analysis_status()
-                self.update_space_hvac_paths_table()
+
+            def on_open_finished(result, _dialog=dialog):
+                if result == QDialog.Accepted:
+                    self.refresh_hvac_paths()
+                    self.update_analysis_status()
+                    self.update_space_hvac_paths_table()
+                if hasattr(self, '_open_hvac_dialogs'):
+                    self._open_hvac_dialogs.discard(_dialog)
+
+            dialog.finished.connect(on_open_finished)
+            if not hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs = set()
+            self._open_hvac_dialogs.add(dialog)
+            dialog.show()
         except Exception as e:
             QMessageBox.critical(self, "Edit HVAC Path", f"Failed to open HVAC path:\n{str(e)}")
 
@@ -2063,10 +2091,20 @@ class ProjectDashboard(HelpMixin, QMainWindow):
                 return
 
             dialog = HVACPathDialog(self, project_id=self.project_id, path=path)
-            if dialog.exec() == QDialog.Accepted:
-                self.refresh_hvac_paths()
-                self.update_analysis_status()
-                self.update_space_hvac_paths_table()
+
+            def on_jump_finished(result, _dialog=dialog):
+                if result == QDialog.Accepted:
+                    self.refresh_hvac_paths()
+                    self.update_analysis_status()
+                    self.update_space_hvac_paths_table()
+                if hasattr(self, '_open_hvac_dialogs'):
+                    self._open_hvac_dialogs.discard(_dialog)
+
+            dialog.finished.connect(on_jump_finished)
+            if not hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs = set()
+            self._open_hvac_dialogs.add(dialog)
+            dialog.show()
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open HVAC path:\n{e}")
