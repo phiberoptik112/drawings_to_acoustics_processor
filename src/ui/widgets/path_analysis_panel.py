@@ -255,6 +255,24 @@ class PathAnalysisPanel(QWidget):
         """)
         self.insert_silencer_btn.clicked.connect(self._on_insert_silencer)
         insert_btn_layout.addWidget(self.insert_silencer_btn)
+
+        self.advanced_filter_btn = QPushButton("Advanced Filter...")
+        self.advanced_filter_btn.setToolTip(
+            "Open the silencer filter dialog with NC compliance requirements pre-populated"
+        )
+        self.advanced_filter_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a148c;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #38006b; }
+            QPushButton:disabled { background-color: #ccc; color: #888; }
+        """)
+        self.advanced_filter_btn.clicked.connect(self._open_silencer_filter_dialog)
+        insert_btn_layout.addWidget(self.advanced_filter_btn)
+
         insert_btn_layout.addStretch()
         silencer_layout.addLayout(insert_btn_layout)
 
@@ -321,6 +339,7 @@ class PathAnalysisPanel(QWidget):
         # NC Results Table
         self.nc_results_table = NCResultsTableWidget(target_nc=35)
         self.nc_results_table.element_selected.connect(self._on_nc_element_selected)
+        self.nc_results_table.element_double_clicked.connect(self._on_nc_element_double_clicked)
         nc_tab_layout.addWidget(self.nc_results_table, 1)
 
         nc_tab_widget.setLayout(nc_tab_layout)
@@ -1100,8 +1119,51 @@ class PathAnalysisPanel(QWidget):
             self._silencer_products = []
             self.silencer_table.setRowCount(0)
     
-    def _on_insert_silencer(self):
-        """Handle Insert Silencer button click in the Edit Path tab"""
+    def _build_nc_compliance_data(self) -> Optional[Dict]:
+        """Build NC compliance data dict from current calculation results.
+
+        Returns a dict suitable for SilencerFilterDialog's nc_compliance_data
+        parameter, or None if the required data is not available.
+        """
+        if not self.calculation_results:
+            return None
+
+        path_elements = self.calculation_results.get('path_elements', [])
+        target_nc = self.calculation_results.get('target_nc')
+        if not path_elements or not target_nc:
+            return None
+
+        # Find terminal element (last element whose type is 'terminal')
+        terminal_spectrum = None
+        for elem in reversed(path_elements):
+            if elem.get('element_type') == 'terminal':
+                terminal_spectrum = elem.get('noise_after_spectrum')
+                break
+        # Fall back to the last element's spectrum if no explicit terminal
+        if terminal_spectrum is None and path_elements:
+            terminal_spectrum = path_elements[-1].get('noise_after_spectrum')
+        if not terminal_spectrum or len(terminal_spectrum) < 8:
+            return None
+
+        try:
+            from calculations.nc_rating_analyzer import NCRatingAnalyzer
+            nc_curves = NCRatingAnalyzer.NC_CURVES
+            if target_nc not in nc_curves:
+                return None
+            nc_limits = nc_curves[target_nc]
+            required_il = [max(0.0, recv - limit)
+                           for recv, limit in zip(terminal_spectrum, nc_limits)]
+            return {
+                'target_nc': target_nc,
+                'receiver_spectrum': list(terminal_spectrum),
+                'nc_limits': list(nc_limits),
+                'required_il': required_il,
+            }
+        except Exception:
+            return None
+
+    def _open_silencer_filter_dialog(self):
+        """Open SilencerFilterDialog pre-loaded with NC compliance requirements."""
         if not self.current_path_id:
             QMessageBox.warning(self, "No Path", "Please select a path first.")
             return
@@ -1114,24 +1176,31 @@ class PathAnalysisPanel(QWidget):
             )
             return
 
-        selected_rows = self.silencer_table.selectionModel().selectedRows()
-        if not selected_rows:
-            QMessageBox.warning(
-                self, "No Silencer Selected",
-                "Please select a silencer product from the table below."
-            )
+        from ui.dialogs.silencer_filter_dialog import SilencerFilterDialog
+
+        nc_data = self._build_nc_compliance_data()
+
+        dialog = SilencerFilterDialog(
+            noise_requirements={},
+            space_constraints={},
+            nc_compliance_data=nc_data,
+            parent=self,
+        )
+        dialog.product_selected.connect(self._insert_product_from_filter)
+        dialog.exec()
+
+    def _insert_product_from_filter(self, product: 'SilencerProduct'):
+        """Insert a silencer product chosen via SilencerFilterDialog."""
+        current_row = self.path_sequence_widget.list_widget.currentRow()
+        if current_row < 0:
             return
+        self._insert_silencer_product(product, current_row)
 
-        table_row = selected_rows[0].row()
-        if table_row < 0 or table_row >= len(self._silencer_products):
-            return
-
-        product = self._silencer_products[table_row]
-
+    def _insert_silencer_product(self, product: 'SilencerProduct', after_row: int):
+        """Core silencer insertion logic shared by table and filter dialog flows."""
         try:
             session = get_session()
 
-            # Resolve a drawing_id from the path's existing components
             drawing_id = None
             if self.current_path and self.current_path.segments:
                 for seg in self.current_path.segments:
@@ -1173,7 +1242,6 @@ class PathAnalysisPanel(QWidget):
             session.commit()
 
             component_id = silencer_component.id
-
             silencer_data = {
                 'id': component_id,
                 'name': silencer_component.name,
@@ -1183,16 +1251,40 @@ class PathAnalysisPanel(QWidget):
                 'silencer_model': product.model_number,
                 'noise_level': -15.0,
             }
-
-            self.path_sequence_widget.insert_silencer_at(current_row, component_id, silencer_data)
-
+            self.path_sequence_widget.insert_silencer_at(after_row, component_id, silencer_data)
             session.close()
-
-            # Auto-save the updated sequence so the diagram refreshes with the silencer
             self._auto_save_sequence()
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to insert silencer:\n{str(e)}")
+
+    def _on_insert_silencer(self):
+        """Handle Insert Silencer button click in the Edit Path tab (table selection flow)."""
+        if not self.current_path_id:
+            QMessageBox.warning(self, "No Path", "Please select a path first.")
+            return
+
+        current_row = self.path_sequence_widget.list_widget.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(
+                self, "No Position Selected",
+                "Please select an element in the path sequence to insert the silencer after."
+            )
+            return
+
+        selected_rows = self.silencer_table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(
+                self, "No Silencer Selected",
+                "Please select a silencer product from the table below."
+            )
+            return
+
+        table_row = selected_rows[0].row()
+        if table_row < 0 or table_row >= len(self._silencer_products):
+            return
+
+        self._insert_silencer_product(self._silencer_products[table_row], current_row)
     
     def _on_silencer_removed(self, component_id: int):
         """Handle silencer removal from the path sequence widget"""
@@ -1327,6 +1419,10 @@ class PathAnalysisPanel(QWidget):
         self.pan_to_element_requested.emit(element_id, element_type)
         if hasattr(self, 'path_sequence_widget'):
             self.path_sequence_widget.highlight_element(element_type, element_id)
+
+    def _on_nc_element_double_clicked(self, element_type: str, element_id: int):
+        """Handle element double-click from NC results table to open edit dialog"""
+        self.edit_element_requested.emit(element_id, element_type)
 
     def _on_silencer_placement_requested(self, silencer_component_id: int):
         """Handle silencer placement request from sequence widget"""

@@ -17,6 +17,7 @@ from models import get_session
 from models.database import get_hvac_session
 from models.space import Space, SpaceNoiseSource, SurfaceType, RoomBoundary
 from models.drawing import Drawing
+from models.hvac import HVACPath
 from models.partition import PartitionType, SpacePartition
 from data.materials import STANDARD_MATERIALS, ROOM_TYPE_DEFAULTS, get_materials_by_category
 from data.partition_stc_standards import (
@@ -1003,19 +1004,50 @@ class SpaceEditDialog(HelpMixin, QDialog):
         return widget
     
     def create_hvac_noise_tab(self):
-        """Create the HVAC Noise tab with in-space noise sources (no duct path)"""
+        """Create the HVAC Noise tab with HVAC paths and in-space noise sources"""
         widget = QWidget()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_content = QWidget()
         layout = QVBoxLayout()
-        
+
         instructions = QLabel(
-            "Add noise sources that contribute to receiver calculations without a duct path. "
-            "These sources use distance and outlet configuration (single or array) for Shultz method calculations."
+            "HVAC paths targeting this space and in-space noise sources both contribute to the "
+            "receiver noise calculation. Edit paths or add in-space sources below."
         )
         instructions.setWordWrap(True)
         instructions.setStyleSheet("color: #7f8c8d; font-style: italic; margin-bottom: 10px;")
         layout.addWidget(instructions)
-        
-        # In-space noise sources table
+
+        # --- HVAC Duct Paths targeting this space ---
+        paths_group = QGroupBox("HVAC Noise Sources (Duct Paths)")
+        paths_vbox = QVBoxLayout()
+        self.space_paths_table = QTableWidget(0, 4)
+        self.space_paths_table.setHorizontalHeaderLabels([
+            "Path Name", "Type", "Noise dB(A)", "NC Rating"
+        ])
+        paths_header = self.space_paths_table.horizontalHeader()
+        paths_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col in range(1, 4):
+            paths_header.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        self.space_paths_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.space_paths_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.space_paths_table.doubleClicked.connect(self._space_edit_hvac_path)
+        paths_vbox.addWidget(self.space_paths_table)
+
+        paths_btn_row = QHBoxLayout()
+        self.edit_path_btn = QPushButton("Edit Path")
+        self.edit_path_btn.clicked.connect(self._space_edit_hvac_path)
+        self.refresh_paths_btn = QPushButton("Refresh")
+        self.refresh_paths_btn.clicked.connect(self._space_refresh_paths_table)
+        paths_btn_row.addWidget(self.edit_path_btn)
+        paths_btn_row.addWidget(self.refresh_paths_btn)
+        paths_btn_row.addStretch()
+        paths_vbox.addLayout(paths_btn_row)
+        paths_group.setLayout(paths_vbox)
+        layout.addWidget(paths_group)
+
+        # --- In-space noise sources (no duct path) ---
         group = QGroupBox("In-Space Noise Sources (No Duct Path)")
         vbox = QVBoxLayout()
         self.space_insource_table = QTableWidget(0, 5)
@@ -1046,11 +1078,84 @@ class SpaceEditDialog(HelpMixin, QDialog):
         open_receiver_btn.setToolTip("Open the full receiver dialog to calculate combined noise")
         open_receiver_btn.clicked.connect(self._open_receiver_dialog)
         layout.addWidget(open_receiver_btn)
-        
+
         layout.addStretch()
-        widget.setLayout(layout)
+        scroll_content.setLayout(layout)
+        scroll.setWidget(scroll_content)
+        outer = QVBoxLayout()
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+        widget.setLayout(outer)
         return widget
     
+    def _space_refresh_paths_table(self):
+        """Refresh the HVAC duct paths table for this space"""
+        if not self.space:
+            return
+        try:
+            session = get_session()
+            paths = (
+                session.query(HVACPath)
+                .filter(HVACPath.target_space_id == self.space.id)
+                .order_by(HVACPath.name)
+                .all()
+            )
+            path_data = []
+            for p in paths:
+                path_data.append({
+                    'id': p.id,
+                    'name': p.name or "",
+                    'path_type': (p.path_type or "supply").capitalize(),
+                    'calculated_noise': p.calculated_noise,
+                    'calculated_nc': p.calculated_nc,
+                    'project_id': p.project_id,
+                })
+            session.close()
+
+            self.space_paths_table.setRowCount(len(path_data))
+            for row, pd in enumerate(path_data):
+                name_item = QTableWidgetItem(pd['name'])
+                name_item.setData(Qt.ItemDataRole.UserRole, pd['id'])
+                name_item.setData(Qt.ItemDataRole.UserRole + 1, pd['project_id'])
+                self.space_paths_table.setItem(row, 0, name_item)
+                self.space_paths_table.setItem(row, 1, QTableWidgetItem(pd['path_type']))
+
+                noise_text = f"{pd['calculated_noise']:.1f}" if pd['calculated_noise'] is not None else "—"
+                self.space_paths_table.setItem(row, 2, QTableWidgetItem(noise_text))
+
+                nc_text = f"NC {pd['calculated_nc']:.0f}" if pd['calculated_nc'] is not None else "—"
+                self.space_paths_table.setItem(row, 3, QTableWidgetItem(nc_text))
+        except Exception as e:
+            QMessageBox.critical(self, "Refresh Error", str(e))
+
+    def _space_edit_hvac_path(self):
+        """Open the Edit HVAC Path dialog for the selected path"""
+        row = self.space_paths_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "Edit Path", "Select a path to edit.")
+            return
+        path_id = self.space_paths_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        project_id = self.space_paths_table.item(row, 0).data(Qt.ItemDataRole.UserRole + 1)
+        try:
+            session = get_session()
+            hvac_path = session.query(HVACPath).filter(HVACPath.id == path_id).first()
+            session.close()
+            if not hvac_path:
+                QMessageBox.warning(self, "Edit Path", "Path no longer exists in the database.")
+                self._space_refresh_paths_table()
+                return
+            from ui.dialogs.hvac_path_dialog import HVACPathDialog
+            dlg = HVACPathDialog(self, project_id=project_id, path=hvac_path)
+            dlg.path_saved.connect(lambda _: self._space_refresh_paths_table())
+            dlg.setWindowModality(Qt.WindowModality.NonModal)
+            dlg.show()
+            if not hasattr(self, '_open_path_dialogs'):
+                self._open_path_dialogs = []
+            self._open_path_dialogs.append(dlg)
+            dlg.finished.connect(lambda: self._open_path_dialogs.remove(dlg) if dlg in self._open_path_dialogs else None)
+        except Exception as e:
+            QMessageBox.critical(self, "Edit Path Error", str(e))
+
     def _space_add_insource(self):
         """Add in-space noise source"""
         if not self.space:
@@ -1553,6 +1658,10 @@ class SpaceEditDialog(HelpMixin, QDialog):
         if hasattr(self, 'partitions_table'):
             self.load_partitions()
         
+        # Load HVAC paths targeting this space
+        if hasattr(self, 'space_paths_table'):
+            self._space_refresh_paths_table()
+
         # Load in-space noise sources
         if hasattr(self, 'space_insource_table'):
             self._space_refresh_insource_table()
@@ -2016,7 +2125,6 @@ class SpaceEditDialog(HelpMixin, QDialog):
     def update_rt60_plot(self):
         """Update the RT60 plot with current space data"""
         try:
-            # Get current room volume
             floor_area = self.area_spin.value()
             height = self.ceiling_height_spin.value()
             volume = floor_area * height
@@ -2025,89 +2133,57 @@ class SpaceEditDialog(HelpMixin, QDialog):
                 self.plot_container.clear_rt60_data()
                 return
             
-            # Update plot with current volume
-            self.plot_container.update_volume(volume)
-            
-            # Get material data with square footages
             ceiling_materials_data = self.ceiling_materials.get_materials_data()
             wall_materials_data = self.wall_materials.get_materials_data()
             floor_materials_data = self.floor_materials.get_materials_data()
             
-            # Extract just the keys for backward compatibility with plot container
             ceiling_materials = [m['material_key'] for m in ceiling_materials_data]
             wall_materials = [m['material_key'] for m in wall_materials_data]  
             floor_materials = [m['material_key'] for m in floor_materials_data]
             
-            # Update materials summary with current data including specific square footages
             areas = {
                 'ceiling_area': floor_area,
                 'wall_area': self.wall_area_spin.value(),
                 'floor_area': floor_area
             }
             
-            # Pass the detailed materials data if available
             if hasattr(self.plot_container, 'update_materials_data_detailed'):
                 self.plot_container.update_materials_data_detailed(
                     ceiling_materials, wall_materials, floor_materials, areas,
                     ceiling_materials_data, wall_materials_data, floor_materials_data
                 )
             else:
-                # Fallback to old method
                 self.plot_container.update_materials_data(
                     ceiling_materials, wall_materials, floor_materials, areas
                 )
             
-            # Get doors/windows data from the materials summary
             doors_windows_data = self.plot_container.get_doors_windows_data()
             
-            # Check if we have materials to calculate with
             if not any([ceiling_materials_data, wall_materials_data, floor_materials_data, doors_windows_data]):
-                self.plot_container.clear_rt60_data()
+                self.plot_container.update_volume(volume)
+                self.plot_container.update_rt60_data({})
                 return
             
-            # Prepare space data for RT60 calculation including doors/windows with actual square footages
             space_data = {
                 'volume': volume,
                 'floor_area': floor_area,
-                'ceiling_area': floor_area,  # Assume ceiling area = floor area
+                'ceiling_area': floor_area,
                 'wall_area': self.wall_area_spin.value(),
                 'ceiling_materials_data': ceiling_materials_data,
                 'wall_materials_data': wall_materials_data,
                 'floor_materials_data': floor_materials_data,
                 'doors_windows': doors_windows_data,
                 'include_doors_windows': True,
-                # Keep old format for backward compatibility
                 'ceiling_materials': ceiling_materials,
                 'wall_materials': wall_materials,
                 'floor_materials': floor_materials,
             }
             
-            # Calculate RT60 frequency response
             results = self.rt60_calculator.calculate_rt60_frequency_response(space_data)
-            
-            # Update plot with RT60 data
             rt60_by_freq = results.get('rt60_by_frequency', {})
             
-            # Debug output
-            print(f"DEBUG: RT60 frequency response calculation:")
-            print(f"  Volume: {volume:,.0f} cf")
-            print(f"  Ceiling materials: {len(ceiling_materials_data)}")
-            print(f"  Wall materials: {len(wall_materials_data)}")
-            print(f"  Floor materials: {len(floor_materials_data)}")
-            print(f"  RT60 by frequency: {rt60_by_freq}")
-            
-            if not rt60_by_freq or all(v == 0 or v >= 999 for v in rt60_by_freq.values()):
-                print(f"  WARNING: RT60 values are invalid (0 or infinity). Check material lookup.")
-                # Try to debug material lookup
-                for mat_data in ceiling_materials_data + wall_materials_data + floor_materials_data:
-                    mat_key = mat_data.get('material_key')
-                    if mat_key:
-                        # Check if material is in calculator's database
-                        if hasattr(self.rt60_calculator, 'materials_db'):
-                            in_db = mat_key in self.rt60_calculator.materials_db
-                            print(f"    Material '{mat_key}' in calculator DB: {in_db}")
-            
-            self.plot_container.update_rt60_data(rt60_by_freq)
+            # Use batched update to avoid double-drawing the plot
+            self.plot_container.set_volume_and_rt60(volume, rt60_by_freq)
             
         except Exception as e:
             import traceback

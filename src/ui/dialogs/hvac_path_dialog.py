@@ -609,6 +609,24 @@ class HVACPathDialog(HelpMixin, QDialog):
         """)
         self.insert_silencer_btn.clicked.connect(self._on_insert_silencer)
         insert_btn_layout.addWidget(self.insert_silencer_btn)
+
+        self.advanced_filter_btn = QPushButton("Advanced Filter...")
+        self.advanced_filter_btn.setToolTip(
+            "Open the silencer filter dialog with NC compliance requirements pre-populated"
+        )
+        self.advanced_filter_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a148c;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #38006b; }
+            QPushButton:disabled { background-color: #ccc; color: #888; }
+        """)
+        self.advanced_filter_btn.clicked.connect(self._open_silencer_filter_dialog)
+        insert_btn_layout.addWidget(self.advanced_filter_btn)
+
         insert_btn_layout.addStretch()
         silencer_layout.addLayout(insert_btn_layout)
         
@@ -679,9 +697,50 @@ class HVACPathDialog(HelpMixin, QDialog):
             self._silencer_products = []
             self.silencer_table.setRowCount(0)
 
-    def _on_insert_silencer(self):
-        """Handle Insert Silencer button click"""
-        # Validate sequence element selection
+    def _build_nc_compliance_data(self):
+        """Build NC compliance data from the most recent path calculation results.
+
+        Returns a dict suitable for SilencerFilterDialog's nc_compliance_data
+        parameter, or None if the required data is not available.
+        """
+        path_elements = getattr(self, '_last_element_results', None)
+        if not path_elements:
+            return None
+
+        target_nc = self._get_target_nc()
+        if not target_nc:
+            return None
+
+        # Find terminal element (last element whose type is 'terminal')
+        terminal_spectrum = None
+        for elem in reversed(path_elements):
+            if elem.get('element_type') == 'terminal':
+                terminal_spectrum = elem.get('noise_after_spectrum')
+                break
+        if terminal_spectrum is None and path_elements:
+            terminal_spectrum = path_elements[-1].get('noise_after_spectrum')
+        if not terminal_spectrum or len(terminal_spectrum) < 8:
+            return None
+
+        try:
+            from calculations.nc_rating_analyzer import NCRatingAnalyzer
+            nc_curves = NCRatingAnalyzer.NC_CURVES
+            if target_nc not in nc_curves:
+                return None
+            nc_limits = nc_curves[target_nc]
+            required_il = [max(0.0, recv - limit)
+                           for recv, limit in zip(terminal_spectrum, nc_limits)]
+            return {
+                'target_nc': target_nc,
+                'receiver_spectrum': list(terminal_spectrum),
+                'nc_limits': list(nc_limits),
+                'required_il': required_il,
+            }
+        except Exception:
+            return None
+
+    def _open_silencer_filter_dialog(self):
+        """Open SilencerFilterDialog pre-loaded with NC compliance requirements."""
         current_row = self.path_sequence_widget.list_widget.currentRow()
         if current_row < 0:
             QMessageBox.warning(
@@ -689,26 +748,32 @@ class HVACPathDialog(HelpMixin, QDialog):
                 "Please select an element in the path sequence above to insert the silencer after."
             )
             return
-        
-        # Validate silencer product selection
-        selected_rows = self.silencer_table.selectionModel().selectedRows()
-        if not selected_rows:
-            QMessageBox.warning(
-                self, "No Silencer Selected",
-                "Please select a silencer product from the table below."
-            )
+
+        from ui.dialogs.silencer_filter_dialog import SilencerFilterDialog
+
+        nc_data = self._build_nc_compliance_data()
+
+        dialog = SilencerFilterDialog(
+            noise_requirements={},
+            space_constraints={},
+            nc_compliance_data=nc_data,
+            parent=self,
+        )
+        dialog.product_selected.connect(self._insert_product_from_filter)
+        dialog.exec()
+
+    def _insert_product_from_filter(self, product):
+        """Insert a silencer product chosen via SilencerFilterDialog."""
+        current_row = self.path_sequence_widget.list_widget.currentRow()
+        if current_row < 0:
             return
-        
-        table_row = selected_rows[0].row()
-        if table_row < 0 or table_row >= len(self._silencer_products):
-            return
-        
-        product = self._silencer_products[table_row]
-        
+        self._insert_silencer_product(product, current_row)
+
+    def _insert_silencer_product(self, product, after_row: int):
+        """Core silencer insertion logic shared by table and filter dialog flows."""
         try:
             session = get_session()
-            
-            # Resolve a drawing_id: prefer the dialog's drawing, fall back to an existing component's
+
             drawing_id = self.drawing_id
             if not drawing_id:
                 for c in self.components:
@@ -717,14 +782,13 @@ class HVACPathDialog(HelpMixin, QDialog):
                         drawing_id = did
                         break
             if not drawing_id:
-                # Last resort: query the first drawing for this project
                 from models.project import Drawing
                 first_drawing = session.query(Drawing).filter(
                     Drawing.project_id == self.project_id
                 ).first()
                 if first_drawing:
                     drawing_id = first_drawing.id
-            
+
             if not drawing_id:
                 QMessageBox.warning(
                     self, "No Drawing",
@@ -732,7 +796,7 @@ class HVACPathDialog(HelpMixin, QDialog):
                 )
                 session.close()
                 return
-            
+
             silencer_component = HVACComponent(
                 project_id=self.project_id,
                 drawing_id=drawing_id,
@@ -748,10 +812,10 @@ class HVACPathDialog(HelpMixin, QDialog):
             )
             session.add(silencer_component)
             session.commit()
-            
+
             component_id = silencer_component.id
             self.components.append(silencer_component)
-            
+
             silencer_data = {
                 'id': component_id,
                 'name': silencer_component.name,
@@ -761,18 +825,41 @@ class HVACPathDialog(HelpMixin, QDialog):
                 'silencer_model': product.model_number,
                 'noise_level': -15.0,
             }
-            
-            self.path_sequence_widget.insert_silencer_at(current_row, component_id, silencer_data)
-            
+            self.path_sequence_widget.insert_silencer_at(after_row, component_id, silencer_data)
             session.close()
-            
+
             self.update_path_diagram()
-            
             if getattr(self, 'auto_calculate_cb', None) and self.auto_calculate_cb.isChecked():
                 self.calculate_path_noise()
-                
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to insert silencer:\n{str(e)}")
+
+    def _on_insert_silencer(self):
+        """Handle Insert Silencer button click (table selection flow)."""
+        # Validate sequence element selection
+        current_row = self.path_sequence_widget.list_widget.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(
+                self, "No Position Selected",
+                "Please select an element in the path sequence above to insert the silencer after."
+            )
+            return
+
+        # Validate silencer product selection
+        selected_rows = self.silencer_table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(
+                self, "No Silencer Selected",
+                "Please select a silencer product from the table below."
+            )
+            return
+
+        table_row = selected_rows[0].row()
+        if table_row < 0 or table_row >= len(self._silencer_products):
+            return
+
+        self._insert_silencer_product(self._silencer_products[table_row], current_row)
 
     def _on_silencer_removed(self, component_id):
         """Handle silencer removal from the path sequence widget"""

@@ -274,11 +274,6 @@ class ProjectDashboard(HelpMixin, QMainWindow):
         locations_tab = self.create_locations_tab()
         tabs.addTab(locations_tab, "📍 Locations")
 
-        # Results tab
-        self.results_widget = ResultsWidget(self.project_id)
-        self.results_widget.export_requested.connect(self.export_to_excel)
-        tabs.addTab(self.results_widget, "📊 Results & Analysis")
-
         left_layout.addWidget(tabs)
         left_widget.setLayout(left_layout)
         
@@ -483,51 +478,32 @@ class ProjectDashboard(HelpMixin, QMainWindow):
         """Create the right panel with details and results"""
         right_widget = QWidget()
         right_layout = QVBoxLayout()
-        
-        # HVAC Pathing per Space group
-        self.space_hvac_group = QGroupBox("HVAC Pathing per Space")
-        space_hvac_layout = QVBoxLayout()
-        
-        self.space_hvac_table = QTableWidget(0, 5)
-        self.space_hvac_table.setHorizontalHeaderLabels([
-            "Path Name", "Type", "Segments", "Noise dB(A)", "NC"
-        ])
-        self.space_hvac_table.setSelectionBehavior(self.space_hvac_table.SelectionBehavior.SelectRows)
-        self.space_hvac_table.setEditTriggers(self.space_hvac_table.EditTrigger.NoEditTriggers)
-        self.space_hvac_table.cellDoubleClicked.connect(self.open_space_path_from_table)
-        
-        header = self.space_hvac_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        for col in range(1, 5):
-            header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
-        
-        space_hvac_layout.addWidget(self.space_hvac_table)
-        
-        # Button row for space and drawing actions
+
+        self.results_widget = ResultsWidget(self.project_id)
+        self.results_widget.export_requested.connect(self.export_to_excel)
+        right_layout.addWidget(self.results_widget)
+
         button_row = QHBoxLayout()
-        
+
         self.edit_receiver_btn = QPushButton("Edit Space HVAC Receiver")
         self.edit_receiver_btn.clicked.connect(self.open_space_receiver_dialog)
         button_row.addWidget(self.edit_receiver_btn)
-        
+
         self.library_btn = QPushButton("Component Library")
         self.library_btn.setToolTip("Manage mechanical units, silencers, and acoustic treatment schedules")
         self.library_btn.clicked.connect(self.open_component_library)
         button_row.addWidget(self.library_btn)
-        
+
         self.open_editor_btn = QPushButton("Open Drawing Editor…")
         self.open_editor_btn.setToolTip("Open the full drawing editor with rectangle, component, and segment tools")
         self.open_editor_btn.clicked.connect(self.open_selected_drawing_editor)
         button_row.addWidget(self.open_editor_btn)
-        
+
         button_row.addStretch()
-        
-        space_hvac_layout.addLayout(button_row)
-        self.space_hvac_group.setLayout(space_hvac_layout)
-        right_layout.addWidget(self.space_hvac_group)
- 
+
+        right_layout.addLayout(button_row)
         right_widget.setLayout(right_layout)
-        
+
         return right_widget
 
     def open_selected_drawing_editor(self):
@@ -1714,91 +1690,12 @@ class ProjectDashboard(HelpMixin, QMainWindow):
             pass
 
     def update_space_hvac_paths_table(self):
-        """Populate the 'HVAC Pathing per Space' table for the selected space."""
-        if not hasattr(self, 'space_hvac_table'):
-            return
-        current_item = self.spaces_list.currentItem() if hasattr(self, 'spaces_list') else None
-        if not current_item:
-            self.space_hvac_table.setRowCount(0)
-            return
-        space_id = current_item.data(Qt.UserRole)
-        try:
-            session = get_session()
-            paths = (
-                session.query(HVACPath)
-                .options(selectinload(HVACPath.segments))
-                .filter(HVACPath.project_id == self.project_id)
-                .filter(HVACPath.target_space_id == space_id)
-                .all()
-            )
-            self.space_hvac_table.setRowCount(len(paths))
-            for row, path in enumerate(paths):
-                name_item = QTableWidgetItem(path.name or "")
-                name_item.setData(Qt.UserRole, path.id)
-                type_item = QTableWidgetItem(path.path_type or "")
-                seg_count = len(path.segments) if getattr(path, 'segments', None) is not None else 0
-                seg_item = QTableWidgetItem(str(seg_count))
-                noise_item = QTableWidgetItem(
-                    f"{float(path.calculated_noise):.1f}" if path.calculated_noise is not None else "—"
-                )
-                nc_item = QTableWidgetItem(
-                    f"NC-{float(path.calculated_nc):.0f}" if path.calculated_nc is not None else "—"
-                )
-                self.space_hvac_table.setItem(row, 0, name_item)
-                self.space_hvac_table.setItem(row, 1, type_item)
-                self.space_hvac_table.setItem(row, 2, seg_item)
-                self.space_hvac_table.setItem(row, 3, noise_item)
-                self.space_hvac_table.setItem(row, 4, nc_item)
-            session.close()
-        except Exception as e:
-            # Show a single-row error
-            self.space_hvac_table.setRowCount(1)
-            self.space_hvac_table.setItem(0, 0, QTableWidgetItem(f"Error: {e}"))
-            for col in range(1, 5):
-                self.space_hvac_table.setItem(0, col, QTableWidgetItem(""))
+        """No-op: HVAC pathing table replaced by Results & Analysis widget."""
+        return
 
     def open_space_path_from_table(self, row, _column):
-        """Open the double-clicked HVAC path from the table for editing."""
-        try:
-            item = self.space_hvac_table.item(row, 0)
-            if not item:
-                return
-            path_id = item.data(Qt.UserRole)
-            if path_id is None:
-                return
-            session = get_session()
-            path = (
-                session.query(HVACPath)
-                .options(
-                    selectinload(HVACPath.target_space),
-                    selectinload(HVACPath.segments).selectinload(HVACSegment.from_component),
-                    selectinload(HVACPath.segments).selectinload(HVACSegment.to_component),
-                    selectinload(HVACPath.segments).selectinload(HVACSegment.fittings),
-                )
-                .filter(HVACPath.id == path_id)
-                .first()
-            )
-            session.close()
-            if not path:
-                QMessageBox.warning(self, "Edit HVAC Path", "Selected path not found.")
-                return
-            dialog = HVACPathDialog(self, project_id=self.project_id, path=path)
-
-            def on_open_finished(result, _dialog=dialog):
-                if result == QDialog.Accepted:
-                    self.refresh_hvac_paths()
-                    self.update_analysis_status()
-                    self.update_space_hvac_paths_table()
-                if hasattr(self, '_open_hvac_dialogs'):
-                    self._open_hvac_dialogs.discard(_dialog)
-
-            dialog.finished.connect(on_open_finished)
-            if not hasattr(self, '_open_hvac_dialogs'):
-                self._open_hvac_dialogs = set()
-            self._open_hvac_dialogs.add(dialog)
-            dialog.show()
-        except Exception as e:
-            QMessageBox.critical(self, "Edit HVAC Path", f"Failed to open HVAC path:\n{str(e)}")
+        """No-op: HVAC pathing table has been removed."""
+        return
 
     def open_space_receiver_dialog(self):
         """Open the receiver analysis dialog for the currently selected space."""

@@ -5350,9 +5350,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
             return
         
         try:
+            from models.hvac import HVACSegment, HVACComponent
+
             if element_type in ('segment', 'duct'):
-                # Open segment editor
-                from models.hvac_segment import HVACSegment
                 session = get_session()
                 segment = session.query(HVACSegment).filter(HVACSegment.id == element_id).first()
                 if segment:
@@ -5365,15 +5365,21 @@ class DrawingInterface(HelpMixin, QMainWindow):
                     )
                     dialog.segment_saved.connect(self._on_segment_saved)
                     if dialog.exec() == QDialog.Accepted:
-                        # Refresh analysis panel
                         if hasattr(self, 'analysis_panel'):
                             self.analysis_panel._recalculate_path()
                 session.close()
-                
-            elif element_type in ('source', 'component', 'ahu', 'fan', 'mechanical_unit', 
-                                  'elbow', 'silencer', 'diffuser', 'damper', 'terminal'):
-                # Open component editor
-                from models.hvac_component import HVACComponent
+
+            elif element_type in ('receiver', 'space', 'terminal'):
+                session = get_session()
+                space = session.query(Space).filter(Space.id == element_id).first()
+                if space:
+                    dialog = SpaceEditDialog(self, space)
+                    dialog.show()
+                session.close()
+
+            elif element_type in ('source', 'component', 'ahu', 'fan', 'mechanical_unit',
+                                  'elbow', 'silencer', 'diffuser', 'damper',
+                                  'branch_takeoff_90', 'junction_t'):
                 session = get_session()
                 component = session.query(HVACComponent).filter(HVACComponent.id == element_id).first()
                 if component:
@@ -5385,19 +5391,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         component=component
                     )
                     if dialog.exec() == QDialog.Accepted:
-                        # Refresh analysis panel
                         if hasattr(self, 'analysis_panel'):
                             self.analysis_panel._recalculate_path()
-                session.close()
-                
-            elif element_type in ('receiver', 'space'):
-                # Open space editor
-                from models.space import Space
-                session = get_session()
-                space = session.query(Space).filter(Space.id == element_id).first()
-                if space:
-                    dialog = SpaceEditDialog(self, space)
-                    dialog.show()  # Non-modal
                 session.close()
                 
         except Exception as e:

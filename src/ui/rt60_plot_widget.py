@@ -41,6 +41,7 @@ class RT60PlotWidget(QWidget):
         self.current_rt60_values = {}
         self.optimum_rt60_values = {}
         self.room_volume = 0
+        self._suppress_redraw = False
         
         # Get optimum data loader
         self.optimum_loader = get_optimum_rt60_loader()
@@ -121,81 +122,98 @@ class RT60PlotWidget(QWidget):
         
         if volume <= 0:
             self.optimum_rt60_values = {}
+            self.status_label.setText("Room Volume: Not set")
+            self.update_plot()
             return
         
-        # Get optimum RT60 values for this volume
         self.optimum_rt60_values = self.optimum_loader.get_optimum_rt60_for_volume(volume)
-        
-        # Update the status
         self.status_label.setText(f"Room Volume: {volume:,.0f} cf")
-        
-        # Redraw the plot
         self.update_plot()
     
     def update_current_rt60(self, rt60_values: Dict[int, float]):
         """Update the current RT60 values from calculations"""
-        self.current_rt60_values = rt60_values.copy()
+        self.current_rt60_values = rt60_values.copy() if rt60_values else {}
+        self.update_plot()
+    
+    def set_all_data(self, volume: float, rt60_values: Dict[int, float]):
+        """Set both optimum and current data in one call, triggering a single redraw"""
+        self._suppress_redraw = True
+        try:
+            self.update_optimum_rt60(volume)
+            self.current_rt60_values = rt60_values.copy() if rt60_values else {}
+        finally:
+            self._suppress_redraw = False
         self.update_plot()
     
     def update_plot(self):
         """Update the plot with current data"""
-        # Clear previous plots
-        if self.optimum_line:
-            self.optimum_line.remove()
-        if self.optimum_fill:
-            self.optimum_fill.remove()
-        if self.current_line:
-            self.current_line.remove()
-        
-        # Plot optimum RT60 range (blue area)
-        if self.optimum_rt60_values:
-            optimum_values = [self.optimum_rt60_values.get(f, 0) for f in self.frequencies]
+        if self._suppress_redraw:
+            return
+        try:
+            # Clear previous artists safely, always resetting to None
+            for attr in ('optimum_line', 'optimum_fill', 'current_line'):
+                artist = getattr(self, attr, None)
+                if artist is not None:
+                    try:
+                        artist.remove()
+                    except (ValueError, AttributeError):
+                        pass
+                    setattr(self, attr, None)
             
-            # Create a range around the optimum values (±10%)
-            optimum_upper = [v * 1.1 for v in optimum_values]
-            optimum_lower = [v * 0.9 for v in optimum_values]
+            # Plot optimum RT60 range (blue area)
+            if self.optimum_rt60_values:
+                optimum_values = [self.optimum_rt60_values.get(f, 0) for f in self.frequencies]
+                
+                optimum_upper = [v * 1.1 for v in optimum_values]
+                optimum_lower = [v * 0.9 for v in optimum_values]
+                
+                self.optimum_fill = self.ax.fill_between(
+                    self.frequencies, optimum_lower, optimum_upper,
+                    alpha=0.3, color='#4472C4', label='Design Criteria'
+                )
+                
+                self.optimum_line, = self.ax.plot(
+                    self.frequencies, optimum_values,
+                    color='#4472C4', linewidth=2, marker='o', markersize=4,
+                    label='Optimum RT60'
+                )
             
-            # Plot the optimum range as a filled area
-            self.optimum_fill = self.ax.fill_between(
-                self.frequencies, optimum_lower, optimum_upper,
-                alpha=0.3, color='#4472C4', label='Design Criteria'
-            )
+            # Plot current RT60 values (red line), filtering out invalid sentinel values
+            if self.current_rt60_values:
+                current_values = [self.current_rt60_values.get(f, 0) for f in self.frequencies]
+                
+                has_valid = any(0 < v < 999 for v in current_values)
+                if has_valid:
+                    plot_values = [v if v < 999 else None for v in current_values]
+                    self.current_line, = self.ax.plot(
+                        self.frequencies, plot_values,
+                        color='#C55A5A', linewidth=3, marker='s', markersize=6,
+                        label='RT60 w/ Treatment'
+                    )
             
-            # Plot the optimum line
-            self.optimum_line, = self.ax.plot(
-                self.frequencies, optimum_values,
-                color='#4472C4', linewidth=2, marker='o', markersize=4,
-                label='Optimum RT60'
-            )
-        
-        # Plot current RT60 values (red line)
-        if self.current_rt60_values:
-            current_values = [self.current_rt60_values.get(f, 0) for f in self.frequencies]
+            # Update legend
+            handles, labels = self.ax.get_legend_handles_labels()
+            if handles:
+                self.ax.legend(loc='upper right', framealpha=0.9)
             
-            self.current_line, = self.ax.plot(
-                self.frequencies, current_values,
-                color='#C55A5A', linewidth=3, marker='s', markersize=6,
-                label='RT60 w/ Treatment'
-            )
-        
-        # Update legend
-        self.ax.legend(loc='upper right', framealpha=0.9)
-        
-        # Adjust y-axis limits based on data
-        all_values = []
-        if self.optimum_rt60_values:
-            all_values.extend(self.optimum_rt60_values.values())
-        if self.current_rt60_values:
-            all_values.extend(self.current_rt60_values.values())
-        
-        if all_values:
-            min_val = min(all_values)
-            max_val = max(all_values)
-            margin = (max_val - min_val) * 0.2
-            self.ax.set_ylim(max(0, min_val - margin), max_val + margin)
-        
-        # Redraw
-        self.canvas.draw()
+            # Adjust y-axis limits based on valid data only
+            all_values = []
+            if self.optimum_rt60_values:
+                all_values.extend(v for v in self.optimum_rt60_values.values() if 0 < v < 999)
+            if self.current_rt60_values:
+                all_values.extend(v for v in self.current_rt60_values.values() if 0 < v < 999)
+            
+            if all_values:
+                min_val = min(all_values)
+                max_val = max(all_values)
+                margin = max((max_val - min_val) * 0.2, 0.1)
+                self.ax.set_ylim(max(0, min_val - margin), max_val + margin)
+            
+            # Redraw - use draw_idle for better Qt event loop integration
+            self.canvas.draw_idle()
+        except Exception as e:
+            print(f"RT60PlotWidget.update_plot error: {e}")
+            self.canvas.draw_idle()
     
     def clear_current_rt60(self):
         """Clear the current RT60 data"""
@@ -214,15 +232,21 @@ class RT60PlotWidget(QWidget):
         if not self.optimum_rt60_values:
             return "No optimum data - set room volume"
         
-        # Calculate average RT60 values
-        avg_current = sum(self.current_rt60_values.values()) / len(self.current_rt60_values)
-        avg_optimum = sum(self.optimum_rt60_values.values()) / len(self.optimum_rt60_values)
+        valid_current = [v for v in self.current_rt60_values.values() if 0 < v < 999]
+        valid_optimum = [v for v in self.optimum_rt60_values.values() if 0 < v < 999]
         
-        # Check compliance
-        tolerance = 0.1  # ±0.1 seconds tolerance
+        if not valid_current:
+            return "RT60 values invalid - check material assignments"
+        if not valid_optimum:
+            return "No optimum data - set room volume"
+        
+        avg_current = sum(valid_current) / len(valid_current)
+        avg_optimum = sum(valid_optimum) / len(valid_optimum)
+        
+        tolerance = 0.1
         meets_target = abs(avg_current - avg_optimum) <= tolerance
         
-        status = "✅ MEETS TARGET" if meets_target else "❌ NEEDS ADJUSTMENT"
+        status = "MEETS TARGET" if meets_target else "NEEDS ADJUSTMENT"
         return f"Average RT60: {avg_current:.2f}s | Target: {avg_optimum:.2f}s | {status}"
     
     def export_plot_data(self) -> Dict:
@@ -333,6 +357,12 @@ class RT60PlotContainer(QWidget):
     def update_rt60_data(self, rt60_values: Dict[int, float]):
         """Update RT60 calculation data"""
         self.plot_widget.update_current_rt60(rt60_values)
+        self.update_status()
+    
+    def set_volume_and_rt60(self, volume: float, rt60_values: Dict[int, float]):
+        """Set both volume and RT60 data in a single operation (one redraw)"""
+        self.plot_widget.set_all_data(volume, rt60_values)
+        self.volume_label.setText(f"Volume: {volume:,.0f} cf")
         self.update_status()
     
     def update_materials_data(self, ceiling_materials: List[str], wall_materials: List[str], 

@@ -227,13 +227,17 @@ class SilencerFilterEngine:
         if requirements.get('max_weight'):
             query = query.filter(SilencerProduct.weight <= requirements['max_weight'])
         
-        # Filter by flow rate
+        # Filter by flow rate; catalog entries with NULL flow_rate_min are always included
+        # because the catalog does not publish application-specific flow rate ranges.
         if requirements.get('flow_rate'):
             flow_rate = requirements['flow_rate']
             query = query.filter(
-                and_(
-                    SilencerProduct.flow_rate_min <= flow_rate,
-                    SilencerProduct.flow_rate_max >= flow_rate
+                or_(
+                    and_(
+                        SilencerProduct.flow_rate_min <= flow_rate,
+                        SilencerProduct.flow_rate_max >= flow_rate,
+                    ),
+                    SilencerProduct.flow_rate_min.is_(None),
                 )
             )
         
@@ -247,12 +251,17 @@ class SilencerFilterEngine:
         if requirements.get('max_cost'):
             query = query.filter(SilencerProduct.cost_estimate <= requirements['max_cost'])
         
-        # Filter by availability
+        # Filter by availability; catalog entries with NULL availability are always included.
         if requirements.get('availability'):
             availability_options = requirements['availability']
             if isinstance(availability_options, str):
                 availability_options = [availability_options]
-            query = query.filter(SilencerProduct.availability.in_(availability_options))
+            query = query.filter(
+                or_(
+                    SilencerProduct.availability.in_(availability_options),
+                    SilencerProduct.availability.is_(None),
+                )
+            )
         
         return query.all()
     

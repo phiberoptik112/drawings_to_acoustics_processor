@@ -36,6 +36,7 @@ class NCResultsTableWidget(QWidget):
     """
 
     element_selected = Signal(str, int)  # (element_type, element_id)
+    element_double_clicked = Signal(str, int)  # (element_type, element_id)
 
     def __init__(self, parent=None, target_nc: int = 35):
         super().__init__(parent)
@@ -70,8 +71,9 @@ class NCResultsTableWidget(QWidget):
         # Make headers sticky (default behavior with QTableWidget)
         self.table.verticalHeader().setVisible(False)
 
-        # Connect selection signal
+        # Connect selection signals
         self.table.cellClicked.connect(self._on_cell_clicked)
+        self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
 
         layout.addWidget(self.table)
 
@@ -203,6 +205,15 @@ class NCResultsTableWidget(QWidget):
             element_id = mapping.get('element_id')
             if element_id is not None:
                 self.element_selected.emit(element_type, element_id)
+
+    def _on_cell_double_clicked(self, row: int, column: int):
+        """Handle cell double-click to emit edit request"""
+        if row < len(self._element_mapping):
+            mapping = self._element_mapping[row]
+            element_type = mapping.get('element_type', 'unknown')
+            element_id = mapping.get('element_id')
+            if element_id is not None:
+                self.element_double_clicked.emit(element_type, element_id)
 
     def revert_to_saved(self):
         """Revert table to last saved state (for cancel operations)"""

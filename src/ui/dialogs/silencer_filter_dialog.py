@@ -3,31 +3,39 @@ Silencer Filter Dialog - Filter and select silencer products based on requiremen
 """
 
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
-                             QLabel, QLineEdit, QComboBox, QPushButton, 
-                             QGroupBox, QDoubleSpinBox, QSpinBox, QTableWidget, 
+                             QLabel, QLineEdit, QComboBox, QPushButton,
+                             QGroupBox, QDoubleSpinBox, QSpinBox, QTableWidget,
                              QTableWidgetItem, QHeaderView, QMessageBox,
-                             QSplitter, QTextEdit, QCheckBox, QFrame)
+                             QSplitter, QTextEdit, QCheckBox, QFrame,
+                             QScrollArea, QGridLayout, QWidget)
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 
 from typing import Dict, Any, Optional, List
 from data.silencer_database import SilencerFilterEngine
+from models import get_session
 from models.hvac import SilencerProduct
+
+_FREQ_BANDS = [63, 125, 250, 500, 1000, 2000, 4000, 8000]
 
 
 class SilencerFilterDialog(QDialog):
     """Dialog for filtering and selecting silencer products"""
-    
-    product_selected = Signal(SilencerProduct)  # Emits selected product
-    
-    def __init__(self, noise_requirements=None, space_constraints=None, parent=None):
+
+    product_selected = Signal(SilencerProduct)
+
+    def __init__(self, noise_requirements=None, space_constraints=None,
+                 nc_compliance_data=None, parent=None):
         super().__init__(parent)
         self.noise_requirements = noise_requirements or {}
         self.space_constraints = space_constraints or {}
+        # nc_compliance_data keys: target_nc (int), receiver_spectrum ([8 floats]),
+        #   nc_limits ([8 floats]), required_il ([8 floats])
+        self.nc_compliance_data = nc_compliance_data
         self.filter_engine = SilencerFilterEngine()
         self.selected_product = None
         self.products_data = []
-        
+
         self.init_ui()
         self.load_initial_requirements()
         self.update_product_list()
@@ -36,29 +44,35 @@ class SilencerFilterDialog(QDialog):
         """Initialize the user interface"""
         self.setWindowTitle("Silencer Product Selection")
         self.setModal(True)
-        self.resize(1000, 700)
-        
+        self.resize(1100, 750)
+
         main_layout = QVBoxLayout()
-        
+
         # Header
         header_label = QLabel("Silencer Product Selection & Filtering")
         header_label.setFont(QFont("Arial", 14, QFont.Bold))
         header_label.setAlignment(Qt.AlignCenter)
         main_layout.addWidget(header_label)
-        
+
         # Create splitter for filter criteria and results
         splitter = QSplitter(Qt.Horizontal)
-        
-        # Left panel - Filter criteria
-        filter_panel = self.create_filter_panel()
-        splitter.addWidget(filter_panel)
-        
+
+        # Left panel - scrollable filter criteria
+        filter_content = self.create_filter_panel()
+        scroll = QScrollArea()
+        scroll.setWidget(filter_content)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(320)
+        scroll.setMaximumWidth(380)
+        splitter.addWidget(scroll)
+
         # Right panel - Product results
         results_panel = self.create_results_panel()
         splitter.addWidget(results_panel)
-        
-        # Set initial sizes (30% filter, 70% results)
-        splitter.setSizes([300, 700])
+
+        # Set initial sizes (left filter, right results)
+        splitter.setSizes([350, 750])
         main_layout.addWidget(splitter)
         
         # Buttons
@@ -87,12 +101,107 @@ class SilencerFilterDialog(QDialog):
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
     
+    def _load_manufacturer_list(self):
+        """Populate manufacturer combo from the database"""
+        try:
+            session = get_session()
+            rows = session.query(SilencerProduct.manufacturer).distinct().order_by(SilencerProduct.manufacturer).all()
+            session.close()
+            for (mfr,) in rows:
+                if mfr:
+                    self.manufacturer_combo.addItem(mfr)
+        except Exception:
+            for mfr in ["IAC Acoustics", "Kinetics", "Price Industries", "Ruskin", "SoundAttenuators", "Vibro-Acoustics"]:
+                self.manufacturer_combo.addItem(mfr)
+
+    def create_nc_compliance_group(self) -> QGroupBox:
+        """Build the read-only NC Compliance Requirements display."""
+        group = QGroupBox("NC Compliance Requirements")
+        outer = QVBoxLayout()
+
+        if not self.nc_compliance_data:
+            placeholder = QLabel("No path calculation data available.\nOpen via the path analysis panel\nto see per-band NC requirements.")
+            placeholder.setAlignment(Qt.AlignCenter)
+            placeholder.setStyleSheet("color: #888; font-style: italic; padding: 8px;")
+            outer.addWidget(placeholder)
+            group.setLayout(outer)
+            return group
+
+        data = self.nc_compliance_data
+        target_nc = data.get('target_nc')
+        receiver_spectrum = data.get('receiver_spectrum', [0.0] * 8)
+        nc_limits = data.get('nc_limits', [0.0] * 8)
+        required_il = data.get('required_il', [0.0] * 8)
+
+        # Target NC header
+        nc_label = QLabel(f"Target: NC-{target_nc}" if target_nc else "Target NC: —")
+        nc_label.setFont(QFont("Arial", 10, QFont.Bold))
+        nc_label.setAlignment(Qt.AlignCenter)
+        outer.addWidget(nc_label)
+
+        # Column headers
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(6)
+        grid.setVerticalSpacing(2)
+        for col, heading in enumerate(["Hz", "Received", "NC Limit", "Need IL"]):
+            lbl = QLabel(heading)
+            lbl.setFont(QFont("Arial", 8, QFont.Bold))
+            lbl.setAlignment(Qt.AlignCenter)
+            grid.addWidget(lbl, 0, col)
+
+        for row_idx, (freq, received, limit, need_il) in enumerate(
+            zip(_FREQ_BANDS, receiver_spectrum, nc_limits, required_il), start=1
+        ):
+            compliant = need_il <= 0.0
+            bg = "#e8f5e9" if compliant else ("#fff3e0" if need_il < 5 else "#ffebee")
+            text_color = "#2e7d32" if compliant else ("#e65100" if need_il < 5 else "#b71c1c")
+            row_style = f"background-color: {bg}; color: {text_color}; border-radius: 3px; padding: 2px 4px;"
+
+            freq_lbl = QLabel(f"{freq}")
+            freq_lbl.setAlignment(Qt.AlignCenter)
+            freq_lbl.setStyleSheet(row_style)
+            grid.addWidget(freq_lbl, row_idx, 0)
+
+            recv_lbl = QLabel(f"{received:.1f} dB")
+            recv_lbl.setAlignment(Qt.AlignCenter)
+            recv_lbl.setStyleSheet(row_style)
+            grid.addWidget(recv_lbl, row_idx, 1)
+
+            limit_lbl = QLabel(f"{limit:.0f} dB")
+            limit_lbl.setAlignment(Qt.AlignCenter)
+            limit_lbl.setStyleSheet(row_style)
+            grid.addWidget(limit_lbl, row_idx, 2)
+
+            if compliant:
+                need_text = "OK"
+            else:
+                need_text = f"+{need_il:.1f} dB"
+            need_lbl = QLabel(need_text)
+            need_lbl.setAlignment(Qt.AlignCenter)
+            font = QFont("Arial", 9, QFont.Bold)
+            need_lbl.setFont(font)
+            need_lbl.setStyleSheet(row_style)
+            grid.addWidget(need_lbl, row_idx, 3)
+
+        outer.addLayout(grid)
+
+        # Legend
+        legend = QLabel("Green = compliant  |  Amber/Red = IL needed")
+        legend.setAlignment(Qt.AlignCenter)
+        legend.setStyleSheet("color: #666; font-size: 9px; padding-top: 4px;")
+        outer.addWidget(legend)
+
+        group.setLayout(outer)
+        return group
+
     def create_filter_panel(self):
         """Create the filter criteria panel"""
         panel = QFrame()
-        panel.setMaximumWidth(350)
         layout = QVBoxLayout()
-        
+
+        # NC Compliance display (top)
+        layout.addWidget(self.create_nc_compliance_group())
+
         # Insertion Loss Requirements
         il_group = QGroupBox("Required Insertion Loss")
         il_layout = QFormLayout()
@@ -174,10 +283,8 @@ class SilencerFilterDialog(QDialog):
         mfg_layout = QFormLayout()
         
         self.manufacturer_combo = QComboBox()
-        self.manufacturer_combo.addItems([
-            "Any Manufacturer", "Kinetics", "IAC Acoustics", 
-            "Vibro-Acoustics", "SoundAttenuators"
-        ])
+        self.manufacturer_combo.addItem("Any Manufacturer")
+        self._load_manufacturer_list()
         self.manufacturer_combo.currentTextChanged.connect(self.update_product_list)
         mfg_layout.addRow("Manufacturer:", self.manufacturer_combo)
         
@@ -210,12 +317,12 @@ class SilencerFilterDialog(QDialog):
         avail_layout = QVBoxLayout()
         
         self.in_stock_cb = QCheckBox("In Stock")
-        self.in_stock_cb.setChecked(True)
+        self.in_stock_cb.setChecked(False)
         self.in_stock_cb.toggled.connect(self.update_product_list)
         avail_layout.addWidget(self.in_stock_cb)
         
         self.lead_time_cb = QCheckBox("Lead Time")
-        self.lead_time_cb.setChecked(True)
+        self.lead_time_cb.setChecked(False)
         self.lead_time_cb.toggled.connect(self.update_product_list)
         avail_layout.addWidget(self.lead_time_cb)
         
@@ -516,9 +623,9 @@ class SilencerFilterDialog(QDialog):
         self.min_cost_spin.setValue(0)
         self.max_cost_spin.setValue(0)
         
-        # Reset availability checkboxes
-        self.in_stock_cb.setChecked(True)
-        self.lead_time_cb.setChecked(True)
+        # Reset availability checkboxes (unchecked = no availability filter)
+        self.in_stock_cb.setChecked(False)
+        self.lead_time_cb.setChecked(False)
         
         # Update results
         self.update_product_list()
@@ -542,8 +649,9 @@ class SilencerFilterDialog(QDialog):
         event.accept()
 
 
-# Convenience function
-def show_silencer_filter_dialog(noise_requirements=None, space_constraints=None, parent=None):
-    """Show silencer filter dialog"""
-    dialog = SilencerFilterDialog(noise_requirements, space_constraints, parent)
+def show_silencer_filter_dialog(noise_requirements=None, space_constraints=None,
+                               nc_compliance_data=None, parent=None):
+    """Show silencer filter dialog and return (accepted, product)."""
+    dialog = SilencerFilterDialog(noise_requirements, space_constraints,
+                                  nc_compliance_data, parent)
     return dialog.exec(), dialog.get_selected_product()

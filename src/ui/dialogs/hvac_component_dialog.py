@@ -526,6 +526,84 @@ class HVACComponentDialog(QDialog):
             self.noise_spin.setEnabled(True)
             self.cfm_spin.setEnabled(True)
 
+    def _find_path_id_for_component(self, component_id: int) -> Optional[int]:
+        """Return the HVACPath id that contains this component, or None."""
+        try:
+            session = get_session()
+            # First check segment endpoints
+            seg = session.query(HVACSegment).filter(
+                (HVACSegment.from_component_id == component_id) |
+                (HVACSegment.to_component_id == component_id)
+            ).first()
+            if seg:
+                session.close()
+                return seg.path_id
+
+            # Silencers live in element_sequence JSON — scan all project paths
+            paths = session.query(HVACPath).filter(
+                HVACPath.project_id == self.project_id
+            ).all()
+            for path in paths:
+                seq = path.get_element_sequence() or []
+                for item in seq:
+                    if item.get('id') == component_id:
+                        session.close()
+                        return path.id
+            session.close()
+        except Exception:
+            pass
+        return None
+
+    def _build_nc_compliance_data_for_path(self, path_id: int) -> Optional[dict]:
+        """Run path noise calculation and return nc_compliance_data dict, or None."""
+        try:
+            from calculations.hvac_path_calculator import HVACPathCalculator
+            from calculations.nc_rating_analyzer import NCRatingAnalyzer
+            from sqlalchemy.orm import selectinload
+
+            session = get_session()
+            path = (
+                session.query(HVACPath)
+                .options(selectinload(HVACPath.target_space))
+                .filter(HVACPath.id == path_id)
+                .first()
+            )
+            target_nc = None
+            if path and path.target_space:
+                target_nc = getattr(path.target_space, 'target_nc', None)
+            session.close()
+
+            if not target_nc or target_nc not in NCRatingAnalyzer.NC_CURVES:
+                return None
+
+            calculator = HVACPathCalculator(self.project_id)
+            result = calculator.calculate_path_noise(path_id)
+            if not result or not getattr(result, 'calculation_valid', False):
+                return None
+
+            path_elements = result.segment_results or []
+            terminal_spectrum = None
+            for elem in reversed(path_elements):
+                if elem.get('element_type') == 'terminal':
+                    terminal_spectrum = elem.get('noise_after_spectrum')
+                    break
+            if terminal_spectrum is None and path_elements:
+                terminal_spectrum = path_elements[-1].get('noise_after_spectrum')
+            if not terminal_spectrum or len(terminal_spectrum) < 8:
+                return None
+
+            nc_limits = NCRatingAnalyzer.NC_CURVES[target_nc]
+            required_il = [max(0.0, recv - limit)
+                           for recv, limit in zip(terminal_spectrum, nc_limits)]
+            return {
+                'target_nc': target_nc,
+                'receiver_spectrum': list(terminal_spectrum),
+                'nc_limits': list(nc_limits),
+                'required_il': required_il,
+            }
+        except Exception:
+            return None
+
     def open_silencer_selection(self):
         """Open the silencer product selection dialog"""
         try:
@@ -537,10 +615,18 @@ class HVACComponentDialog(QDialog):
             if cfm_value > 0:
                 requirements['flow_rate'] = cfm_value
 
+            # Try to find NC compliance data from the component's path
+            nc_data = None
+            if self.component and getattr(self.component, 'id', None):
+                path_id = self._find_path_id_for_component(self.component.id)
+                if path_id:
+                    nc_data = self._build_nc_compliance_data_for_path(path_id)
+
             dialog = SilencerFilterDialog(
                 noise_requirements=requirements,
                 space_constraints={},
-                parent=self
+                nc_compliance_data=nc_data,
+                parent=self,
             )
 
             if dialog.exec():
