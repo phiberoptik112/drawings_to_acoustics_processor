@@ -98,12 +98,21 @@ class PathElementCard(QFrame):
                 details_layout.addWidget(info_label)
         
         # Noise level
-        if self.noise_level is not None:
+        if self.element_type == 'receiver' and 'receiver_lp' in self.extra_info:
+            lw_val = self.extra_info.get('terminal_lw', self.noise_level or 0)
+            lp_val = self.extra_info['receiver_lp']
+            lw_label = QLabel(f"Lw at Terminal: {lw_val:.1f} dB(A)")
+            lw_label.setStyleSheet("color: #666;")
+            details_layout.addWidget(lw_label)
+            lp_label = QLabel(f"Lp at Receiver: {lp_val:.1f} dB(A)")
+            lp_label.setStyleSheet("color: #333; font-weight: bold;")
+            details_layout.addWidget(lp_label)
+        elif self.noise_level is not None:
             noise_text = f"Noise: {self.noise_level:.1f} dB(A)"
             if self.element_type == 'source':
                 noise_text = f"PWL: {self.noise_level:.1f} dB(A)"
             elif self.element_type == 'receiver':
-                noise_text = f"Terminal: {self.noise_level:.1f} dB(A)"
+                noise_text = f"Lw at Terminal: {self.noise_level:.1f} dB(A)"
             
             noise_label = QLabel(noise_text)
             noise_label.setStyleSheet("color: #333;")
@@ -300,20 +309,18 @@ class PathResultsSummary(QFrame):
         layout.setContentsMargins(10, 8, 10, 8)
         layout.setSpacing(4)
         
-        # Title
         title = QLabel("SUMMARY")
         title.setFont(QFont("Arial", 9, QFont.Bold))
         title.setStyleSheet("color: #666;")
         layout.addWidget(title)
         
-        # Placeholder labels
-        self.source_label = QLabel("Source: --")
-        self.terminal_label = QLabel("Terminal: --")
+        self.terminal_lw_label = QLabel("Lw at Terminal: --")
+        self.receiver_lp_label = QLabel("Lp at Receiver: --")
         self.attenuation_label = QLabel("Total Attenuation: --")
         self.nc_label = QLabel("NC Rating: --")
         self.status_label = QLabel("")
         
-        for label in [self.source_label, self.terminal_label, 
+        for label in [self.terminal_lw_label, self.receiver_lp_label,
                       self.attenuation_label, self.nc_label]:
             label.setStyleSheet("color: #333;")
             layout.addWidget(label)
@@ -326,21 +333,31 @@ class PathResultsSummary(QFrame):
     def update_results(self, results: dict):
         """Update summary with calculation results"""
         if not results:
-            self.source_label.setText("Source: --")
-            self.terminal_label.setText("Terminal: --")
+            self.terminal_lw_label.setText("Lw at Terminal: --")
+            self.receiver_lp_label.setText("Lp at Receiver: --")
             self.attenuation_label.setText("Total Attenuation: --")
             self.nc_label.setText("NC Rating: --")
             self.status_label.setText("")
             return
         
-        source_noise = results.get('source_noise', 0)
         terminal_noise = results.get('terminal_noise', 0)
         total_attenuation = results.get('total_attenuation', 0)
-        nc_rating = results.get('nc_rating', 0)
         target_nc = results.get('target_nc')
-        
-        self.source_label.setText(f"Source: {source_noise:.1f} dB(A)")
-        self.terminal_label.setText(f"Terminal: {terminal_noise:.1f} dB(A)")
+        correction_applied = results.get('receiver_correction_applied', False)
+
+        if correction_applied:
+            lw_dba = results.get('terminal_lw_dba', terminal_noise)
+            lp_dba = results.get('receiver_lp_dba', 0)
+            nc_rating = results.get('receiver_nc_rating', 0)
+            self.terminal_lw_label.setText(f"Lw at Terminal: {lw_dba:.1f} dB(A)")
+            self.receiver_lp_label.setText(f"Lp at Receiver: {lp_dba:.1f} dB(A)")
+            self.receiver_lp_label.setStyleSheet("color: #333; font-weight: bold;")
+        else:
+            nc_rating = results.get('nc_rating', 0)
+            self.terminal_lw_label.setText(f"Lw at Terminal: {terminal_noise:.1f} dB(A)")
+            self.receiver_lp_label.setText("Lp at Receiver: N/A")
+            self.receiver_lp_label.setStyleSheet("color: #999;")
+
         self.attenuation_label.setText(f"Total Attenuation: {total_attenuation:+.1f} dB")
         self.nc_label.setText(f"NC Rating: NC-{nc_rating:.0f}")
         

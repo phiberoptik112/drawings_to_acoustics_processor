@@ -538,6 +538,8 @@ class PathAnalysisPanel(QWidget):
                     'path_elements': result.segment_results if hasattr(result, 'segment_results') else [],
                     'warnings': result.warnings if hasattr(result, 'warnings') else [],
                 }
+
+                self._apply_receiver_room_correction(path)
             else:
                 self.calculation_results = {
                     'calculation_valid': False,
@@ -555,6 +557,86 @@ class PathAnalysisPanel(QWidget):
                 'error': str(e)
             }
             self._rebuild_diagram()
+
+    def _apply_receiver_room_correction(self, path: HVACPath):
+        """Apply Shultz-method receiver room correction (Lw -> Lp) using target Space properties."""
+        self.calculation_results['receiver_correction_applied'] = False
+
+        space = path.target_space
+        if not space:
+            return
+
+        # Extract the terminal Lw spectrum from the last path element
+        lw_spectrum_8 = self._get_terminal_lw_spectrum()
+        if not lw_spectrum_8 or len(lw_spectrum_8) < 7:
+            return
+
+        lw_spectrum_7 = [float(x) for x in lw_spectrum_8[:7]]
+
+        room_volume = float(space.volume or 0.0)
+        if room_volume <= 0 and space.floor_area and space.ceiling_height:
+            room_volume = float(space.floor_area * space.ceiling_height)
+        if room_volume <= 0:
+            return
+
+        distance = float(path.receiver_distance_ft or 10.0)
+        method = (path.receiver_method or 'single').lower()
+
+        try:
+            from calculations.receiver_room_sound_correction_calculations import ReceiverRoomSoundCorrection
+            from calculations.hvac_noise_engine import HVACNoiseEngine
+
+            room_calc = ReceiverRoomSoundCorrection()
+            engine = HVACNoiseEngine()
+
+            if method == 'distributed':
+                ceiling_height = float(space.ceiling_height or 10.0)
+                floor_area = float(space.floor_area or 150.0)
+                num_diffusers = max(1, int(getattr(space, 'num_diffusers', 1) or 1))
+                floor_area_per_diffuser = floor_area / num_diffusers
+                res = room_calc.calculate_distributed_array_spectrum(
+                    lw_single_spectrum=lw_spectrum_7,
+                    ceiling_height=ceiling_height,
+                    floor_area_per_diffuser=floor_area_per_diffuser,
+                )
+            else:
+                res = room_calc.calculate_octave_band_spectrum(
+                    lw_spectrum=lw_spectrum_7,
+                    distance=distance,
+                    room_volume=max(room_volume, 1.0),
+                    method='equation_27',
+                )
+
+            lp_bands = res.get('sound_pressure_levels', [])
+            if not lp_bands:
+                return
+
+            lp_spectrum_8 = list(lp_bands) + [0.0] * max(0, 8 - len(lp_bands))
+            receiver_lp_dba = engine._calculate_dba_from_spectrum(lp_spectrum_8)
+            receiver_nc = engine._calculate_nc_rating(lp_spectrum_8)
+
+            self.calculation_results['receiver_correction_applied'] = True
+            self.calculation_results['terminal_lw_dba'] = self.calculation_results['terminal_noise']
+            self.calculation_results['receiver_lp_dba'] = receiver_lp_dba
+            self.calculation_results['receiver_nc_rating'] = receiver_nc
+            self.calculation_results['receiver_lp_spectrum'] = lp_spectrum_8
+
+        except Exception as e:
+            print(f"DEBUG: Receiver room correction failed: {e}")
+
+    def _get_terminal_lw_spectrum(self) -> Optional[List[float]]:
+        """Extract the terminal Lw octave band spectrum from the path element results."""
+        path_elements = self.calculation_results.get('path_elements', [])
+        if not path_elements:
+            return None
+
+        # Walk backwards to find the terminal or last element with a spectrum
+        for elem in reversed(path_elements):
+            spectrum = elem.get('noise_after_spectrum')
+            if spectrum and len(spectrum) >= 7:
+                return list(spectrum)
+
+        return None
     
     def _get_source_name(self, path: HVACPath) -> str:
         """Get the source component name for a path"""
@@ -785,14 +867,23 @@ class PathAnalysisPanel(QWidget):
         target_nc = None
         if self.current_path.target_space:
             target_nc = getattr(self.current_path.target_space, 'target_nc', None)
-        
+
+        correction_applied = self.calculation_results.get('receiver_correction_applied', False)
+        receiver_extra = {'target_nc': target_nc}
+        if correction_applied:
+            receiver_extra['terminal_lw'] = self.calculation_results.get('terminal_lw_dba', 0)
+            receiver_extra['receiver_lp'] = self.calculation_results.get('receiver_lp_dba', 0)
+            display_nc = int(self.calculation_results.get('receiver_nc_rating', 0))
+        else:
+            display_nc = int(self.calculation_results.get('nc_rating', 0))
+
         receiver_card = PathElementCard(
             element_type="receiver",
             name=self.calculation_results.get('receiver_name', 'Receiver'),
             noise_level=self.calculation_results.get('terminal_noise', 0),
-            nc_rating=int(self.calculation_results.get('nc_rating', 0)),
+            nc_rating=display_nc,
             element_id=self.current_path.target_space_id,
-            extra_info={'target_nc': target_nc}
+            extra_info=receiver_extra
         )
         self._connect_card_signals(receiver_card)
         self._element_cards.append(receiver_card)
@@ -802,13 +893,18 @@ class PathAnalysisPanel(QWidget):
         self.diagram_layout.addStretch()
         
         # Update summary
-        self.results_summary.update_results({
-            'source_noise': self.calculation_results.get('source_noise', 0),
+        summary_data = {
             'terminal_noise': self.calculation_results.get('terminal_noise', 0),
             'total_attenuation': self.calculation_results.get('total_attenuation', 0),
             'nc_rating': self.calculation_results.get('nc_rating', 0),
             'target_nc': target_nc,
-        })
+            'receiver_correction_applied': correction_applied,
+        }
+        if correction_applied:
+            summary_data['terminal_lw_dba'] = self.calculation_results.get('terminal_lw_dba', 0)
+            summary_data['receiver_lp_dba'] = self.calculation_results.get('receiver_lp_dba', 0)
+            summary_data['receiver_nc_rating'] = self.calculation_results.get('receiver_nc_rating', 0)
+        self.results_summary.update_results(summary_data)
     
     def _render_silencer_cards(self, silencer_ids: List[int]):
         """Render silencer PathElementCards for the given component IDs into the diagram."""
@@ -976,14 +1072,20 @@ class PathAnalysisPanel(QWidget):
             dialog = HVACDebugDialog(self, self.project_id, self.current_path_id)
             dialog.exec()
         except ImportError:
+            correction = self.calculation_results.get('receiver_correction_applied', False) if self.calculation_results else False
+            lw = self.calculation_results.get('terminal_noise', 0) if self.calculation_results else 0
+            lp_line = ""
+            if correction:
+                lp_line = f"Lp at Receiver: {self.calculation_results.get('receiver_lp_dba', 0):.1f} dB(A)\n"
+            nc = self.calculation_results.get('receiver_nc_rating' if correction else 'nc_rating', 0) if self.calculation_results else 0
             QMessageBox.information(
                 self, 
                 "Detailed Report", 
                 "Detailed debug dialog not available.\n\n"
                 f"Path: {self.current_path.name if self.current_path else 'Unknown'}\n"
-                f"Source: {self.calculation_results.get('source_noise', 0):.1f} dB(A)\n"
-                f"Terminal: {self.calculation_results.get('terminal_noise', 0):.1f} dB(A)\n"
-                f"NC Rating: NC-{self.calculation_results.get('nc_rating', 0):.0f}"
+                f"Lw at Terminal: {lw:.1f} dB(A)\n"
+                f"{lp_line}"
+                f"NC Rating: NC-{nc:.0f}"
             )
     
     def _update_sequence_widget(self):
