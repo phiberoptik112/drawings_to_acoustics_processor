@@ -152,6 +152,20 @@ class HVACComponentDialog(QDialog):
         acoustic_layout.addRow(self.inlet_label)
         acoustic_layout.addRow(self.radiated_label)
         acoustic_layout.addRow(self.outlet_label)
+        self.mechanical_noise_origin_combo = QComboBox()
+        self.mechanical_noise_origin_combo.setToolTip(
+            "When this component is linked to a Mechanical Unit schedule, which octave-band "
+            "set seeds path noise: Auto follows path type (supply/exhaust→outlet, return→inlet); "
+            "or force Inlet, Outlet, or Radiated."
+        )
+        for _label, _val in (
+            ("Auto (path-type default)", "auto"),
+            ("Inlet", "inlet"),
+            ("Outlet", "outlet"),
+            ("Radiated", "radiated"),
+        ):
+            self.mechanical_noise_origin_combo.addItem(_label, _val)
+        acoustic_layout.addRow("Path noise spectrum:", self.mechanical_noise_origin_combo)
         
         acoustic_group.setLayout(acoustic_layout)
         layout.addWidget(acoustic_group)
@@ -797,6 +811,14 @@ class HVACComponentDialog(QDialog):
                     self.branch_takeoff_choice_combo.setCurrentIndex(idx)
         except Exception:
             pass
+
+        try:
+            mo = getattr(self.component, 'mechanical_noise_origin', None) or 'auto'
+            idx_mo = self.mechanical_noise_origin_combo.findData(mo)
+            if idx_mo >= 0:
+                self.mechanical_noise_origin_combo.setCurrentIndex(idx_mo)
+        except Exception:
+            pass
         
         # Load elbow properties if present
         try:
@@ -938,6 +960,12 @@ class HVACComponentDialog(QDialog):
             component.branch_takeoff_choice = self.branch_takeoff_choice_combo.currentText()
         except Exception:
             pass
+        try:
+            component.mechanical_noise_origin = (
+                self.mechanical_noise_origin_combo.currentData() or 'auto'
+            )
+        except Exception:
+            component.mechanical_noise_origin = 'auto'
         
         # Debug CFM save process
         cfm_value = self.cfm_spin.value()
@@ -1011,6 +1039,7 @@ class HVACComponentDialog(QDialog):
             noise_level=self.noise_spin.value(),
             cfm=cfm_value,
             branch_takeoff_choice=self.branch_takeoff_choice_combo.currentText(),
+            mechanical_noise_origin=self.mechanical_noise_origin_combo.currentData() or 'auto',
             has_turning_vanes=has_vanes,
             vane_chord_length=vane_chord,
             num_vanes=num_vanes,

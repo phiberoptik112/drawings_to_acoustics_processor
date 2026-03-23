@@ -35,6 +35,8 @@ class HVACComponent(Base):
     # For components acting as 90° branch takeoffs, allow user override of which
     # junction spectrum to use in path calculations: 'auto' | 'main' | 'branch'
     branch_takeoff_choice = Column(String(20))
+    # Mechanical schedule spectrum for path noise: 'auto' | 'inlet' | 'outlet' | 'radiated'
+    mechanical_noise_origin = Column(String(20), default='auto')
     
     # Elbow-specific fields (turning vanes and lining)
     has_turning_vanes = Column(Boolean, default=False)
@@ -84,6 +86,7 @@ class HVACComponent(Base):
             'noise_level': self.noise_level,
             'cfm': self.cfm,
             'branch_takeoff_choice': self.branch_takeoff_choice,
+            'mechanical_noise_origin': getattr(self, 'mechanical_noise_origin', None) or 'auto',
             'has_turning_vanes': self.has_turning_vanes,
             'vane_chord_length': self.vane_chord_length,
             'num_vanes': self.num_vanes,

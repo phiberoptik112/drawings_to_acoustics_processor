@@ -60,6 +60,8 @@ def ensure_hvac_schema():
                 # Silencer placement fields
                 ("position_on_path", "REAL"),  # 0.0-1.0 normalized position for straight silencers
                 ("elbow_component_id", "INTEGER"),  # FK to hvac_components for elbow silencers
+                # Path noise spectrum preference when linked to MechanicalUnit schedules
+                ("mechanical_noise_origin", "TEXT DEFAULT 'auto'"),
             ],
         )
 

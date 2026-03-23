@@ -5,6 +5,7 @@ This panel displays the path flow diagram with interactive cards that link
 to the drawing overlay for visual correlation between physical path and calculations.
 """
 
+import json
 from typing import Optional, Dict, List, Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -1613,21 +1614,46 @@ class PathAnalysisPanel(QWidget):
             return self._build_nc_results_from_engine(path_elements)
         return self._build_nc_results_fallback()
 
-    def _build_nc_results_from_engine(self, path_elements: List[Dict]) -> List[Dict]:
-        """Build NC table rows from the engine's per-element results.
+    def _get_path_display_sequence(self) -> Optional[List[Dict]]:
+        """User-editable path order: saved element_sequence, else connectivity-based (Edit Path tab)."""
+        if not self.current_path:
+            return None
+        element_sequence: Optional[List[Dict]] = None
+        if hasattr(self.current_path, 'get_element_sequence'):
+            try:
+                element_sequence = self.current_path.get_element_sequence()
+            except Exception:
+                pass
+        if not element_sequence and getattr(self.current_path, 'element_sequence', None):
+            try:
+                element_sequence = json.loads(self.current_path.element_sequence)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        if element_sequence:
+            return list(element_sequence)
+        segments_data = []
+        for seg in self._get_ordered_segments():
+            segments_data.append({
+                'id': seg.id,
+                'from_component_id': seg.from_component_id,
+                'to_component_id': seg.to_component_id,
+                'length': float(getattr(seg, 'length', 0) or 0),
+                'duct_shape': getattr(seg, 'duct_shape', 'rectangular'),
+                'segment_order': getattr(seg, 'segment_order', 0) or 0,
+            })
+        if not segments_data:
+            return None
+        helper = PathSequenceWidget()
+        return helper._compute_sequence_from_segments(segments_data)
 
-        Each engine element carries ``noise_after_spectrum`` (8-band) and
-        ``nc_rating`` computed by the noise engine.  We map these to DB IDs
-        so the table rows are clickable, and inject intermediate component
-        rows between segment groups.
-        """
+    def _build_nc_results_from_engine_legacy(self, path_elements: List[Dict]) -> List[Dict]:
+        """Build NC rows in engine iteration order with legacy component injection before ducts."""
         from calculations.nc_rating_analyzer import NCRatingAnalyzer
         nc_analyzer = NCRatingAnalyzer()
 
         results: List[Dict] = []
         segments = self._get_ordered_segments()
 
-        # Map silencer DB IDs from the stored element_sequence
         silencer_id_list: List[int] = []
         element_sequence = None
         if hasattr(self.current_path, 'get_element_sequence'):
@@ -1726,6 +1752,188 @@ class PathAnalysisPanel(QWidget):
                 'nc_rating': nc_analyzer.determine_nc_rating(last_spectrum),
                 'is_silencer': False,
             })
+
+        return results
+
+    def _build_nc_results_from_engine(self, path_elements: List[Dict]) -> List[Dict]:
+        """Build NC table rows aligned with Edit Path / saved ``element_sequence`` order.
+
+        Middle ``path_elements`` (between source and terminal) match segment + silencer
+        slots in ``element_sequence`` 1:1 after path_data silencer injection. We walk
+        that sequence so component, segment, and silencer rows match the saved list.
+        """
+        from calculations.nc_rating_analyzer import NCRatingAnalyzer
+        nc_analyzer = NCRatingAnalyzer()
+
+        if not path_elements or not self.current_path:
+            return []
+
+        first_el = path_elements[0]
+        if first_el.get('element_type') != 'source':
+            return self._build_nc_results_from_engine_legacy(path_elements)
+
+        last_is_terminal = path_elements[-1].get('element_type') == 'terminal'
+        middle = path_elements[1:-1] if last_is_terminal else path_elements[1:]
+
+        sequence = self._get_path_display_sequence()
+        if sequence:
+            n_seq_mid = sum(
+                1 for x in sequence
+                if x.get('type') in ('segment', 'silencer')
+            )
+            if n_seq_mid != len(middle):
+                sequence = None
+
+        if not sequence:
+            return self._build_nc_results_from_engine_legacy(path_elements)
+
+        results: List[Dict] = []
+        src_spec = first_el.get('noise_after_spectrum', [0.0] * 8)
+        results.append({
+            'element_type': 'source',
+            'element_name': self.calculation_results.get('source_name', 'Source'),
+            'element_id': self._get_source_component_id(),
+            'cumulative_spectrum': list(src_spec[:7]),
+            'nc_rating': first_el.get(
+                'nc_rating', nc_analyzer.determine_nc_rating(src_spec)
+            ),
+            'is_silencer': False,
+        })
+
+        source_id = self._get_source_component_id()
+        pe_i = 1
+
+        session = get_session()
+        try:
+            for item in sequence:
+                et = item.get('type')
+                eid = item.get('id')
+                if et == 'component':
+                    if source_id is not None and eid == source_id:
+                        continue
+                    prev = path_elements[pe_i - 1]
+                    sp = prev.get('noise_after_spectrum', [0.0] * 8)
+                    comp = (
+                        session.query(HVACComponent).filter(HVACComponent.id == eid).first()
+                        if eid else None
+                    )
+                    is_sil = bool(comp and getattr(comp, 'is_silencer', False))
+                    comp_type = (
+                        getattr(comp, 'component_type', None) or 'component'
+                    ) if comp else 'component'
+                    comp_name = (
+                        getattr(comp, 'name', None)
+                        or comp_type.replace('_', ' ').title()
+                    ) if comp else (f'Component {eid}' if eid else 'Component')
+                    results.append({
+                        'element_type': 'silencer' if is_sil else comp_type,
+                        'element_name': comp_name,
+                        'element_id': eid,
+                        'cumulative_spectrum': list(sp[:7]),
+                        'nc_rating': nc_analyzer.determine_nc_rating(sp),
+                        'is_silencer': is_sil,
+                    })
+                elif et == 'segment':
+                    elem = path_elements[pe_i]
+                    pe_i += 1
+                    spectrum_8 = elem.get('noise_after_spectrum', [0.0] * 8)
+                    nc_rating = elem.get(
+                        'nc_rating', nc_analyzer.determine_nc_rating(spectrum_8)
+                    )
+                    eng_type = elem.get('element_type', 'duct')
+                    row_type = (
+                        'segment' if eng_type in ('duct', 'flex_duct') else eng_type
+                    )
+                    seg_obj = None
+                    if self.current_path.segments:
+                        for s in self.current_path.segments:
+                            if s.id == eid:
+                                seg_obj = s
+                                break
+                    if seg_obj:
+                        fc = getattr(seg_obj, 'from_component', None)
+                        tc = getattr(seg_obj, 'to_component', None)
+                        fn = getattr(fc, 'name', None) or '?'
+                        tn = getattr(tc, 'name', None) or '?'
+                        name = (
+                            f"Segment: {fn} → {tn} "
+                            f"({float(seg_obj.length or 0):.1f} ft)"
+                        )
+                    else:
+                        name = f'Segment {eid}' if eid else 'Segment'
+                    results.append({
+                        'element_type': row_type,
+                        'element_name': name,
+                        'element_id': eid,
+                        'cumulative_spectrum': list(spectrum_8[:7]),
+                        'nc_rating': nc_rating,
+                        'is_silencer': False,
+                    })
+                elif et == 'silencer':
+                    elem = path_elements[pe_i]
+                    pe_i += 1
+                    spectrum_8 = elem.get('noise_after_spectrum', [0.0] * 8)
+                    nc_rating = elem.get(
+                        'nc_rating', nc_analyzer.determine_nc_rating(spectrum_8)
+                    )
+                    sil_comp = (
+                        session.query(HVACComponent).filter(HVACComponent.id == eid).first()
+                        if eid else None
+                    )
+                    name = getattr(sil_comp, 'name', None) or 'Silencer'
+                    results.append({
+                        'element_type': 'silencer',
+                        'element_name': name,
+                        'element_id': eid,
+                        'cumulative_spectrum': list(spectrum_8[:7]),
+                        'nc_rating': nc_rating,
+                        'is_silencer': True,
+                    })
+                else:
+                    return self._build_nc_results_from_engine_legacy(path_elements)
+        finally:
+            session.close()
+
+        expected_pe = len(path_elements) - 1 if last_is_terminal else len(path_elements)
+        if pe_i != expected_pe:
+            return self._build_nc_results_from_engine_legacy(path_elements)
+
+        if last_is_terminal:
+            term = path_elements[-1]
+            spectrum_8 = term.get('noise_after_spectrum', [0.0] * 8)
+            nc_rating = term.get(
+                'nc_rating', nc_analyzer.determine_nc_rating(spectrum_8)
+            )
+            results.append({
+                'element_type': 'terminal',
+                'element_name': (
+                    self.current_path.target_space.name
+                    if self.current_path.target_space else 'Receiver'
+                ),
+                'element_id': (
+                    self.current_path.target_space_id
+                    if self.current_path.target_space else None
+                ),
+                'cumulative_spectrum': list(spectrum_8[:7]),
+                'nc_rating': nc_rating,
+                'is_silencer': False,
+            })
+        else:
+            has_terminal = any(r['element_type'] == 'terminal' for r in results)
+            last_spec = path_elements[-1].get('noise_after_spectrum') if path_elements else None
+            if (
+                not has_terminal
+                and self.current_path.target_space
+                and last_spec
+            ):
+                results.append({
+                    'element_type': 'terminal',
+                    'element_name': self.current_path.target_space.name,
+                    'element_id': self.current_path.target_space_id,
+                    'cumulative_spectrum': list(last_spec[:7]),
+                    'nc_rating': nc_analyzer.determine_nc_rating(last_spec),
+                    'is_silencer': False,
+                })
 
         return results
 

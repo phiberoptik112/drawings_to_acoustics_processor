@@ -18,6 +18,7 @@ from models.hvac import HVACPath, HVACComponent, HVACSegment, SilencerProduct
 from sqlalchemy.orm import selectinload
 from models.space import Space
 from calculations.hvac_path_calculator import HVACPathCalculator
+from calculations.mechanical_spectrum_select import mechanical_unit_spectrum_for_path
 from .hvac_component_dialog import HVACComponentDialog
 from .component_library_dialog import ComponentLibraryDialog
 from .hvac_receiver_dialog import HVACReceiverDialog
@@ -2386,25 +2387,22 @@ class HVACPathDialog(HelpMixin, QDialog):
             if not unit:
                 return
 
-            # Extract octave-band data from the unit (prefer outlet -> inlet -> radiated)
-            import json
-            def parse_bands(js):
-                if not js:
-                    return None
+            path_pt = getattr(self.path, 'path_type', None) or 'supply' if self.path else 'supply'
+            pref = 'auto'
+            if self.path and getattr(self.path, 'segments', None):
                 try:
-                    data = json.loads(js)
-                    order = ["63","125","250","500","1000","2000","4000","8000"]
-                    vals = []
-                    for k in order:
-                        v = data.get(k)
-                        vals.append(float(v) if v is not None and str(v).strip() != '' else 0.0)
-                    return vals
+                    segs = sorted(
+                        self.path.segments,
+                        key=lambda s: getattr(s, 'segment_order', 0),
+                    )
+                    if segs:
+                        fc = getattr(segs[0], 'from_component', None)
+                        if fc is not None:
+                            pref = getattr(fc, 'mechanical_noise_origin', None) or 'auto'
                 except Exception:
-                    return None
+                    pass
 
-            bands = (parse_bands(getattr(unit, 'outlet_levels_json', None)) or
-                     parse_bands(getattr(unit, 'inlet_levels_json', None)) or
-                     parse_bands(getattr(unit, 'radiated_levels_json', None)))
+            bands, _src_origin = mechanical_unit_spectrum_for_path(unit, path_pt, pref)
 
             # Compute A-weighted if we have bands; fallback to 80 dB(A)
             if bands:
