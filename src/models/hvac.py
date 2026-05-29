@@ -35,6 +35,17 @@ class HVACComponent(Base):
     # For components acting as 90° branch takeoffs, allow user override of which
     # junction spectrum to use in path calculations: 'auto' | 'main' | 'branch'
     branch_takeoff_choice = Column(String(20))
+    # Junction duct geometry (inches / CFM) for branch takeoff noise calculations
+    branch_duct_width = Column(Float)
+    branch_duct_height = Column(Float)
+    branch_duct_diameter = Column(Float)
+    branch_duct_shape = Column(String(20))  # 'rectangular' | 'circular'
+    main_duct_width = Column(Float)
+    main_duct_height = Column(Float)
+    main_duct_diameter = Column(Float)
+    main_duct_shape = Column(String(20))  # 'rectangular' | 'circular'
+    branch_cfm = Column(Float)
+    main_cfm = Column(Float)
     # Mechanical schedule spectrum for path noise: 'auto' | 'inlet' | 'outlet' | 'radiated'
     mechanical_noise_origin = Column(String(20), default='auto')
     
@@ -86,6 +97,16 @@ class HVACComponent(Base):
             'noise_level': self.noise_level,
             'cfm': self.cfm,
             'branch_takeoff_choice': self.branch_takeoff_choice,
+            'branch_duct_width': self.branch_duct_width,
+            'branch_duct_height': self.branch_duct_height,
+            'branch_duct_diameter': self.branch_duct_diameter,
+            'branch_duct_shape': self.branch_duct_shape,
+            'main_duct_width': self.main_duct_width,
+            'main_duct_height': self.main_duct_height,
+            'main_duct_diameter': self.main_duct_diameter,
+            'main_duct_shape': self.main_duct_shape,
+            'branch_cfm': self.branch_cfm,
+            'main_cfm': self.main_cfm,
             'mechanical_noise_origin': getattr(self, 'mechanical_noise_origin', None) or 'auto',
             'has_turning_vanes': self.has_turning_vanes,
             'vane_chord_length': self.vane_chord_length,

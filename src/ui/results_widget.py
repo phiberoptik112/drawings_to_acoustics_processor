@@ -315,9 +315,8 @@ class ResultsWidget(QWidget):
     
     def refresh_data(self):
         """Refresh all data displays"""
+        session = get_session()
         try:
-            session = get_session()
-            
             # Get all project data, eagerly loading relationships used after the session closes
             spaces = (
                 session.query(Space)
@@ -337,29 +336,32 @@ class ResultsWidget(QWidget):
             )
             hvac_components = session.query(HVACComponent).filter(HVACComponent.project_id == self.project_id).all()
             drawings = session.query(Drawing).filter(Drawing.project_id == self.project_id).all()
-            
-            session.close()
-            
-            # Update header metrics
-            self.update_header_metrics(spaces, hvac_paths)
-            
-            # Update summary tab
-            self.update_summary_tab(spaces, hvac_paths, hvac_components, drawings)
-            
-            # Update spaces tab
-            self.update_spaces_tab(spaces)
-            
-            # Update HVAC tab
-            self.update_hvac_tab(hvac_paths)
-            
-            # Update NC analysis tab
-            self.update_nc_analysis_tab(hvac_paths, spaces)
-            
-            # Update issues tab
-            self.update_issues_tab(spaces, hvac_paths)
-            
         except Exception as e:
             logger.error(f"Error refreshing data: {e}")
+            return
+        finally:
+            session.close()
+
+        try:
+            # Update header metrics
+            self.update_header_metrics(spaces, hvac_paths)
+
+            # Update summary tab
+            self.update_summary_tab(spaces, hvac_paths, hvac_components, drawings)
+
+            # Update spaces tab
+            self.update_spaces_tab(spaces)
+
+            # Update HVAC tab
+            self.update_hvac_tab(hvac_paths)
+
+            # Update NC analysis tab
+            self.update_nc_analysis_tab(hvac_paths, spaces)
+
+            # Update issues tab
+            self.update_issues_tab(spaces, hvac_paths)
+        except Exception as e:
+            logger.error(f"Error updating results display: {e}")
     
     def update_header_metrics(self, spaces, hvac_paths):
         """Update header metrics"""

@@ -31,6 +31,10 @@ def _ensure_columns(session, table: str, columns: List[Tuple[str, str]]):
         columns: list of (column_name, column_sql_type_default_clause)
                  e.g., ("is_silencer", "INTEGER DEFAULT 0")
     """
+    existing_tables = set(_get_existing_tables(session))
+    if table not in existing_tables:
+        return
+
     existing = set(_get_existing_columns(session, table))
     for name, type_clause in columns:
         if name not in existing:
@@ -47,6 +51,7 @@ def ensure_hvac_schema():
             "hvac_components",
             [
                 ("custom_type_label", "TEXT"),
+                ("cfm", "REAL"),
                 ("is_silencer", "INTEGER DEFAULT 0"),
                 ("silencer_type", "TEXT"),
                 ("target_noise_reduction", "REAL"),
@@ -55,6 +60,23 @@ def ensure_hvac_schema():
                 ("selected_product_id", "INTEGER"),
                 # Junction preference for BRANCH_TAKEOFF_90 selection
                 ("branch_takeoff_choice", "TEXT"),
+                # Junction duct geometry for branch takeoff noise calculations
+                ("branch_duct_width", "REAL"),
+                ("branch_duct_height", "REAL"),
+                ("branch_duct_diameter", "REAL"),
+                ("branch_duct_shape", "TEXT"),
+                ("main_duct_width", "REAL"),
+                ("main_duct_height", "REAL"),
+                ("main_duct_diameter", "REAL"),
+                ("main_duct_shape", "TEXT"),
+                ("branch_cfm", "REAL"),
+                ("main_cfm", "REAL"),
+                # Elbow-specific fields (turning vanes and lining)
+                ("has_turning_vanes", "INTEGER DEFAULT 0"),
+                ("vane_chord_length", "REAL"),
+                ("num_vanes", "INTEGER"),
+                ("lining_thickness", "REAL"),
+                ("pressure_drop", "REAL"),
                 # Page number for multi-page PDF support
                 ("page_number", "INTEGER DEFAULT 1"),
                 # Silencer placement fields
