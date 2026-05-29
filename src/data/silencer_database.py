@@ -6,6 +6,7 @@ from typing import List, Dict, Optional, Any
 from sqlalchemy import and_, or_
 from models import get_session
 from models.hvac import SilencerProduct
+from data.silencer_library import get_silencer_catalog, to_silencer_product_dict
 
 
 class SilencerDatabaseManager:
@@ -15,15 +16,16 @@ class SilencerDatabaseManager:
         self.session = get_session()
     
     def populate_database(self):
-        """Populate database with known silencer products"""
-        
-        # Check if products already exist
+        """Populate database with known silencer products and catalog entries."""
+        self._seed_sample_products()
+        self._seed_catalog_products()
+
+    def _seed_sample_products(self):
+        """Seed the 9 built-in sample products (skipped if any already exist)."""
         existing_count = self.session.query(SilencerProduct).count()
         if existing_count > 0:
-            print(f"Database already contains {existing_count} silencer products")
             return
         
-        # Sample products from major manufacturers
         products = [
             # Kinetics Products
             {
@@ -133,17 +135,44 @@ class SilencerDatabaseManager:
             }
         ]
         
-        # Add products to database
         for product_data in products:
-            product = SilencerProduct(**product_data)
-            self.session.add(product)
+            self.session.add(SilencerProduct(**product_data))
         
         try:
             self.session.commit()
-            print(f"Successfully added {len(products)} silencer products to database")
+            print(f"Successfully added {len(products)} sample silencer products")
         except Exception as e:
             self.session.rollback()
-            print(f"Error adding products to database: {e}")
+            print(f"Error adding sample products to database: {e}")
+
+    def _seed_catalog_products(self):
+        """Seed manufacturer catalog entries from silencer_library.
+
+        Uses the ``source_document`` column as a sentinel: catalog entries
+        always have this field set while hand-entered sample rows do not.
+        If any row with a non-NULL ``source_document`` already exists the
+        catalog has already been seeded and we skip.
+        """
+        already_seeded = (
+            self.session.query(SilencerProduct)
+            .filter(SilencerProduct.source_document.isnot(None))
+            .count()
+        )
+        if already_seeded > 0:
+            print(f"Catalog already seeded ({already_seeded} entries)")
+            return
+
+        catalog_entries = get_silencer_catalog()
+        for entry in catalog_entries:
+            mapped = to_silencer_product_dict(entry)
+            self.session.add(SilencerProduct(**mapped))
+
+        try:
+            self.session.commit()
+            print(f"Successfully added {len(catalog_entries)} catalog silencer products")
+        except Exception as e:
+            self.session.rollback()
+            print(f"Error adding catalog products to database: {e}")
     
     def get_all_products(self) -> List[SilencerProduct]:
         """Get all silencer products"""
@@ -198,13 +227,17 @@ class SilencerFilterEngine:
         if requirements.get('max_weight'):
             query = query.filter(SilencerProduct.weight <= requirements['max_weight'])
         
-        # Filter by flow rate
+        # Filter by flow rate; catalog entries with NULL flow_rate_min are always included
+        # because the catalog does not publish application-specific flow rate ranges.
         if requirements.get('flow_rate'):
             flow_rate = requirements['flow_rate']
             query = query.filter(
-                and_(
-                    SilencerProduct.flow_rate_min <= flow_rate,
-                    SilencerProduct.flow_rate_max >= flow_rate
+                or_(
+                    and_(
+                        SilencerProduct.flow_rate_min <= flow_rate,
+                        SilencerProduct.flow_rate_max >= flow_rate,
+                    ),
+                    SilencerProduct.flow_rate_min.is_(None),
                 )
             )
         
@@ -218,12 +251,17 @@ class SilencerFilterEngine:
         if requirements.get('max_cost'):
             query = query.filter(SilencerProduct.cost_estimate <= requirements['max_cost'])
         
-        # Filter by availability
+        # Filter by availability; catalog entries with NULL availability are always included.
         if requirements.get('availability'):
             availability_options = requirements['availability']
             if isinstance(availability_options, str):
                 availability_options = [availability_options]
-            query = query.filter(SilencerProduct.availability.in_(availability_options))
+            query = query.filter(
+                or_(
+                    SilencerProduct.availability.in_(availability_options),
+                    SilencerProduct.availability.is_(None),
+                )
+            )
         
         return query.all()
     

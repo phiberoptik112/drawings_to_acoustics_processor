@@ -152,6 +152,20 @@ class HVACComponentDialog(QDialog):
         acoustic_layout.addRow(self.inlet_label)
         acoustic_layout.addRow(self.radiated_label)
         acoustic_layout.addRow(self.outlet_label)
+        self.mechanical_noise_origin_combo = QComboBox()
+        self.mechanical_noise_origin_combo.setToolTip(
+            "When this component is linked to a Mechanical Unit schedule, which octave-band "
+            "set seeds path noise: Auto follows path type (supply/exhaust→outlet, return→inlet); "
+            "or force Inlet, Outlet, or Radiated."
+        )
+        for _label, _val in (
+            ("Auto (path-type default)", "auto"),
+            ("Inlet", "inlet"),
+            ("Outlet", "outlet"),
+            ("Radiated", "radiated"),
+        ):
+            self.mechanical_noise_origin_combo.addItem(_label, _val)
+        acoustic_layout.addRow("Path noise spectrum:", self.mechanical_noise_origin_combo)
         
         acoustic_group.setLayout(acoustic_layout)
         layout.addWidget(acoustic_group)
@@ -526,6 +540,84 @@ class HVACComponentDialog(QDialog):
             self.noise_spin.setEnabled(True)
             self.cfm_spin.setEnabled(True)
 
+    def _find_path_id_for_component(self, component_id: int) -> Optional[int]:
+        """Return the HVACPath id that contains this component, or None."""
+        try:
+            session = get_session()
+            # First check segment endpoints
+            seg = session.query(HVACSegment).filter(
+                (HVACSegment.from_component_id == component_id) |
+                (HVACSegment.to_component_id == component_id)
+            ).first()
+            if seg:
+                session.close()
+                return seg.path_id
+
+            # Silencers live in element_sequence JSON — scan all project paths
+            paths = session.query(HVACPath).filter(
+                HVACPath.project_id == self.project_id
+            ).all()
+            for path in paths:
+                seq = path.get_element_sequence() or []
+                for item in seq:
+                    if item.get('id') == component_id:
+                        session.close()
+                        return path.id
+            session.close()
+        except Exception:
+            pass
+        return None
+
+    def _build_nc_compliance_data_for_path(self, path_id: int) -> Optional[dict]:
+        """Run path noise calculation and return nc_compliance_data dict, or None."""
+        try:
+            from calculations.hvac_path_calculator import HVACPathCalculator
+            from calculations.nc_rating_analyzer import NCRatingAnalyzer
+            from sqlalchemy.orm import selectinload
+
+            session = get_session()
+            path = (
+                session.query(HVACPath)
+                .options(selectinload(HVACPath.target_space))
+                .filter(HVACPath.id == path_id)
+                .first()
+            )
+            target_nc = None
+            if path and path.target_space:
+                target_nc = getattr(path.target_space, 'target_nc', None)
+            session.close()
+
+            if not target_nc or target_nc not in NCRatingAnalyzer.NC_CURVES:
+                return None
+
+            calculator = HVACPathCalculator(self.project_id)
+            result = calculator.calculate_path_noise(path_id)
+            if not result or not getattr(result, 'calculation_valid', False):
+                return None
+
+            path_elements = result.segment_results or []
+            terminal_spectrum = None
+            for elem in reversed(path_elements):
+                if elem.get('element_type') == 'terminal':
+                    terminal_spectrum = elem.get('noise_after_spectrum')
+                    break
+            if terminal_spectrum is None and path_elements:
+                terminal_spectrum = path_elements[-1].get('noise_after_spectrum')
+            if not terminal_spectrum or len(terminal_spectrum) < 8:
+                return None
+
+            nc_limits = NCRatingAnalyzer.NC_CURVES[target_nc]
+            required_il = [max(0.0, recv - limit)
+                           for recv, limit in zip(terminal_spectrum, nc_limits)]
+            return {
+                'target_nc': target_nc,
+                'receiver_spectrum': list(terminal_spectrum),
+                'nc_limits': list(nc_limits),
+                'required_il': required_il,
+            }
+        except Exception:
+            return None
+
     def open_silencer_selection(self):
         """Open the silencer product selection dialog"""
         try:
@@ -537,10 +629,18 @@ class HVACComponentDialog(QDialog):
             if cfm_value > 0:
                 requirements['flow_rate'] = cfm_value
 
+            # Try to find NC compliance data from the component's path
+            nc_data = None
+            if self.component and getattr(self.component, 'id', None):
+                path_id = self._find_path_id_for_component(self.component.id)
+                if path_id:
+                    nc_data = self._build_nc_compliance_data_for_path(path_id)
+
             dialog = SilencerFilterDialog(
                 noise_requirements=requirements,
                 space_constraints={},
-                parent=self
+                nc_compliance_data=nc_data,
+                parent=self,
             )
 
             if dialog.exec():
@@ -711,6 +811,14 @@ class HVACComponentDialog(QDialog):
                     self.branch_takeoff_choice_combo.setCurrentIndex(idx)
         except Exception:
             pass
+
+        try:
+            mo = getattr(self.component, 'mechanical_noise_origin', None) or 'auto'
+            idx_mo = self.mechanical_noise_origin_combo.findData(mo)
+            if idx_mo >= 0:
+                self.mechanical_noise_origin_combo.setCurrentIndex(idx_mo)
+        except Exception:
+            pass
         
         # Load elbow properties if present
         try:
@@ -852,6 +960,12 @@ class HVACComponentDialog(QDialog):
             component.branch_takeoff_choice = self.branch_takeoff_choice_combo.currentText()
         except Exception:
             pass
+        try:
+            component.mechanical_noise_origin = (
+                self.mechanical_noise_origin_combo.currentData() or 'auto'
+            )
+        except Exception:
+            component.mechanical_noise_origin = 'auto'
         
         # Debug CFM save process
         cfm_value = self.cfm_spin.value()
@@ -925,6 +1039,7 @@ class HVACComponentDialog(QDialog):
             noise_level=self.noise_spin.value(),
             cfm=cfm_value,
             branch_takeoff_choice=self.branch_takeoff_choice_combo.currentText(),
+            mechanical_noise_origin=self.mechanical_noise_origin_combo.currentData() or 'auto',
             has_turning_vanes=has_vanes,
             vane_chord_length=vane_chord,
             num_vanes=num_vanes,

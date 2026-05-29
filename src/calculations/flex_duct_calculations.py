@@ -109,29 +109,48 @@ class FlexDuctCalculator:
     def _create_interpolation_grids(self):
         """Create interpolation grids for each frequency band."""
         # Extract unique diameters and lengths
-        diameters = sorted(list(set(key[0] for key in self.insertion_loss_data.keys())))
-        lengths = sorted(list(set(key[1] for key in self.insertion_loss_data.keys())))
+        self._grid_diameters = sorted(list(set(key[0] for key in self.insertion_loss_data.keys())))
+        self._grid_lengths = sorted(list(set(key[1] for key in self.insertion_loss_data.keys())))
+
+        self._min_diameter = float(self._grid_diameters[0])
+        self._max_diameter = float(self._grid_diameters[-1])
+        self._min_length = float(self._grid_lengths[0])
+        self._max_length = float(self._grid_lengths[-1])
         
         # Create interpolation functions for each frequency
         self.interpolators = {}
         for i, freq in enumerate(self.frequencies):
             # Create data grid for this frequency
-            data_grid = np.zeros((len(diameters), len(lengths)))
-            for di, diam in enumerate(diameters):
-                for li, length in enumerate(lengths):
+            data_grid = np.zeros((len(self._grid_diameters), len(self._grid_lengths)))
+            for di, diam in enumerate(self._grid_diameters):
+                for li, length in enumerate(self._grid_lengths):
                     if (diam, length) in self.insertion_loss_data:
                         data_grid[di, li] = self.insertion_loss_data[(diam, length)][i]
                     else:
                         data_grid[di, li] = np.nan
             
-            # Create interpolation function using RegularGridInterpolator
-            # RegularGridInterpolator expects the grid points and the data array
-            # The data array should have shape (len(diameters), len(lengths))
             self.interpolators[freq] = RegularGridInterpolator(
-                (diameters, lengths), data_grid, 
-                method='linear', bounds_error=False, fill_value=np.nan
+                (self._grid_diameters, self._grid_lengths), data_grid, 
+                method='linear', bounds_error=False, fill_value=None
             )
     
+    def _nearest_grid_lookup(self, diameter: float, length: float,
+                             frequency: Optional[int] = None) -> Union[float, Dict[int, float]]:
+        """Fall back to the nearest tabulated grid point when interpolation fails."""
+        nearest_diam = min(self._grid_diameters, key=lambda d: abs(d - diameter))
+        nearest_len = min(self._grid_lengths, key=lambda l: abs(l - length))
+        key = (nearest_diam, nearest_len)
+
+        if key not in self.insertion_loss_data:
+            if frequency is None:
+                return {f: 0.0 for f in self.frequencies}
+            return 0.0
+
+        if frequency is None:
+            return dict(zip(self.frequencies, self.insertion_loss_data[key]))
+        freq_idx = self.frequencies.index(frequency)
+        return float(self.insertion_loss_data[key][freq_idx])
+
     def get_insertion_loss(self, diameter: float, length: float, 
                           frequency: Optional[int] = None) -> Union[float, Dict[int, float]]:
         """
@@ -145,7 +164,6 @@ class FlexDuctCalculator:
         Returns:
             Insertion loss in dB (single value or dict for all frequencies)
         """
-        # Validate inputs
         if diameter <= 0 or length <= 0:
             raise ValueError("Diameter and length must be positive values")
         
@@ -157,28 +175,39 @@ class FlexDuctCalculator:
                 freq_idx = self.frequencies.index(frequency)
                 return self.insertion_loss_data[(diameter, length)][freq_idx]
         
-        # Use interpolation for values not in table
+        # Clamp to grid bounds so the interpolator stays in-domain
+        clamped_diam = max(self._min_diameter, min(self._max_diameter, float(diameter)))
+        clamped_len = max(self._min_length, min(self._max_length, float(length)))
+
         if frequency is None:
-            # Return all frequencies
             result = {}
             for freq in self.frequencies:
                 if freq in self.interpolators:
                     try:
-                        result[freq] = float(self.interpolators[freq]([diameter, length]))
-                    except:
-                        result[freq] = np.nan
+                        val = self.interpolators[freq]([clamped_diam, clamped_len]).item()
+                        if np.isnan(val):
+                            val = float(self._nearest_grid_lookup(clamped_diam, clamped_len, freq))
+                        result[freq] = float(val)
+                    except Exception as e:
+                        warnings.warn(f"FlexDuct interpolation failed at {freq}Hz "
+                                      f"(d={diameter}, l={length}): {e}")
+                        result[freq] = float(self._nearest_grid_lookup(clamped_diam, clamped_len, freq))
                 else:
-                    result[freq] = np.nan
+                    result[freq] = 0.0
             return result
         else:
-            # Return specific frequency
             if frequency in self.interpolators:
                 try:
-                    return float(self.interpolators[frequency]([diameter, length]))
-                except:
-                    return np.nan
+                    val = self.interpolators[frequency]([clamped_diam, clamped_len]).item()
+                    if np.isnan(val):
+                        return float(self._nearest_grid_lookup(clamped_diam, clamped_len, frequency))
+                    return float(val)
+                except Exception as e:
+                    warnings.warn(f"FlexDuct interpolation failed at {frequency}Hz "
+                                  f"(d={diameter}, l={length}): {e}")
+                    return float(self._nearest_grid_lookup(clamped_diam, clamped_len, frequency))
             else:
-                return np.nan
+                return 0.0
     
     def get_recommended_length_range(self) -> Tuple[float, float]:
         """

@@ -77,7 +77,7 @@
 
 ### Common pitfalls to check
 - Source data:
-  - If a `MechanicalUnit` is selected, ensure `outlet_levels_json` (fallbacks: `inlet_levels_json`, `radiated_levels_json`) contains keys "63"–"8000" as strings; otherwise the engine will fall back to spectrum estimation from dB(A).
+  - If a `MechanicalUnit` is selected, octave bands are chosen in [`mechanical_spectrum_select.mechanical_unit_spectrum_for_path`](src/calculations/mechanical_spectrum_select.py): **supply/exhaust** paths prefer **outlet**, then inlet, then radiated; **return** paths prefer **inlet**, then outlet, then radiated. `HVACComponent.mechanical_noise_origin` (`auto` / `inlet` / `outlet` / `radiated`) overrides the auto order by trying that origin first. Ensure the chosen JSON (`*_levels_json`) contains keys "63"–"8000" as strings (or list); otherwise the engine will fall back to spectrum estimation from dB(A).
 - Bands mismatch:
   - Core engine uses 8 bands; room correction uses 7. The receiver dialog truncates the 8k band before correction and pads back for display/utilities.
 - Element typing:

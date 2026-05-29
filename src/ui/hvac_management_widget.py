@@ -595,9 +595,19 @@ class HVACManagementWidget(QWidget):
     def create_new_path(self):
         """Create a new HVAC path"""
         dialog = HVACPathDialog(self, self.project_id)
-        if dialog.exec() == QDialog.Accepted:
-            self.load_data()
-            self.path_created.emit(dialog.path)
+
+        def on_create_finished(result, _dialog=dialog):
+            if result == QDialog.Accepted:
+                self.load_data()
+                self.path_created.emit(_dialog.path)
+            if hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs.discard(_dialog)
+
+        dialog.finished.connect(on_create_finished)
+        if not hasattr(self, '_open_hvac_dialogs'):
+            self._open_hvac_dialogs = set()
+        self._open_hvac_dialogs.add(dialog)
+        dialog.show()
     
     def create_new_component(self):
         """Create a new HVAC component"""
@@ -615,9 +625,19 @@ class HVACManagementWidget(QWidget):
         
         path = item.data(Qt.UserRole)
         dialog = HVACPathDialog(self, self.project_id, path)
-        if dialog.exec() == QDialog.Accepted:
-            self.load_data()
-            self.path_updated.emit(path)
+
+        def on_edit_path_finished(result, _dialog=dialog):
+            if result == QDialog.Accepted:
+                self.load_data()
+                self.path_updated.emit(path)
+            if hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs.discard(_dialog)
+
+        dialog.finished.connect(on_edit_path_finished)
+        if not hasattr(self, '_open_hvac_dialogs'):
+            self._open_hvac_dialogs = set()
+        self._open_hvac_dialogs.add(dialog)
+        dialog.show()
     
     def edit_component(self, item=None):
         """Edit the selected component"""
