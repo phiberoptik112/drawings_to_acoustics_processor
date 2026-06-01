@@ -78,9 +78,9 @@ class LocationBrowserWidget(QWidget):
 
     def load_locations(self):
         """Load all locations for the project"""
+        session = get_session()
         try:
             # Load drawing sets for filter
-            session = get_session()
             drawing_sets = (
                 session.query(DrawingSet)
                 .filter(DrawingSet.project_id == self.project_id)
@@ -92,14 +92,14 @@ class LocationBrowserWidget(QWidget):
             self.filter_combo.addItem("All Drawing Sets", None)
             for ds in drawing_sets:
                 self.filter_combo.addItem(f"{ds.name} ({ds.phase_type})", ds.id)
-
-            session.close()
-
-            # Load locations
-            self.refresh_locations()
-
         except Exception as e:
             QMessageBox.warning(self, "Load Error", f"Failed to load locations:\n{e}")
+            return
+        finally:
+            session.close()
+
+        # Load locations
+        self.refresh_locations()
 
     def refresh_locations(self):
         """Refresh the locations display"""

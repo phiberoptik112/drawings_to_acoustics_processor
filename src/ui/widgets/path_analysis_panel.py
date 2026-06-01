@@ -5,26 +5,29 @@ This panel displays the path flow diagram with interactive cards that link
 to the drawing overlay for visual correlation between physical path and calculations.
 """
 
+import json
 from typing import Optional, Dict, List, Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QScrollArea, QFrame, QSizePolicy, QSplitter,
-    QToolButton, QMessageBox, QTabWidget
+    QToolButton, QMessageBox, QTabWidget, QGroupBox,
+    QTableWidget, QTableWidgetItem, QHeaderView
 )
 from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QFont
 
 from models import get_session
-from models.hvac import HVACPath, HVACSegment, HVACComponent
+from models.hvac import HVACPath, HVACSegment, HVACComponent, SilencerProduct
 from sqlalchemy.orm import selectinload
 
 from .path_element_card import PathElementCard, PathArrow, PathResultsSummary
 from .path_sequence_widget import PathSequenceWidget
+from .nc_results_table import NCResultsTableWidget
 
 
 class PathAnalysisPanel(QWidget):
     """Panel showing HVAC path calculation alongside drawing"""
-    
+
     # Signals for drawing coordination
     element_hover_requested = Signal(object, str)  # element_id, element_type - highlight on drawing
     element_unhover_requested = Signal()  # clear highlight on drawing
@@ -32,6 +35,9 @@ class PathAnalysisPanel(QWidget):
     pan_to_element_requested = Signal(object, str)  # element_id, element_type - pan drawing to element
     path_changed = Signal(int)  # Emitted when path selection changes
     edit_element_requested = Signal(object, str)  # element_id, element_type - open edit dialog
+
+    # Signals for silencer placement mode
+    silencer_placement_requested = Signal(int, int, dict)  # path_id, component_id, silencer_data
     
     def __init__(self, project_id: int = None, parent=None):
         super().__init__(parent)
@@ -218,19 +224,90 @@ class PathAnalysisPanel(QWidget):
         reorder_widget = QWidget()
         reorder_tab_layout = QVBoxLayout()
         reorder_tab_layout.setContentsMargins(4, 4, 4, 4)
-        
+
         # Sequence widget
         self.path_sequence_widget = PathSequenceWidget()
         self.path_sequence_widget.sequence_changed.connect(self._on_sequence_changed)
         self.path_sequence_widget.element_selected.connect(self._on_sequence_element_selected)
         self.path_sequence_widget.element_double_clicked.connect(self._on_sequence_element_double_clicked)
+        self.path_sequence_widget.placement_requested.connect(self._on_silencer_placement_requested)
+        self.path_sequence_widget.silencer_removed.connect(self._on_silencer_removed)
         reorder_tab_layout.addWidget(self.path_sequence_widget, 1)
-        
+
+        # Silencer insertion section
+        silencer_group = QGroupBox("Insert Silencer")
+        silencer_layout = QVBoxLayout()
+
+        insert_btn_layout = QHBoxLayout()
+        self.insert_silencer_btn = QPushButton("Insert Silencer After Selected")
+        self.insert_silencer_btn.setToolTip(
+            "Insert the selected silencer product into the path after the currently selected element"
+        )
+        self.insert_silencer_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #7b1fa2;
+                color: white;
+                padding: 6px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background-color: #6a1b9a; }
+            QPushButton:disabled { background-color: #ccc; color: #888; }
+        """)
+        self.insert_silencer_btn.clicked.connect(self._on_insert_silencer)
+        insert_btn_layout.addWidget(self.insert_silencer_btn)
+
+        self.advanced_filter_btn = QPushButton("Advanced Filter...")
+        self.advanced_filter_btn.setToolTip(
+            "Open the silencer filter dialog with NC compliance requirements pre-populated"
+        )
+        self.advanced_filter_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a148c;
+                color: white;
+                padding: 6px 12px;
+                border-radius: 4px;
+            }
+            QPushButton:hover { background-color: #38006b; }
+            QPushButton:disabled { background-color: #ccc; color: #888; }
+        """)
+        self.advanced_filter_btn.clicked.connect(self._open_silencer_filter_dialog)
+        insert_btn_layout.addWidget(self.advanced_filter_btn)
+
+        insert_btn_layout.addStretch()
+        silencer_layout.addLayout(insert_btn_layout)
+
+        self.silencer_table = QTableWidget()
+        self.silencer_table.setColumnCount(8)
+        self.silencer_table.setHorizontalHeaderLabels([
+            "Manufacturer", "Model", "Type", "Size (L\u00d7W\u00d7H)",
+            "Flow Range (CFM)", "IL@500Hz", "IL@1kHz", "Cost"
+        ])
+        self.silencer_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.silencer_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.silencer_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.silencer_table.horizontalHeader().setStretchLastSection(True)
+        self.silencer_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.silencer_table.setMinimumHeight(100)
+        self.silencer_table.setMaximumHeight(160)
+        self.silencer_table.setStyleSheet("""
+            QTableWidget { border: 1px solid #ddd; background-color: #fff; color: #333; }
+            QTableWidget::item:selected { background-color: #ce93d8; color: #333; }
+            QHeaderView::section { background-color: #e1bee7; color: #333; padding: 4px; border: 1px solid #ccc; }
+        """)
+        silencer_layout.addWidget(self.silencer_table)
+
+        silencer_group.setLayout(silencer_layout)
+        reorder_tab_layout.addWidget(silencer_group)
+
+        self._silencer_products = []
+        self._populate_silencer_table()
+
         # Save order button
         save_layout = QHBoxLayout()
         save_layout.addStretch()
-        
-        self.save_order_btn = QPushButton("💾 Save Order")
+
+        self.save_order_btn = QPushButton("Save Order")
         self.save_order_btn.setToolTip("Save the new element order to the database")
         self.save_order_btn.setEnabled(False)
         self.save_order_btn.clicked.connect(self._save_element_order)
@@ -251,9 +328,23 @@ class PathAnalysisPanel(QWidget):
         """)
         save_layout.addWidget(self.save_order_btn)
         reorder_tab_layout.addLayout(save_layout)
-        
+
         reorder_widget.setLayout(reorder_tab_layout)
-        self.tabs.addTab(reorder_widget, "Reorder")
+        self.tabs.addTab(reorder_widget, "Edit Path")
+
+        # NC Results tab - shows cumulative octave band values
+        nc_tab_widget = QWidget()
+        nc_tab_layout = QVBoxLayout()
+        nc_tab_layout.setContentsMargins(4, 4, 4, 4)
+
+        # NC Results Table
+        self.nc_results_table = NCResultsTableWidget(target_nc=35)
+        self.nc_results_table.element_selected.connect(self._on_nc_element_selected)
+        self.nc_results_table.element_double_clicked.connect(self._on_nc_element_double_clicked)
+        nc_tab_layout.addWidget(self.nc_results_table, 1)
+
+        nc_tab_widget.setLayout(nc_tab_layout)
+        self.tabs.addTab(nc_tab_widget, "NC Values")
         
         content_layout.addWidget(self.tabs, 1)
         
@@ -448,6 +539,8 @@ class PathAnalysisPanel(QWidget):
                     'path_elements': result.segment_results if hasattr(result, 'segment_results') else [],
                     'warnings': result.warnings if hasattr(result, 'warnings') else [],
                 }
+
+                self._apply_receiver_room_correction(path)
             else:
                 self.calculation_results = {
                     'calculation_valid': False,
@@ -465,6 +558,86 @@ class PathAnalysisPanel(QWidget):
                 'error': str(e)
             }
             self._rebuild_diagram()
+
+    def _apply_receiver_room_correction(self, path: HVACPath):
+        """Apply Shultz-method receiver room correction (Lw -> Lp) using target Space properties."""
+        self.calculation_results['receiver_correction_applied'] = False
+
+        space = path.target_space
+        if not space:
+            return
+
+        # Extract the terminal Lw spectrum from the last path element
+        lw_spectrum_8 = self._get_terminal_lw_spectrum()
+        if not lw_spectrum_8 or len(lw_spectrum_8) < 7:
+            return
+
+        lw_spectrum_7 = [float(x) for x in lw_spectrum_8[:7]]
+
+        room_volume = float(space.volume or 0.0)
+        if room_volume <= 0 and space.floor_area and space.ceiling_height:
+            room_volume = float(space.floor_area * space.ceiling_height)
+        if room_volume <= 0:
+            return
+
+        distance = float(path.receiver_distance_ft or 10.0)
+        method = (path.receiver_method or 'single').lower()
+
+        try:
+            from calculations.receiver_room_sound_correction_calculations import ReceiverRoomSoundCorrection
+            from calculations.hvac_noise_engine import HVACNoiseEngine
+
+            room_calc = ReceiverRoomSoundCorrection()
+            engine = HVACNoiseEngine()
+
+            if method == 'distributed':
+                ceiling_height = float(space.ceiling_height or 10.0)
+                floor_area = float(space.floor_area or 150.0)
+                num_diffusers = max(1, int(getattr(space, 'num_diffusers', 1) or 1))
+                floor_area_per_diffuser = floor_area / num_diffusers
+                res = room_calc.calculate_distributed_array_spectrum(
+                    lw_single_spectrum=lw_spectrum_7,
+                    ceiling_height=ceiling_height,
+                    floor_area_per_diffuser=floor_area_per_diffuser,
+                )
+            else:
+                res = room_calc.calculate_octave_band_spectrum(
+                    lw_spectrum=lw_spectrum_7,
+                    distance=distance,
+                    room_volume=max(room_volume, 1.0),
+                    method='equation_27',
+                )
+
+            lp_bands = res.get('sound_pressure_levels', [])
+            if not lp_bands:
+                return
+
+            lp_spectrum_8 = list(lp_bands) + [0.0] * max(0, 8 - len(lp_bands))
+            receiver_lp_dba = engine._calculate_dba_from_spectrum(lp_spectrum_8)
+            receiver_nc = engine._calculate_nc_rating(lp_spectrum_8)
+
+            self.calculation_results['receiver_correction_applied'] = True
+            self.calculation_results['terminal_lw_dba'] = self.calculation_results['terminal_noise']
+            self.calculation_results['receiver_lp_dba'] = receiver_lp_dba
+            self.calculation_results['receiver_nc_rating'] = receiver_nc
+            self.calculation_results['receiver_lp_spectrum'] = lp_spectrum_8
+
+        except Exception as e:
+            print(f"DEBUG: Receiver room correction failed: {e}")
+
+    def _get_terminal_lw_spectrum(self) -> Optional[List[float]]:
+        """Extract the terminal Lw octave band spectrum from the path element results."""
+        path_elements = self.calculation_results.get('path_elements', [])
+        if not path_elements:
+            return None
+
+        # Walk backwards to find the terminal or last element with a spectrum
+        for elem in reversed(path_elements):
+            spectrum = elem.get('noise_after_spectrum')
+            if spectrum and len(spectrum) >= 7:
+                return list(spectrum)
+
+        return None
     
     def _get_source_name(self, path: HVACPath) -> str:
         """Get the source component name for a path"""
@@ -543,10 +716,13 @@ class PathAnalysisPanel(QWidget):
     def _rebuild_diagram(self):
         """Build the visual path diagram with calculation results"""
         self._clear_diagram()
-        
+
         # Update sequence widget
         self._update_sequence_widget()
-        
+
+        # Update NC results table
+        self._update_nc_results_table()
+
         if not self.calculation_results:
             self._show_placeholder("No calculation results")
             return
@@ -576,6 +752,29 @@ class PathAnalysisPanel(QWidget):
         # Use stored element sequence if available, otherwise fall back to segment_order
         segments = self._get_ordered_segments()
         segment_results = self.calculation_results.get('path_elements', [])
+        
+        # Build a map of silencers that follow each element in the sequence
+        # so we can render them between the segment/component cards
+        silencers_after = {}  # (type, id) -> [silencer_component_ids]
+        element_sequence = None
+        if hasattr(self.current_path, 'get_element_sequence'):
+            element_sequence = self.current_path.get_element_sequence()
+        if element_sequence:
+            for idx, item in enumerate(element_sequence):
+                if item.get('type') in ('segment', 'component'):
+                    key = (item['type'], item['id'])
+                    following_silencers = []
+                    for j in range(idx + 1, len(element_sequence)):
+                        if element_sequence[j].get('type') == 'silencer':
+                            following_silencers.append(element_sequence[j].get('id'))
+                        else:
+                            break
+                    if following_silencers:
+                        silencers_after[key] = following_silencers
+        
+        # Render silencers that follow the source component
+        source_comp_id = self._get_source_component_id()
+        self._render_silencer_cards(silencers_after.get(('component', source_comp_id), []))
         
         for i, segment in enumerate(segments):
             # Arrow
@@ -639,6 +838,9 @@ class PathAnalysisPanel(QWidget):
                 self._element_cards.append(fitting_card)
                 self.diagram_layout.addWidget(fitting_card)
             
+            # Render silencers that follow this segment in the element sequence
+            self._render_silencer_cards(silencers_after.get(('segment', seg_id), []))
+            
             # Add end component if not last segment
             to_comp = getattr(segment, 'to_component', None)
             if to_comp and i < len(segments) - 1:
@@ -655,6 +857,9 @@ class PathAnalysisPanel(QWidget):
                 self._connect_card_signals(comp_card)
                 self._element_cards.append(comp_card)
                 self.diagram_layout.addWidget(comp_card)
+                
+                # Render silencers that follow this component in the element sequence
+                self._render_silencer_cards(silencers_after.get(('component', to_comp.id), []))
         
         # Arrow to receiver
         self.diagram_layout.addWidget(PathArrow())
@@ -663,14 +868,23 @@ class PathAnalysisPanel(QWidget):
         target_nc = None
         if self.current_path.target_space:
             target_nc = getattr(self.current_path.target_space, 'target_nc', None)
-        
+
+        correction_applied = self.calculation_results.get('receiver_correction_applied', False)
+        receiver_extra = {'target_nc': target_nc}
+        if correction_applied:
+            receiver_extra['terminal_lw'] = self.calculation_results.get('terminal_lw_dba', 0)
+            receiver_extra['receiver_lp'] = self.calculation_results.get('receiver_lp_dba', 0)
+            display_nc = int(self.calculation_results.get('receiver_nc_rating', 0))
+        else:
+            display_nc = int(self.calculation_results.get('nc_rating', 0))
+
         receiver_card = PathElementCard(
             element_type="receiver",
             name=self.calculation_results.get('receiver_name', 'Receiver'),
             noise_level=self.calculation_results.get('terminal_noise', 0),
-            nc_rating=int(self.calculation_results.get('nc_rating', 0)),
+            nc_rating=display_nc,
             element_id=self.current_path.target_space_id,
-            extra_info={'target_nc': target_nc}
+            extra_info=receiver_extra
         )
         self._connect_card_signals(receiver_card)
         self._element_cards.append(receiver_card)
@@ -680,13 +894,48 @@ class PathAnalysisPanel(QWidget):
         self.diagram_layout.addStretch()
         
         # Update summary
-        self.results_summary.update_results({
-            'source_noise': self.calculation_results.get('source_noise', 0),
+        summary_data = {
             'terminal_noise': self.calculation_results.get('terminal_noise', 0),
             'total_attenuation': self.calculation_results.get('total_attenuation', 0),
             'nc_rating': self.calculation_results.get('nc_rating', 0),
             'target_nc': target_nc,
-        })
+            'receiver_correction_applied': correction_applied,
+        }
+        if correction_applied:
+            summary_data['terminal_lw_dba'] = self.calculation_results.get('terminal_lw_dba', 0)
+            summary_data['receiver_lp_dba'] = self.calculation_results.get('receiver_lp_dba', 0)
+            summary_data['receiver_nc_rating'] = self.calculation_results.get('receiver_nc_rating', 0)
+        self.results_summary.update_results(summary_data)
+    
+    def _render_silencer_cards(self, silencer_ids: List[int]):
+        """Render silencer PathElementCards for the given component IDs into the diagram."""
+        if not silencer_ids:
+            return
+        session = get_session()
+        for sil_id in silencer_ids:
+            try:
+                sil = session.query(HVACComponent).get(sil_id)
+            except Exception:
+                continue
+            if not sil:
+                continue
+            self.diagram_layout.addWidget(PathArrow())
+            sil_name = getattr(sil, 'name', None) or f"Silencer {sil.id}"
+            extra_info = {
+                'silencer_type': getattr(sil, 'silencer_type', '') or '',
+            }
+            product = getattr(sil, 'selected_product', None)
+            if product:
+                extra_info['product'] = getattr(product, 'model_name', '')
+            sil_card = PathElementCard(
+                element_type="silencer",
+                name=sil_name,
+                element_id=sil.id,
+                extra_info=extra_info
+            )
+            self._connect_card_signals(sil_card)
+            self._element_cards.append(sil_card)
+            self.diagram_layout.addWidget(sil_card)
     
     def _get_ordered_segments(self) -> List[HVACSegment]:
         """Get segments in their proper order using stored sequence or segment_order"""
@@ -824,14 +1073,20 @@ class PathAnalysisPanel(QWidget):
             dialog = HVACDebugDialog(self, self.project_id, self.current_path_id)
             dialog.exec()
         except ImportError:
+            correction = self.calculation_results.get('receiver_correction_applied', False) if self.calculation_results else False
+            lw = self.calculation_results.get('terminal_noise', 0) if self.calculation_results else 0
+            lp_line = ""
+            if correction:
+                lp_line = f"Lp at Receiver: {self.calculation_results.get('receiver_lp_dba', 0):.1f} dB(A)\n"
+            nc = self.calculation_results.get('receiver_nc_rating' if correction else 'nc_rating', 0) if self.calculation_results else 0
             QMessageBox.information(
                 self, 
                 "Detailed Report", 
                 "Detailed debug dialog not available.\n\n"
                 f"Path: {self.current_path.name if self.current_path else 'Unknown'}\n"
-                f"Source: {self.calculation_results.get('source_noise', 0):.1f} dB(A)\n"
-                f"Terminal: {self.calculation_results.get('terminal_noise', 0):.1f} dB(A)\n"
-                f"NC Rating: NC-{self.calculation_results.get('nc_rating', 0):.0f}"
+                f"Lw at Terminal: {lw:.1f} dB(A)\n"
+                f"{lp_line}"
+                f"NC Rating: NC-{nc:.0f}"
             )
     
     def _update_sequence_widget(self):
@@ -853,6 +1108,37 @@ class PathAnalysisPanel(QWidget):
                         'noise_level': getattr(comp, 'noise_level', None),
                     }
                     components_data.append(component_map[comp.id])
+        
+        # Include silencer components from element_sequence (silencers are not
+        # segment endpoints, so they must be loaded separately from the DB)
+        pre_sequence = None
+        if hasattr(self.current_path, 'get_element_sequence'):
+            pre_sequence = self.current_path.get_element_sequence()
+        elif hasattr(self.current_path, 'element_sequence') and self.current_path.element_sequence:
+            import json as _json
+            try:
+                pre_sequence = _json.loads(self.current_path.element_sequence)
+            except (ValueError, TypeError):
+                pass
+        
+        if pre_sequence:
+            session = get_session()
+            for item in pre_sequence:
+                if item.get('type') == 'silencer':
+                    sil_id = item.get('id')
+                    if sil_id and sil_id not in component_map:
+                        sil = session.query(HVACComponent).get(sil_id)
+                        if sil:
+                            component_map[sil.id] = {
+                                'id': sil.id,
+                                'name': getattr(sil, 'name', None) or f"Silencer {sil.id}",
+                                'component_type': 'silencer',
+                                'is_silencer': True,
+                                'noise_level': getattr(sil, 'noise_level', None),
+                                'selected_product_id': getattr(sil, 'selected_product_id', None),
+                                'silencer_model': getattr(sil, 'name', ''),
+                            }
+                            components_data.append(component_map[sil.id])
         
         # Build segment data
         segments_data = []
@@ -896,6 +1182,271 @@ class PathAnalysisPanel(QWidget):
     def _on_sequence_element_double_clicked(self, element_type: str, element_id: int):
         """Handle element double-click to open edit dialog"""
         self.edit_element_requested.emit(element_id, element_type)
+    
+    def _populate_silencer_table(self):
+        """Load silencer products from the database into the table"""
+        try:
+            session = get_session()
+            products = session.query(SilencerProduct).all()
+
+            self._silencer_products = []
+            self.silencer_table.setRowCount(len(products))
+
+            for row, product in enumerate(products):
+                self._silencer_products.append(product)
+
+                self.silencer_table.setItem(row, 0, QTableWidgetItem(product.manufacturer or ""))
+                self.silencer_table.setItem(row, 1, QTableWidgetItem(product.model_number or ""))
+                self.silencer_table.setItem(row, 2, QTableWidgetItem((product.silencer_type or "").title()))
+
+                size_str = f'{int(product.length or 0)}\u00d7{int(product.width or 0)}\u00d7{int(product.height or 0)}"'
+                self.silencer_table.setItem(row, 3, QTableWidgetItem(size_str))
+
+                flow_str = f"{int(product.flow_rate_min or 0)}-{int(product.flow_rate_max or 0)}"
+                self.silencer_table.setItem(row, 4, QTableWidgetItem(flow_str))
+
+                il_500 = QTableWidgetItem(f"{product.insertion_loss_500 or 0:.0f} dB")
+                il_500.setTextAlignment(Qt.AlignCenter)
+                self.silencer_table.setItem(row, 5, il_500)
+
+                il_1k = QTableWidgetItem(f"{product.insertion_loss_1000 or 0:.0f} dB")
+                il_1k.setTextAlignment(Qt.AlignCenter)
+                self.silencer_table.setItem(row, 6, il_1k)
+
+                cost_str = f"${product.cost_estimate or 0:,.0f}"
+                self.silencer_table.setItem(row, 7, QTableWidgetItem(cost_str))
+
+            session.close()
+        except Exception as e:
+            print(f"DEBUG: Error populating silencer table: {e}")
+            self._silencer_products = []
+            self.silencer_table.setRowCount(0)
+    
+    def _build_nc_compliance_data(self) -> Optional[Dict]:
+        """Build NC compliance data dict from current calculation results.
+
+        Returns a dict suitable for SilencerFilterDialog's nc_compliance_data
+        parameter, or None if the required data is not available.
+        """
+        if not self.calculation_results:
+            return None
+
+        path_elements = self.calculation_results.get('path_elements', [])
+        target_nc = self.calculation_results.get('target_nc')
+        if not path_elements or not target_nc:
+            return None
+
+        # Find terminal element (last element whose type is 'terminal')
+        terminal_spectrum = None
+        for elem in reversed(path_elements):
+            if elem.get('element_type') == 'terminal':
+                terminal_spectrum = elem.get('noise_after_spectrum')
+                break
+        # Fall back to the last element's spectrum if no explicit terminal
+        if terminal_spectrum is None and path_elements:
+            terminal_spectrum = path_elements[-1].get('noise_after_spectrum')
+        if not terminal_spectrum or len(terminal_spectrum) < 8:
+            return None
+
+        try:
+            from calculations.nc_rating_analyzer import NCRatingAnalyzer
+            nc_curves = NCRatingAnalyzer.NC_CURVES
+            if target_nc not in nc_curves:
+                return None
+            nc_limits = nc_curves[target_nc]
+            required_il = [max(0.0, recv - limit)
+                           for recv, limit in zip(terminal_spectrum, nc_limits)]
+            return {
+                'target_nc': target_nc,
+                'receiver_spectrum': list(terminal_spectrum),
+                'nc_limits': list(nc_limits),
+                'required_il': required_il,
+            }
+        except Exception:
+            return None
+
+    def _open_silencer_filter_dialog(self):
+        """Open SilencerFilterDialog pre-loaded with NC compliance requirements."""
+        if not self.current_path_id:
+            QMessageBox.warning(self, "No Path", "Please select a path first.")
+            return
+
+        current_row = self.path_sequence_widget.list_widget.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(
+                self, "No Position Selected",
+                "Please select an element in the path sequence to insert the silencer after."
+            )
+            return
+
+        from ui.dialogs.silencer_filter_dialog import SilencerFilterDialog
+
+        nc_data = self._build_nc_compliance_data()
+
+        dialog = SilencerFilterDialog(
+            noise_requirements={},
+            space_constraints={},
+            nc_compliance_data=nc_data,
+            parent=self,
+        )
+        dialog.product_selected.connect(self._insert_product_from_filter)
+        dialog.exec()
+
+    def _insert_product_from_filter(self, product: 'SilencerProduct'):
+        """Insert a silencer product chosen via SilencerFilterDialog."""
+        current_row = self.path_sequence_widget.list_widget.currentRow()
+        if current_row < 0:
+            return
+        self._insert_silencer_product(product, current_row)
+
+    def _insert_silencer_product(self, product: 'SilencerProduct', after_row: int):
+        """Core silencer insertion logic shared by table and filter dialog flows."""
+        try:
+            session = get_session()
+
+            drawing_id = None
+            if self.current_path and self.current_path.segments:
+                for seg in self.current_path.segments:
+                    comp = seg.from_component or seg.to_component
+                    if comp:
+                        drawing_id = getattr(comp, 'drawing_id', None)
+                        if drawing_id:
+                            break
+            if not drawing_id:
+                from models.project import Drawing
+                first_drawing = session.query(Drawing).filter(
+                    Drawing.project_id == self.project_id
+                ).first()
+                if first_drawing:
+                    drawing_id = first_drawing.id
+
+            if not drawing_id:
+                QMessageBox.warning(
+                    self, "No Drawing",
+                    "Cannot insert silencer: no drawing is associated with this project."
+                )
+                session.close()
+                return
+
+            silencer_component = HVACComponent(
+                project_id=self.project_id,
+                drawing_id=drawing_id,
+                name=f"Silencer: {product.manufacturer} {product.model_number}",
+                component_type='silencer',
+                x_position=0.0,
+                y_position=0.0,
+                is_silencer=True,
+                silencer_type=product.silencer_type,
+                selected_product_id=product.id,
+                noise_level=-15.0,
+                cfm=float((product.flow_rate_min or 0) + (product.flow_rate_max or 0)) / 2.0,
+            )
+            session.add(silencer_component)
+            session.commit()
+
+            component_id = silencer_component.id
+            silencer_data = {
+                'id': component_id,
+                'name': silencer_component.name,
+                'component_type': 'silencer',
+                'is_silencer': True,
+                'selected_product_id': product.id,
+                'silencer_model': product.model_number,
+                'noise_level': -15.0,
+            }
+            self.path_sequence_widget.insert_silencer_at(after_row, component_id, silencer_data)
+            session.close()
+            self._auto_save_sequence()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to insert silencer:\n{str(e)}")
+
+    def _on_insert_silencer(self):
+        """Handle Insert Silencer button click in the Edit Path tab (table selection flow)."""
+        if not self.current_path_id:
+            QMessageBox.warning(self, "No Path", "Please select a path first.")
+            return
+
+        current_row = self.path_sequence_widget.list_widget.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(
+                self, "No Position Selected",
+                "Please select an element in the path sequence to insert the silencer after."
+            )
+            return
+
+        selected_rows = self.silencer_table.selectionModel().selectedRows()
+        if not selected_rows:
+            QMessageBox.warning(
+                self, "No Silencer Selected",
+                "Please select a silencer product from the table below."
+            )
+            return
+
+        table_row = selected_rows[0].row()
+        if table_row < 0 or table_row >= len(self._silencer_products):
+            return
+
+        self._insert_silencer_product(self._silencer_products[table_row], current_row)
+    
+    def _on_silencer_removed(self, component_id: int):
+        """Handle silencer removal from the path sequence widget"""
+        try:
+            session = get_session()
+            comp = session.query(HVACComponent).filter(HVACComponent.id == component_id).first()
+            if comp and comp.is_silencer:
+                session.delete(comp)
+                session.commit()
+            session.close()
+        except Exception:
+            pass
+
+        # Auto-save the updated sequence so the diagram refreshes without the silencer
+        self._auto_save_sequence()
+    
+    def _auto_save_sequence(self):
+        """Save the current sequence from the widget and reload the path to refresh all views."""
+        if not self.current_path_id:
+            return
+
+        sequence = self.path_sequence_widget.get_sequence()
+        if not sequence:
+            return
+
+        try:
+            session = get_session()
+            path = session.query(HVACPath).filter(HVACPath.id == self.current_path_id).first()
+            if not path:
+                session.close()
+                return
+
+            segment_order_map = {}
+            segment_index = 1
+            for item in sequence:
+                if item.get('type') == 'segment':
+                    segment_order_map[item['id']] = segment_index
+                    segment_index += 1
+
+            for seg in path.segments:
+                if seg.id in segment_order_map:
+                    seg.segment_order = segment_order_map[seg.id]
+
+            if hasattr(path, 'set_element_sequence'):
+                path.set_element_sequence(sequence)
+            else:
+                import json
+                path.element_sequence = json.dumps(sequence)
+
+            session.commit()
+            session.close()
+
+            self._sequence_modified = False
+            self.save_order_btn.setEnabled(False)
+
+            self._load_path(self.current_path_id)
+
+        except Exception as e:
+            print(f"DEBUG: Error auto-saving sequence: {e}")
     
     def _save_element_order(self):
         """Save the modified element order to the database"""
@@ -957,10 +1508,508 @@ class PathAnalysisPanel(QWidget):
         if not self.current_path_id:
             QMessageBox.information(self, "No Path", "Please select a path first.")
             return
-        
+
         # For now, just show a message - can be expanded later
         QMessageBox.information(
             self,
             "Export",
             "Export functionality will be available in a future update."
         )
+
+    def _on_nc_element_selected(self, element_type: str, element_id: int):
+        """Handle element selection from NC results table"""
+        self.element_select_requested.emit(element_id, element_type)
+        self.pan_to_element_requested.emit(element_id, element_type)
+        if hasattr(self, 'path_sequence_widget'):
+            self.path_sequence_widget.highlight_element(element_type, element_id)
+
+    def _on_nc_element_double_clicked(self, element_type: str, element_id: int):
+        """Handle element double-click from NC results table to open edit dialog"""
+        self.edit_element_requested.emit(element_id, element_type)
+
+    def _on_silencer_placement_requested(self, silencer_component_id: int):
+        """Handle silencer placement request from sequence widget"""
+        if not self.current_path_id:
+            QMessageBox.warning(self, "No Path", "Please select a path first.")
+            return
+
+        # Find the silencer component data
+        silencer_data = self._build_silencer_data(silencer_component_id)
+        if not silencer_data:
+            QMessageBox.warning(self, "Error", "Could not find silencer component data.")
+            return
+
+        # Emit signal for DrawingInterface to handle
+        self.silencer_placement_requested.emit(
+            self.current_path_id,
+            silencer_component_id,
+            silencer_data
+        )
+
+    def _build_silencer_data(self, component_id: int) -> Optional[dict]:
+        """Build silencer data dict for placement mode"""
+        try:
+            session = get_session()
+            comp = session.query(HVACComponent).filter(HVACComponent.id == component_id).first()
+            if not comp or not comp.is_silencer:
+                session.close()
+                return None
+
+            silencer_data = {
+                'component_id': component_id,
+                'product_id': comp.selected_product_id,
+                'product_length': 36.0,  # Default 3 feet
+                'is_elbow': False,
+                'position_on_path': comp.position_on_path or 0.5,
+                'elbow_component_id': comp.elbow_component_id,
+                'insertion_loss_500': None,
+                'model_number': None,
+            }
+
+            # Get product details if available
+            if comp.selected_product_id:
+                product = session.query(SilencerProduct).filter(
+                    SilencerProduct.id == comp.selected_product_id
+                ).first()
+                if product:
+                    silencer_data['product_length'] = float(product.length) if product.length else 36.0
+                    silencer_data['insertion_loss_500'] = product.il_500
+                    silencer_data['model_number'] = product.model_number
+                    if product.shape and 'elbow' in product.shape.lower():
+                        silencer_data['is_elbow'] = True
+
+            session.close()
+            return silencer_data
+
+        except Exception as e:
+            print(f"DEBUG: Error building silencer data: {e}")
+            return None
+
+    def _update_nc_results_table(self):
+        """Update the NC results table with cumulative values from current path"""
+        if not hasattr(self, 'nc_results_table') or not self.current_path:
+            return
+
+        # Get target NC from space
+        target_nc = 35  # Default
+        if self.current_path.target_space:
+            target_nc = int(self.current_path.target_space.target_nc or 35)
+        self.nc_results_table.set_target_nc(target_nc)
+
+        # Calculate cumulative element results
+        element_results = self._calculate_cumulative_nc_values()
+        self.nc_results_table.update_results(element_results, is_live_update=False)
+
+    def _calculate_cumulative_nc_values(self) -> List[Dict]:
+        """Calculate cumulative octave band values for each path element.
+
+        Uses engine ``path_elements`` when available for accurate per-band
+        spectra, otherwise falls back to a simplified model.
+        """
+        if not self.current_path or not self.calculation_results:
+            return []
+
+        path_elements = self.calculation_results.get('path_elements', [])
+        if path_elements:
+            return self._build_nc_results_from_engine(path_elements)
+        return self._build_nc_results_fallback()
+
+    def _get_path_display_sequence(self) -> Optional[List[Dict]]:
+        """User-editable path order: saved element_sequence, else connectivity-based (Edit Path tab)."""
+        if not self.current_path:
+            return None
+        element_sequence: Optional[List[Dict]] = None
+        if hasattr(self.current_path, 'get_element_sequence'):
+            try:
+                element_sequence = self.current_path.get_element_sequence()
+            except Exception:
+                pass
+        if not element_sequence and getattr(self.current_path, 'element_sequence', None):
+            try:
+                element_sequence = json.loads(self.current_path.element_sequence)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass
+        if element_sequence:
+            return list(element_sequence)
+        segments_data = []
+        for seg in self._get_ordered_segments():
+            segments_data.append({
+                'id': seg.id,
+                'from_component_id': seg.from_component_id,
+                'to_component_id': seg.to_component_id,
+                'length': float(getattr(seg, 'length', 0) or 0),
+                'duct_shape': getattr(seg, 'duct_shape', 'rectangular'),
+                'segment_order': getattr(seg, 'segment_order', 0) or 0,
+            })
+        if not segments_data:
+            return None
+        helper = PathSequenceWidget()
+        return helper._compute_sequence_from_segments(segments_data)
+
+    def _build_nc_results_from_engine_legacy(self, path_elements: List[Dict]) -> List[Dict]:
+        """Build NC rows in engine iteration order with legacy component injection before ducts."""
+        from calculations.nc_rating_analyzer import NCRatingAnalyzer
+        nc_analyzer = NCRatingAnalyzer()
+
+        results: List[Dict] = []
+        segments = self._get_ordered_segments()
+
+        silencer_id_list: List[int] = []
+        element_sequence = None
+        if hasattr(self.current_path, 'get_element_sequence'):
+            element_sequence = self.current_path.get_element_sequence()
+        if element_sequence:
+            silencer_id_list = [
+                item['id'] for item in element_sequence
+                if item.get('type') == 'silencer'
+            ]
+
+        segment_idx = 0
+        silencer_idx = 0
+        last_spectrum: Optional[List[float]] = None
+
+        for elem in path_elements:
+            elem_type = elem.get('element_type', '')
+            spectrum_8 = elem.get('noise_after_spectrum', [0.0] * 8)
+            nc_rating = elem.get('nc_rating', 0)
+
+            if elem_type == 'source':
+                db_id = self._get_source_component_id()
+                name = self.calculation_results.get('source_name', 'Source')
+                row_type = 'source'
+            elif elem_type in ('duct', 'flex_duct'):
+                # Inject intermediate component row before this segment
+                if segment_idx > 0 and segment_idx <= len(segments) and last_spectrum is not None:
+                    prev_seg = segments[segment_idx - 1]
+                    to_comp = getattr(prev_seg, 'to_component', None)
+                    if to_comp:
+                        is_sil = bool(getattr(to_comp, 'is_silencer', False))
+                        comp_type = getattr(to_comp, 'component_type', None) or 'component'
+                        comp_name = getattr(to_comp, 'name', None) or comp_type.replace('_', ' ').title()
+                        results.append({
+                            'element_type': 'silencer' if is_sil else comp_type,
+                            'element_name': comp_name,
+                            'element_id': to_comp.id,
+                            'cumulative_spectrum': list(last_spectrum[:7]),
+                            'nc_rating': nc_analyzer.determine_nc_rating(last_spectrum),
+                            'is_silencer': is_sil,
+                        })
+
+                db_id = segments[segment_idx].id if segment_idx < len(segments) else None
+                name = f"Segment {segment_idx + 1}"
+                segment_idx += 1
+                row_type = 'segment'
+            elif elem_type == 'elbow':
+                db_id = None
+                name = 'Elbow'
+                row_type = 'elbow'
+            elif elem_type == 'junction':
+                db_id = None
+                name = 'Junction'
+                row_type = 'junction'
+            elif elem_type == 'silencer':
+                db_id = silencer_id_list[silencer_idx] if silencer_idx < len(silencer_id_list) else None
+                silencer_idx += 1
+                name = 'Silencer'
+                if db_id:
+                    try:
+                        session = get_session()
+                        sil_comp = session.query(HVACComponent).get(db_id)
+                        if sil_comp:
+                            name = getattr(sil_comp, 'name', None) or name
+                        session.close()
+                    except Exception:
+                        pass
+                row_type = 'silencer'
+            elif elem_type == 'terminal':
+                db_id = self.current_path.target_space_id if self.current_path.target_space else None
+                name = self.current_path.target_space.name if self.current_path.target_space else 'Receiver'
+                row_type = 'terminal'
+            else:
+                db_id = None
+                name = elem_type.replace('_', ' ').title()
+                row_type = elem_type
+
+            results.append({
+                'element_type': row_type,
+                'element_name': name,
+                'element_id': db_id,
+                'cumulative_spectrum': list(spectrum_8[:7]),
+                'nc_rating': nc_rating,
+                'is_silencer': elem_type == 'silencer',
+            })
+            last_spectrum = list(spectrum_8)
+
+        # If the engine did not emit a terminal row but we have a target space,
+        # append one using the last known spectrum.
+        has_terminal = any(r['element_type'] == 'terminal' for r in results)
+        if not has_terminal and self.current_path.target_space and last_spectrum:
+            results.append({
+                'element_type': 'terminal',
+                'element_name': self.current_path.target_space.name,
+                'element_id': self.current_path.target_space_id,
+                'cumulative_spectrum': list(last_spectrum[:7]),
+                'nc_rating': nc_analyzer.determine_nc_rating(last_spectrum),
+                'is_silencer': False,
+            })
+
+        return results
+
+    def _build_nc_results_from_engine(self, path_elements: List[Dict]) -> List[Dict]:
+        """Build NC table rows aligned with Edit Path / saved ``element_sequence`` order.
+
+        Middle ``path_elements`` (between source and terminal) match segment + silencer
+        slots in ``element_sequence`` 1:1 after path_data silencer injection. We walk
+        that sequence so component, segment, and silencer rows match the saved list.
+        """
+        from calculations.nc_rating_analyzer import NCRatingAnalyzer
+        nc_analyzer = NCRatingAnalyzer()
+
+        if not path_elements or not self.current_path:
+            return []
+
+        first_el = path_elements[0]
+        if first_el.get('element_type') != 'source':
+            return self._build_nc_results_from_engine_legacy(path_elements)
+
+        last_is_terminal = path_elements[-1].get('element_type') == 'terminal'
+        middle = path_elements[1:-1] if last_is_terminal else path_elements[1:]
+
+        sequence = self._get_path_display_sequence()
+        if sequence:
+            n_seq_mid = sum(
+                1 for x in sequence
+                if x.get('type') in ('segment', 'silencer')
+            )
+            if n_seq_mid != len(middle):
+                sequence = None
+
+        if not sequence:
+            return self._build_nc_results_from_engine_legacy(path_elements)
+
+        results: List[Dict] = []
+        src_spec = first_el.get('noise_after_spectrum', [0.0] * 8)
+        results.append({
+            'element_type': 'source',
+            'element_name': self.calculation_results.get('source_name', 'Source'),
+            'element_id': self._get_source_component_id(),
+            'cumulative_spectrum': list(src_spec[:7]),
+            'nc_rating': first_el.get(
+                'nc_rating', nc_analyzer.determine_nc_rating(src_spec)
+            ),
+            'is_silencer': False,
+        })
+
+        source_id = self._get_source_component_id()
+        pe_i = 1
+
+        session = get_session()
+        try:
+            for item in sequence:
+                et = item.get('type')
+                eid = item.get('id')
+                if et == 'component':
+                    if source_id is not None and eid == source_id:
+                        continue
+                    prev = path_elements[pe_i - 1]
+                    sp = prev.get('noise_after_spectrum', [0.0] * 8)
+                    comp = (
+                        session.query(HVACComponent).filter(HVACComponent.id == eid).first()
+                        if eid else None
+                    )
+                    is_sil = bool(comp and getattr(comp, 'is_silencer', False))
+                    comp_type = (
+                        getattr(comp, 'component_type', None) or 'component'
+                    ) if comp else 'component'
+                    comp_name = (
+                        getattr(comp, 'name', None)
+                        or comp_type.replace('_', ' ').title()
+                    ) if comp else (f'Component {eid}' if eid else 'Component')
+                    results.append({
+                        'element_type': 'silencer' if is_sil else comp_type,
+                        'element_name': comp_name,
+                        'element_id': eid,
+                        'cumulative_spectrum': list(sp[:7]),
+                        'nc_rating': nc_analyzer.determine_nc_rating(sp),
+                        'is_silencer': is_sil,
+                    })
+                elif et == 'segment':
+                    elem = path_elements[pe_i]
+                    pe_i += 1
+                    spectrum_8 = elem.get('noise_after_spectrum', [0.0] * 8)
+                    nc_rating = elem.get(
+                        'nc_rating', nc_analyzer.determine_nc_rating(spectrum_8)
+                    )
+                    eng_type = elem.get('element_type', 'duct')
+                    row_type = (
+                        'segment' if eng_type in ('duct', 'flex_duct') else eng_type
+                    )
+                    seg_obj = None
+                    if self.current_path.segments:
+                        for s in self.current_path.segments:
+                            if s.id == eid:
+                                seg_obj = s
+                                break
+                    if seg_obj:
+                        fc = getattr(seg_obj, 'from_component', None)
+                        tc = getattr(seg_obj, 'to_component', None)
+                        fn = getattr(fc, 'name', None) or '?'
+                        tn = getattr(tc, 'name', None) or '?'
+                        name = (
+                            f"Segment: {fn} → {tn} "
+                            f"({float(seg_obj.length or 0):.1f} ft)"
+                        )
+                    else:
+                        name = f'Segment {eid}' if eid else 'Segment'
+                    results.append({
+                        'element_type': row_type,
+                        'element_name': name,
+                        'element_id': eid,
+                        'cumulative_spectrum': list(spectrum_8[:7]),
+                        'nc_rating': nc_rating,
+                        'is_silencer': False,
+                    })
+                elif et == 'silencer':
+                    elem = path_elements[pe_i]
+                    pe_i += 1
+                    spectrum_8 = elem.get('noise_after_spectrum', [0.0] * 8)
+                    nc_rating = elem.get(
+                        'nc_rating', nc_analyzer.determine_nc_rating(spectrum_8)
+                    )
+                    sil_comp = (
+                        session.query(HVACComponent).filter(HVACComponent.id == eid).first()
+                        if eid else None
+                    )
+                    name = getattr(sil_comp, 'name', None) or 'Silencer'
+                    results.append({
+                        'element_type': 'silencer',
+                        'element_name': name,
+                        'element_id': eid,
+                        'cumulative_spectrum': list(spectrum_8[:7]),
+                        'nc_rating': nc_rating,
+                        'is_silencer': True,
+                    })
+                else:
+                    return self._build_nc_results_from_engine_legacy(path_elements)
+        finally:
+            session.close()
+
+        expected_pe = len(path_elements) - 1 if last_is_terminal else len(path_elements)
+        if pe_i != expected_pe:
+            return self._build_nc_results_from_engine_legacy(path_elements)
+
+        if last_is_terminal:
+            term = path_elements[-1]
+            spectrum_8 = term.get('noise_after_spectrum', [0.0] * 8)
+            nc_rating = term.get(
+                'nc_rating', nc_analyzer.determine_nc_rating(spectrum_8)
+            )
+            results.append({
+                'element_type': 'terminal',
+                'element_name': (
+                    self.current_path.target_space.name
+                    if self.current_path.target_space else 'Receiver'
+                ),
+                'element_id': (
+                    self.current_path.target_space_id
+                    if self.current_path.target_space else None
+                ),
+                'cumulative_spectrum': list(spectrum_8[:7]),
+                'nc_rating': nc_rating,
+                'is_silencer': False,
+            })
+        else:
+            has_terminal = any(r['element_type'] == 'terminal' for r in results)
+            last_spec = path_elements[-1].get('noise_after_spectrum') if path_elements else None
+            if (
+                not has_terminal
+                and self.current_path.target_space
+                and last_spec
+            ):
+                results.append({
+                    'element_type': 'terminal',
+                    'element_name': self.current_path.target_space.name,
+                    'element_id': self.current_path.target_space_id,
+                    'cumulative_spectrum': list(last_spec[:7]),
+                    'nc_rating': nc_analyzer.determine_nc_rating(last_spec),
+                    'is_silencer': False,
+                })
+
+        return results
+
+    def _build_nc_results_fallback(self) -> List[Dict]:
+        """Simplified NC calculation when engine path_elements are unavailable."""
+        from calculations.nc_rating_analyzer import NCRatingAnalyzer
+        nc_analyzer = NCRatingAnalyzer()
+        results: List[Dict] = []
+
+        source_noise = self.calculation_results.get('source_noise', 50.0)
+        cumulative = [source_noise] * 8
+
+        def display(spectrum_8):
+            return spectrum_8[:7]
+
+        nc_rating = nc_analyzer.determine_nc_rating(cumulative)
+        results.append({
+            'element_type': 'source',
+            'element_name': self.calculation_results.get('source_name', 'Source'),
+            'element_id': self._get_source_component_id(),
+            'cumulative_spectrum': display(cumulative),
+            'nc_rating': nc_rating,
+            'is_silencer': False,
+        })
+
+        segments = self._get_ordered_segments()
+        for i, segment in enumerate(segments):
+            attenuation = getattr(segment, 'duct_loss', 0) or 0
+            cumulative = [max(0, c - attenuation) for c in cumulative]
+            nc_rating = nc_analyzer.determine_nc_rating(cumulative)
+            results.append({
+                'element_type': 'segment',
+                'element_name': f"Segment {i + 1}",
+                'element_id': getattr(segment, 'id', None),
+                'cumulative_spectrum': display(cumulative),
+                'nc_rating': nc_rating,
+                'is_silencer': False,
+            })
+
+            to_comp = getattr(segment, 'to_component', None)
+            if to_comp and i < len(segments) - 1:
+                comp_type = getattr(to_comp, 'component_type', 'component')
+                comp_name = getattr(to_comp, 'name', None) or comp_type.replace('_', ' ').title()
+                nc_rating = nc_analyzer.determine_nc_rating(cumulative)
+                results.append({
+                    'element_type': comp_type,
+                    'element_name': comp_name,
+                    'element_id': to_comp.id,
+                    'cumulative_spectrum': display(cumulative),
+                    'nc_rating': nc_rating,
+                    'is_silencer': bool(getattr(to_comp, 'is_silencer', False)),
+                })
+
+        if self.current_path.target_space:
+            nc_rating = nc_analyzer.determine_nc_rating(cumulative)
+            results.append({
+                'element_type': 'terminal',
+                'element_name': self.current_path.target_space.name,
+                'element_id': self.current_path.target_space_id,
+                'cumulative_spectrum': display(cumulative),
+                'nc_rating': nc_rating,
+                'is_silencer': False,
+            })
+
+        return results
+
+    def update_for_silencer_position(self, position_data: dict, is_live: bool = False):
+        """Update NC table for silencer position changes during placement"""
+        if not hasattr(self, 'nc_results_table'):
+            return
+
+        # Recalculate with temporary silencer position and update table
+        element_results = self._calculate_cumulative_nc_values()
+        self.nc_results_table.update_results(element_results, is_live_update=is_live)
+
+    def revert_nc_table(self):
+        """Revert NC table to saved state (for placement cancellation)"""
+        if hasattr(self, 'nc_results_table'):
+            self.nc_results_table.revert_to_saved()

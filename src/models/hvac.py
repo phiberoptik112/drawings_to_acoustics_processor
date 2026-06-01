@@ -35,6 +35,19 @@ class HVACComponent(Base):
     # For components acting as 90° branch takeoffs, allow user override of which
     # junction spectrum to use in path calculations: 'auto' | 'main' | 'branch'
     branch_takeoff_choice = Column(String(20))
+    # Junction duct geometry (inches / CFM) for branch takeoff noise calculations
+    branch_duct_width = Column(Float)
+    branch_duct_height = Column(Float)
+    branch_duct_diameter = Column(Float)
+    branch_duct_shape = Column(String(20))  # 'rectangular' | 'circular'
+    main_duct_width = Column(Float)
+    main_duct_height = Column(Float)
+    main_duct_diameter = Column(Float)
+    main_duct_shape = Column(String(20))  # 'rectangular' | 'circular'
+    branch_cfm = Column(Float)
+    main_cfm = Column(Float)
+    # Mechanical schedule spectrum for path noise: 'auto' | 'inlet' | 'outlet' | 'radiated'
+    mechanical_noise_origin = Column(String(20), default='auto')
     
     # Elbow-specific fields (turning vanes and lining)
     has_turning_vanes = Column(Boolean, default=False)
@@ -50,7 +63,11 @@ class HVACComponent(Base):
     frequency_requirements = Column(Text)   # JSON frequency band requirements
     space_constraints = Column(Text)        # JSON space limitations
     selected_product_id = Column(Integer, ForeignKey('silencer_products.id'))
-    
+
+    # Silencer placement fields
+    position_on_path = Column(Float)  # 0.0-1.0 normalized position for straight silencers
+    elbow_component_id = Column(Integer, ForeignKey('hvac_components.id'))  # For elbow silencers
+
     created_date = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -59,6 +76,8 @@ class HVACComponent(Base):
     segments_from = relationship("HVACSegment", foreign_keys="HVACSegment.from_component_id", back_populates="from_component")
     segments_to = relationship("HVACSegment", foreign_keys="HVACSegment.to_component_id", back_populates="to_component")
     selected_product = relationship("SilencerProduct", back_populates="components")
+    # Self-referential relationship for elbow silencer attachment
+    attached_elbow = relationship("HVACComponent", remote_side="HVACComponent.id", foreign_keys=[elbow_component_id])
     
     def __repr__(self):
         return f"<HVACComponent(id={self.id}, name='{self.name}', type='{self.component_type}')>"
@@ -78,6 +97,17 @@ class HVACComponent(Base):
             'noise_level': self.noise_level,
             'cfm': self.cfm,
             'branch_takeoff_choice': self.branch_takeoff_choice,
+            'branch_duct_width': self.branch_duct_width,
+            'branch_duct_height': self.branch_duct_height,
+            'branch_duct_diameter': self.branch_duct_diameter,
+            'branch_duct_shape': self.branch_duct_shape,
+            'main_duct_width': self.main_duct_width,
+            'main_duct_height': self.main_duct_height,
+            'main_duct_diameter': self.main_duct_diameter,
+            'main_duct_shape': self.main_duct_shape,
+            'branch_cfm': self.branch_cfm,
+            'main_cfm': self.main_cfm,
+            'mechanical_noise_origin': getattr(self, 'mechanical_noise_origin', None) or 'auto',
             'has_turning_vanes': self.has_turning_vanes,
             'vane_chord_length': self.vane_chord_length,
             'num_vanes': self.num_vanes,
@@ -89,6 +119,8 @@ class HVACComponent(Base):
             'frequency_requirements': self.frequency_requirements,
             'space_constraints': self.space_constraints,
             'selected_product_id': self.selected_product_id,
+            'position_on_path': self.position_on_path,
+            'elbow_component_id': self.elbow_component_id,
             'created_date': self.created_date.isoformat() if self.created_date else None,
         }
 
@@ -474,7 +506,8 @@ class SilencerProduct(Base):
     id = Column(Integer, primary_key=True)
     manufacturer = Column(String(100), nullable=False)
     model_number = Column(String(100), nullable=False)
-    silencer_type = Column(String(50), nullable=False)  # 'reactive', 'dissipative', 'hybrid'
+    # 'reactive', 'dissipative', 'hybrid', 'rectangular', 'elbow', 'circular_packless'
+    silencer_type = Column(String(50), nullable=False)
     
     # Physical specifications
     length = Column(Float)  # inches
@@ -500,6 +533,16 @@ class SilencerProduct(Base):
     # Cost information
     cost_estimate = Column(Float)  # USD
     availability = Column(String(50))  # 'in_stock', 'lead_time', 'discontinued'
+    
+    # Catalog metadata (populated from silencer_library catalog entries)
+    series = Column(String(100))
+    velocity_class = Column(String(20))  # 'ULV', 'LV', 'MV', 'HV', or IAC type codes
+    max_velocity_fpm = Column(Float)
+    rated_velocity_fpm = Column(Float)  # velocity at which published IL was measured
+    pressure_drop_in_wg = Column(Float)  # in. w.g. at rated velocity
+    self_noise_lw_1k = Column(Float)  # Lw dB re 10^-12 W at 1 kHz octave band
+    source_document = Column(String(200))  # catalog PDF reference
+    notes = Column(Text)
     
     created_date = Column(DateTime, default=datetime.utcnow)
     

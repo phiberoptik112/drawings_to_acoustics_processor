@@ -31,6 +31,10 @@ def _ensure_columns(session, table: str, columns: List[Tuple[str, str]]):
         columns: list of (column_name, column_sql_type_default_clause)
                  e.g., ("is_silencer", "INTEGER DEFAULT 0")
     """
+    existing_tables = set(_get_existing_tables(session))
+    if table not in existing_tables:
+        return
+
     existing = set(_get_existing_columns(session, table))
     for name, type_clause in columns:
         if name not in existing:
@@ -47,6 +51,7 @@ def ensure_hvac_schema():
             "hvac_components",
             [
                 ("custom_type_label", "TEXT"),
+                ("cfm", "REAL"),
                 ("is_silencer", "INTEGER DEFAULT 0"),
                 ("silencer_type", "TEXT"),
                 ("target_noise_reduction", "REAL"),
@@ -55,8 +60,30 @@ def ensure_hvac_schema():
                 ("selected_product_id", "INTEGER"),
                 # Junction preference for BRANCH_TAKEOFF_90 selection
                 ("branch_takeoff_choice", "TEXT"),
+                # Junction duct geometry for branch takeoff noise calculations
+                ("branch_duct_width", "REAL"),
+                ("branch_duct_height", "REAL"),
+                ("branch_duct_diameter", "REAL"),
+                ("branch_duct_shape", "TEXT"),
+                ("main_duct_width", "REAL"),
+                ("main_duct_height", "REAL"),
+                ("main_duct_diameter", "REAL"),
+                ("main_duct_shape", "TEXT"),
+                ("branch_cfm", "REAL"),
+                ("main_cfm", "REAL"),
+                # Elbow-specific fields (turning vanes and lining)
+                ("has_turning_vanes", "INTEGER DEFAULT 0"),
+                ("vane_chord_length", "REAL"),
+                ("num_vanes", "INTEGER"),
+                ("lining_thickness", "REAL"),
+                ("pressure_drop", "REAL"),
                 # Page number for multi-page PDF support
                 ("page_number", "INTEGER DEFAULT 1"),
+                # Silencer placement fields
+                ("position_on_path", "REAL"),  # 0.0-1.0 normalized position for straight silencers
+                ("elbow_component_id", "INTEGER"),  # FK to hvac_components for elbow silencers
+                # Path noise spectrum preference when linked to MechanicalUnit schedules
+                ("mechanical_noise_origin", "TEXT DEFAULT 'auto'"),
             ],
         )
 
@@ -165,6 +192,25 @@ def ensure_hvac_schema():
             )
         except Exception:
             # Table may not exist yet; it will be created on fresh DBs
+            pass
+
+        # silencer_products catalog metadata columns
+        try:
+            _ensure_columns(
+                session,
+                "silencer_products",
+                [
+                    ("series", "TEXT"),
+                    ("velocity_class", "TEXT"),
+                    ("max_velocity_fpm", "REAL"),
+                    ("rated_velocity_fpm", "REAL"),
+                    ("pressure_drop_in_wg", "REAL"),
+                    ("self_noise_lw_1k", "REAL"),
+                    ("source_document", "TEXT"),
+                    ("notes", "TEXT"),
+                ],
+            )
+        except Exception:
             pass
 
         # space_noise_sources table (create if missing for legacy DBs)

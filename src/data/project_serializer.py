@@ -742,6 +742,7 @@ class ProjectImporter:
                 noise_level=c_data.get('noise_level'),
                 cfm=c_data.get('cfm'),
                 branch_takeoff_choice=c_data.get('branch_takeoff_choice'),
+                mechanical_noise_origin=c_data.get('mechanical_noise_origin') or 'auto',
                 has_turning_vanes=c_data.get('has_turning_vanes', False),
                 vane_chord_length=c_data.get('vane_chord_length'),
                 num_vanes=c_data.get('num_vanes'),

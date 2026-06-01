@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session
 
 from models.hvac import HVACPath, HVACSegment, HVACComponent, SilencerProduct
 from models.mechanical import MechanicalUnit
-from .hvac_constants import NUM_OCTAVE_BANDS, FREQUENCY_BAND_LABELS
+from .hvac_constants import NUM_OCTAVE_BANDS
+from .mechanical_spectrum_select import mechanical_unit_spectrum_for_path
 
 
 def inject_silencer_elements(segment_data_list: List[Dict], hvac_path: HVACPath, session: Session) -> List[Dict]:
@@ -191,20 +192,31 @@ class SourceComponentBuilder:
         try:
             unit = self.find_mechanical_unit(source_comp, getattr(hvac_path, 'project_id', None))
             if unit:
-                octave_bands = self._extract_unit_spectrum(unit)
+                pt = getattr(hvac_path, 'path_type', None) or 'supply'
+                pref = getattr(source_comp, 'mechanical_noise_origin', None) or 'auto'
+                octave_bands, origin = mechanical_unit_spectrum_for_path(unit, pt, pref)
                 source_data['octave_band_levels'] = octave_bands
+                if origin:
+                    source_data['spectrum_origin'] = origin
                 self.debug_logger.info('PathBuilder', 
                     f"Enriched source from mechanical unit '{unit.name}'", 
-                    {'octave_bands': octave_bands})
+                    {'octave_bands': octave_bands, 'spectrum_origin': origin})
         except Exception as e:
             self.debug_logger.warning('PathBuilder', 
                 "Failed to enrich source with mechanical unit bands", error=e)
         
         return source_data
     
-    def build_source_from_mechanical_unit(self, unit: MechanicalUnit) -> Dict:
+    def build_source_from_mechanical_unit(
+        self,
+        unit: MechanicalUnit,
+        hvac_path: Optional[HVACPath] = None,
+        preference: Optional[str] = None,
+    ) -> Dict:
         """Build source component data from MechanicalUnit"""
-        octave_bands = self._extract_unit_spectrum(unit)
+        pt = getattr(hvac_path, 'path_type', None) or 'supply' if hvac_path else 'supply'
+        pref = preference if preference is not None else 'auto'
+        octave_bands, origin = mechanical_unit_spectrum_for_path(unit, pt, pref)
         noise_level = getattr(unit, 'base_noise_dba', None)
         
         source_data = {
@@ -212,10 +224,12 @@ class SourceComponentBuilder:
             'noise_level': noise_level,
             'octave_band_levels': octave_bands,
         }
+        if origin:
+            source_data['spectrum_origin'] = origin
         
         self.debug_logger.info('PathBuilder', 
             f"Using mechanical unit '{unit.name}' as source", 
-            {'noise_dba': noise_level, 'octave_bands': octave_bands})
+            {'noise_dba': noise_level, 'octave_bands': octave_bands, 'spectrum_origin': origin})
         
         return source_data
     
@@ -315,39 +329,6 @@ class SourceComponentBuilder:
                 {'component_type': comp.component_type})
         
         return source_data
-    
-    def _extract_unit_spectrum(self, unit: MechanicalUnit) -> Optional[List[float]]:
-        """Extract octave band spectrum from mechanical unit JSON data"""
-        # Try different spectrum sources in order of preference
-        for source_attr, source_name in [
-            ('outlet_levels_json', 'outlet'),
-            ('inlet_levels_json', 'inlet'),
-            ('radiated_levels_json', 'radiated')
-        ]:
-            json_data = getattr(unit, source_attr, None)
-            if json_data:
-                try:
-                    data = json.loads(json_data)
-                    octave_bands = None
-                    
-                    # Handle dictionary format
-                    if hasattr(data, 'get'):
-                        octave_bands = [float(data.get(k, 0) or 0) for k in FREQUENCY_BAND_LABELS]
-                    # Handle list format
-                    elif isinstance(data, list) and len(data) >= NUM_OCTAVE_BANDS:
-                        octave_bands = [float(x or 0) for x in data[:NUM_OCTAVE_BANDS]]
-                    
-                    if octave_bands:
-                        self.debug_logger.debug('PathBuilder', 
-                            f"Extracted spectrum from {source_name}", 
-                            {'octave_bands': octave_bands})
-                        return octave_bands
-                        
-                except Exception as e:
-                    self.debug_logger.warning('PathBuilder', 
-                        f"Failed to parse {source_name} spectrum JSON", error=e)
-        
-        return None
 
 
 class PathValidator:
@@ -569,11 +550,15 @@ class PathDataBuilder:
                 if from_comp is not None:
                     unit = self.source_builder.find_mechanical_unit(from_comp, getattr(hvac_path, 'project_id', None))
                     if unit:
-                        octave_bands = self.source_builder._extract_unit_spectrum(unit)
+                        pt = getattr(hvac_path, 'path_type', None) or 'supply'
+                        pref = getattr(source_comp, 'mechanical_noise_origin', None) or 'auto'
+                        octave_bands, origin = mechanical_unit_spectrum_for_path(unit, pt, pref)
                         if octave_bands:
                             # preserve flow_rate from existing src
                             src = src or {}
                             src['octave_band_levels'] = octave_bands
+                            if origin:
+                                src['spectrum_origin'] = origin
                             print("DEBUG_SOURCE_BUILD: Enriched primary_source from first segment MU bands")
                             return src
             except Exception as _e:
@@ -594,7 +579,7 @@ class PathDataBuilder:
             print(f"DEBUG_SOURCE_BUILD: Found mechanical unit: {unit}")
             if unit:
                 print(f"DEBUG_SOURCE_BUILD: Using Strategy 2 - mechanical unit")
-                return self.source_builder.build_source_from_mechanical_unit(unit)
+                return self.source_builder.build_source_from_mechanical_unit(unit, hvac_path)
         
         # Strategy 3: Use first segment's from_component
         print(f"DEBUG_SOURCE_BUILD: Strategy 3 - first segment from_component")
@@ -610,7 +595,8 @@ class PathDataBuilder:
                     unit = None
                 if unit:
                     print("DEBUG_SOURCE_BUILD: Strategy 3 - found Mechanical Unit for first segment from_component")
-                    return self.source_builder.build_source_from_mechanical_unit(unit)
+                    mo = getattr(from_comp, 'mechanical_noise_origin', None) or 'auto'
+                    return self.source_builder.build_source_from_mechanical_unit(unit, hvac_path, mo)
             except Exception as _e:
                 try:
                     self.debug_logger.warning('PathBuilder',

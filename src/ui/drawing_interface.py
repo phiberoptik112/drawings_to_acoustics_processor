@@ -520,6 +520,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
             self.analysis_panel.path_changed.connect(self.on_analysis_path_changed)
             # When edit is requested from analysis panel
             self.analysis_panel.edit_element_requested.connect(self.edit_element_from_analysis)
+            # When silencer placement is requested from analysis panel
+            self.analysis_panel.silencer_placement_requested.connect(self._on_silencer_placement_from_panel)
     
     def _connect_segment_validation_error(self):
         """Connect the SegmentTool's validation_error signal to show error popup."""
@@ -2210,42 +2212,43 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
             dialog.path_saved.connect(on_path_saved)
             dialog.set_drawing_data(components, ordered_segments, self.drawing.id, self.current_page_number)
-            
-            if dialog.exec() == QDialog.Accepted:
-                hvac_path = dialog.path
-                
-                # Keep newly created path elements visible on the drawing.
-                # We no longer prompt to remove them after saving.
-                path_info = f"Successfully created HVAC path: {hvac_path.name}\n\n"
-                path_info += f"Components: {len(components)}\n"
-                path_info += f"Segments: {len(ordered_segments)}\n"
-                
-                if hvac_path.calculated_noise:
-                    path_info += f"Terminal Noise: {hvac_path.calculated_noise:.1f} dB(A)\n"
-                    path_info += f"NC Rating: NC-{hvac_path.calculated_nc:.0f}\n\n"
-                else:
-                    path_info += "Noise calculation pending\n\n"
-                
-                path_info += "Path elements will remain visible on the drawing."
-                
-                QMessageBox.information(
-                    self,
-                    "HVAC Path Created",
-                    path_info
-                )
-                
-                # Update status bar
-                self.status_bar.showMessage(f"Created HVAC path '{hvac_path.name}' with {len(components)} components", 5000)
-                
-                # Add path to UI list without clearing existing registrations
-                # (on_path_saved already registered the elements, don't destroy that)
-                self.add_single_path_to_ui(hvac_path)
-                # Notify listeners (e.g., project dashboard HVAC tab)
-                try:
-                    self.paths_updated.emit()
-                except Exception:
-                    pass
-                
+
+            def on_dialog_finished(result, _dialog=dialog, _components=components, _segments=ordered_segments):
+                if result == QDialog.Accepted:
+                    hvac_path = _dialog.path
+
+                    path_info = f"Successfully created HVAC path: {hvac_path.name}\n\n"
+                    path_info += f"Components: {len(_components)}\n"
+                    path_info += f"Segments: {len(_segments)}\n"
+
+                    if hvac_path.calculated_noise:
+                        path_info += f"Terminal Noise: {hvac_path.calculated_noise:.1f} dB(A)\n"
+                        path_info += f"NC Rating: NC-{hvac_path.calculated_nc:.0f}\n\n"
+                    else:
+                        path_info += "Noise calculation pending\n\n"
+
+                    path_info += "Path elements will remain visible on the drawing."
+
+                    QMessageBox.information(self, "HVAC Path Created", path_info)
+
+                    self.status_bar.showMessage(
+                        f"Created HVAC path '{hvac_path.name}' with {len(_components)} components", 5000
+                    )
+                    self.add_single_path_to_ui(hvac_path)
+                    try:
+                        self.paths_updated.emit()
+                    except Exception:
+                        pass
+
+                if hasattr(self, '_open_hvac_dialogs'):
+                    self._open_hvac_dialogs.discard(_dialog)
+
+            dialog.finished.connect(on_dialog_finished)
+            if not hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs = set()
+            self._open_hvac_dialogs.add(dialog)
+            dialog.show()
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")
     
@@ -2658,18 +2661,28 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
             # Connect the signal before opening dialog
             dialog.path_saved.connect(on_path_saved)
-            
+
             # Pass drawing data to the dialog
             dialog.set_drawing_data(components, segments, self.drawing.id, self.current_page_number)
-            
-            if dialog.exec() == QDialog.Accepted:
-                QMessageBox.information(self, "HVAC Path Created", 
-                                       f"Successfully created HVAC path: {dialog.path.name if dialog.path else 'Unknown'}")
-                
-                # Refresh paths list to show new path
-                self.load_saved_paths()
-                self.paths_updated.emit()
-                
+
+            def on_dialog_finished_2(result, _dialog=dialog):
+                if result == QDialog.Accepted:
+                    QMessageBox.information(
+                        self, "HVAC Path Created",
+                        f"Successfully created HVAC path: {_dialog.path.name if _dialog.path else 'Unknown'}"
+                    )
+                    self.load_saved_paths()
+                    self.paths_updated.emit()
+
+                if hasattr(self, '_open_hvac_dialogs'):
+                    self._open_hvac_dialogs.discard(_dialog)
+
+            dialog.finished.connect(on_dialog_finished_2)
+            if not hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs = set()
+            self._open_hvac_dialogs.add(dialog)
+            dialog.show()
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create HVAC path:\n{str(e)}")
     
@@ -3625,14 +3638,22 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
             # Connect the signal before opening dialog
             dlg.path_saved.connect(on_path_edited_from_item)
-            
-            if dlg.exec() == QDialog.Accepted:
-                # Refresh list and notify listeners
-                self.load_saved_paths()
-                try:
-                    self.paths_updated.emit()
-                except Exception:
-                    pass
+
+            def on_dlg_finished_item(result, _dlg=dlg):
+                if result == QDialog.Accepted:
+                    self.load_saved_paths()
+                    try:
+                        self.paths_updated.emit()
+                    except Exception:
+                        pass
+                if hasattr(self, '_open_hvac_dialogs'):
+                    self._open_hvac_dialogs.discard(_dlg)
+
+            dlg.finished.connect(on_dlg_finished_item)
+            if not hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs = set()
+            self._open_hvac_dialogs.add(dlg)
+            dlg.show()
         except Exception as e:
             QMessageBox.warning(self, "Path Editor", f"Failed to open path editor:\n{e}")
 
@@ -4088,13 +4109,22 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
             # Connect the signal before opening dialog
             dlg.path_saved.connect(on_path_edited)
-            
-            if dlg.exec() == QDialog.Accepted:
-                self.load_saved_paths()
-                try:
-                    self.paths_updated.emit()
-                except Exception:
-                    pass
+
+            def on_dlg_finished(result, _dlg=dlg):
+                if result == QDialog.Accepted:
+                    self.load_saved_paths()
+                    try:
+                        self.paths_updated.emit()
+                    except Exception:
+                        pass
+                if hasattr(self, '_open_hvac_dialogs'):
+                    self._open_hvac_dialogs.discard(_dlg)
+
+            dlg.finished.connect(on_dlg_finished)
+            if not hasattr(self, '_open_hvac_dialogs'):
+                self._open_hvac_dialogs = set()
+            self._open_hvac_dialogs.add(dlg)
+            dlg.show()
         except Exception as e:
             QMessageBox.warning(self, "Path Editor", f"Failed to open path editor:\n{e}")
     
@@ -5320,9 +5350,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
             return
         
         try:
+            from models.hvac import HVACSegment, HVACComponent
+
             if element_type in ('segment', 'duct'):
-                # Open segment editor
-                from models.hvac_segment import HVACSegment
                 session = get_session()
                 segment = session.query(HVACSegment).filter(HVACSegment.id == element_id).first()
                 if segment:
@@ -5335,15 +5365,21 @@ class DrawingInterface(HelpMixin, QMainWindow):
                     )
                     dialog.segment_saved.connect(self._on_segment_saved)
                     if dialog.exec() == QDialog.Accepted:
-                        # Refresh analysis panel
                         if hasattr(self, 'analysis_panel'):
                             self.analysis_panel._recalculate_path()
                 session.close()
-                
-            elif element_type in ('source', 'component', 'ahu', 'fan', 'mechanical_unit', 
-                                  'elbow', 'silencer', 'diffuser', 'damper', 'terminal'):
-                # Open component editor
-                from models.hvac_component import HVACComponent
+
+            elif element_type in ('receiver', 'space', 'terminal'):
+                session = get_session()
+                space = session.query(Space).filter(Space.id == element_id).first()
+                if space:
+                    dialog = SpaceEditDialog(self, space)
+                    dialog.show()
+                session.close()
+
+            elif element_type in ('source', 'component', 'ahu', 'fan', 'mechanical_unit',
+                                  'elbow', 'silencer', 'diffuser', 'damper',
+                                  'branch_takeoff_90', 'junction_t'):
                 session = get_session()
                 component = session.query(HVACComponent).filter(HVACComponent.id == element_id).first()
                 if component:
@@ -5355,19 +5391,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         component=component
                     )
                     if dialog.exec() == QDialog.Accepted:
-                        # Refresh analysis panel
                         if hasattr(self, 'analysis_panel'):
                             self.analysis_panel._recalculate_path()
-                session.close()
-                
-            elif element_type in ('receiver', 'space'):
-                # Open space editor
-                from models.space import Space
-                session = get_session()
-                space = session.query(Space).filter(Space.id == element_id).first()
-                if space:
-                    dialog = SpaceEditDialog(self, space)
-                    dialog.show()  # Non-modal
                 session.close()
                 
         except Exception as e:
@@ -5379,6 +5404,110 @@ class DrawingInterface(HelpMixin, QMainWindow):
         """Refresh the analysis panel data"""
         if hasattr(self, 'analysis_panel') and self.analysis_panel:
             self.analysis_panel.refresh_paths()
+
+    def _on_silencer_placement_from_panel(self, path_id: int, component_id: int, silencer_data: dict):
+        """Handle silencer placement request from the analysis panel"""
+        if not self.drawing_overlay:
+            QMessageBox.warning(self, "Error", "Drawing overlay not available.")
+            return
+
+        # Connect signals from overlay for this placement session
+        try:
+            self.drawing_overlay.silencer_position_changed.disconnect(self._on_silencer_position_changed)
+        except Exception:
+            pass
+        try:
+            self.drawing_overlay.silencer_placement_finished.disconnect(self._on_silencer_placement_finished)
+        except Exception:
+            pass
+        try:
+            self.drawing_overlay.silencer_placement_cancelled.disconnect(self._on_silencer_placement_cancelled)
+        except Exception:
+            pass
+
+        self.drawing_overlay.silencer_position_changed.connect(self._on_silencer_position_changed)
+        self.drawing_overlay.silencer_placement_finished.connect(self._on_silencer_placement_finished)
+        self.drawing_overlay.silencer_placement_cancelled.connect(self._on_silencer_placement_cancelled)
+
+        # Store for later
+        self._placing_silencer_path_id = path_id
+        self._placing_silencer_component_id = component_id
+
+        # Enter placement mode on overlay
+        self.drawing_overlay.enter_silencer_placement_mode(path_id, silencer_data)
+
+        # Show status message
+        self.status_bar.showMessage(
+            "📍 SILENCER PLACEMENT: Drag along path to position. Press Esc to cancel.", 0
+        )
+
+    def _on_silencer_position_changed(self, position_data: dict):
+        """Handle real-time silencer position updates during drag"""
+        # Update analysis panel NC table with live preview
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.update_for_silencer_position(position_data, is_live=True)
+
+    def _on_silencer_placement_finished(self, position_data: dict):
+        """Handle silencer placement completion"""
+        from models import get_session
+        from models.hvac import HVACComponent, HVACSegment
+
+        component_id = position_data.get('component_id')
+        position_on_path = position_data.get('position_on_path')
+        elbow_component_id = position_data.get('elbow_component_id')
+        segment_id = position_data.get('segment_id')
+
+        try:
+            session = get_session()
+            silencer = session.query(HVACComponent).filter(HVACComponent.id == component_id).first()
+            if silencer:
+                silencer.position_on_path = position_on_path
+                silencer.elbow_component_id = elbow_component_id
+
+                # Update position coordinates based on segment if available
+                if segment_id and position_on_path is not None:
+                    seg = session.query(HVACSegment).filter(HVACSegment.id == segment_id).first()
+                    if seg and seg.from_component and seg.to_component:
+                        t = position_on_path
+                        silencer.x_position = seg.from_component.x_position + t * (
+                            seg.to_component.x_position - seg.from_component.x_position)
+                        silencer.y_position = seg.from_component.y_position + t * (
+                            seg.to_component.y_position - seg.from_component.y_position)
+
+                session.commit()
+            session.close()
+        except Exception as e:
+            print(f"Error saving silencer position: {e}")
+
+        # Update analysis panel
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.update_for_silencer_position(position_data, is_live=False)
+            # Recalculate path
+            self.analysis_panel._recalculate_path()
+
+        # Clear status
+        self.status_bar.showMessage("Silencer position saved", 3000)
+
+        # Cleanup
+        if hasattr(self, '_placing_silencer_path_id'):
+            del self._placing_silencer_path_id
+        if hasattr(self, '_placing_silencer_component_id'):
+            del self._placing_silencer_component_id
+
+    def _on_silencer_placement_cancelled(self):
+        """Handle silencer placement cancellation"""
+        # Revert analysis panel NC table
+        if hasattr(self, 'analysis_panel') and self.analysis_panel:
+            self.analysis_panel.revert_nc_table()
+
+        # Clear status
+        self.status_bar.showMessage("Silencer placement cancelled", 3000)
+
+        # Cleanup
+        if hasattr(self, '_placing_silencer_path_id'):
+            del self._placing_silencer_path_id
+        if hasattr(self, '_placing_silencer_component_id'):
+            del self._placing_silencer_component_id
 
     def closeEvent(self, event):
         """Handle window close event"""

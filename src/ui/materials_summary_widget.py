@@ -93,14 +93,14 @@ class MaterialsSummaryWidget(QWidget):
         
     def create_materials_section(self):
         """Create the selected materials table section"""
-        group = QGroupBox("Selected Materials & Octave Band Contributions")
+        group = QGroupBox("Selected Materials - Absorption Coefficients")
         layout = QVBoxLayout()
         
         # Create materials table
         self.materials_table = QTableWidget()
         self.materials_table.setColumnCount(9)
         
-        headers = ["Surface", "Material Name", "Area (sf)", "125Hz", "250Hz", "500Hz", "1000Hz", "2000Hz", "4000Hz"]
+        headers = ["Surface", "Material Name", "Area (sf)", "\u03b1 125", "\u03b1 250", "\u03b1 500", "\u03b1 1k", "\u03b1 2k", "\u03b1 4k"]
         self.materials_table.setHorizontalHeaderLabels(headers)
         
         # Configure table appearance
@@ -271,14 +271,14 @@ class MaterialsSummaryWidget(QWidget):
                     area_item.setFlags(area_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     self.materials_table.setItem(row, 2, area_item)
                     
-                    # Frequency coefficients
+                    # Frequency absorption coefficients
                     for i, freq in enumerate(self.frequencies):
                         coeff = self.get_material_coefficient(material, freq)
                         absorption = actual_area * coeff
                         
-                        coeff_item = QTableWidgetItem(f"{absorption:.2f}")
+                        coeff_item = QTableWidgetItem(f"{coeff:.2f}")
                         coeff_item.setFlags(coeff_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                        coeff_item.setToolTip(f"Coefficient: {coeff:.3f}\nArea: {actual_area:.1f} sf\nAbsorption: {absorption:.2f} sabins")
+                        coeff_item.setToolTip(f"\u03b1 = {coeff:.3f}\nArea: {actual_area:.1f} sf\nAbsorption: {absorption:.2f} sabins")
                         self.materials_table.setItem(row, 3 + i, coeff_item)
                     
                     row += 1
@@ -317,14 +317,14 @@ class MaterialsSummaryWidget(QWidget):
                     area_item.setFlags(area_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                     self.materials_table.setItem(row, 2, area_item)
                     
-                    # Frequency coefficients
+                    # Frequency absorption coefficients
                     for i, freq in enumerate(self.frequencies):
                         coeff = self.get_material_coefficient(material, freq)
                         absorption = area_per_material * coeff
                         
-                        coeff_item = QTableWidgetItem(f"{absorption:.2f}")
+                        coeff_item = QTableWidgetItem(f"{coeff:.2f}")
                         coeff_item.setFlags(coeff_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-                        coeff_item.setToolTip(f"Coefficient: {coeff:.3f}\nArea: {area_per_material:.1f} sf\nAbsorption: {absorption:.2f} sabins")
+                        coeff_item.setToolTip(f"\u03b1 = {coeff:.3f}\nArea: {area_per_material:.1f} sf\nAbsorption: {absorption:.2f} sabins")
                         self.materials_table.setItem(row, 3 + i, coeff_item)
                     
                     row += 1

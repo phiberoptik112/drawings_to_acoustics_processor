@@ -20,6 +20,7 @@ from .hvac_constants import (
     DEFAULT_CFM_VALUES, DEFAULT_CFM_FALLBACK, get_default_cfm_for_component,
     DEFAULT_COMPONENT_NOISE_LEVELS
 )
+from .mechanical_spectrum_select import mechanical_unit_spectrum_for_path
 # Debug export imports
 import os
 from datetime import datetime
@@ -798,37 +799,18 @@ class HVACPathCalculator:
                 except Exception:
                     unit = None
                 bands_set = False
+                path_pt = getattr(hvac_path, 'path_type', None) or 'supply'
+                src_pref = getattr(source_comp, 'mechanical_noise_origin', None) or 'auto'
                 if unit is not None:
                     try:
-                        import json
-                        origin = None
-                        ob = None
-                        if getattr(unit, 'outlet_levels_json', None):
-                            ob = getattr(unit, 'outlet_levels_json', None); origin = 'outlet'
-                        elif getattr(unit, 'inlet_levels_json', None):
-                            ob = getattr(unit, 'inlet_levels_json', None); origin = 'inlet'
-                        elif getattr(unit, 'radiated_levels_json', None):
-                            ob = getattr(unit, 'radiated_levels_json', None); origin = 'radiated'
+                        octave_bands, origin = mechanical_unit_spectrum_for_path(
+                            unit, path_pt, src_pref
+                        )
                         if self.debug_export_enabled:
-                            print(f"DEBUG: MU '{unit.name}' band origin:", origin, 'has_data=', bool(ob))
-                        octave_bands = None
-                        if ob:
-                            data = json.loads(ob)
-                            if self.debug_export_enabled:
-                                try:
-                                    dtype = type(data).__name__
-                                    dkeys = list(data.keys()) if hasattr(data, 'keys') else None
-                                    print("DEBUG: MU bands JSON loaded:", {'type': dtype, 'keys': dkeys})
-                                except Exception:
-                                    pass
-                            order = ["63","125","250","500","1000","2000","4000","8000"]
-                            if hasattr(data, 'get'):
-                                octave_bands = [float(data.get(k, 0) or 0) for k in order]
-                            elif isinstance(data, list) and len(data) >= 8:
-                                octave_bands = [float(x or 0) for x in data[:8]]
-                            if self.debug_export_enabled:
-                                print("DEBUG: MU octave_bands parsed:", octave_bands)
+                            print(f"DEBUG: MU '{unit.name}' band origin:", origin, 'has_bands=', bool(octave_bands))
                         path_data['source_component']['octave_band_levels'] = octave_bands
+                        if origin:
+                            path_data['source_component']['spectrum_origin'] = origin
                         bands_set = bool(octave_bands)
                         if self.debug_export_enabled:
                             print(f"DEBUG: Enriched source from matched Mechanical Unit '{unit.name}' with bands: {octave_bands}")
@@ -849,18 +831,9 @@ class HVACPathCalculator:
                                 })
                             mu2 = self.find_matching_mechanical_unit(from_comp, getattr(hvac_path, 'project_id', self.project_id))
                             if mu2 is not None:
-                                import json
-                                ob2 = (getattr(mu2, 'outlet_levels_json', None) or
-                                       getattr(mu2, 'inlet_levels_json', None) or
-                                       getattr(mu2, 'radiated_levels_json', None))
-                                bands2 = None
-                                if ob2:
-                                    data2 = json.loads(ob2)
-                                    order = ["63","125","250","500","1000","2000","4000","8000"]
-                                    if hasattr(data2, 'get'):
-                                        bands2 = [float(data2.get(k, 0) or 0) for k in order]
-                                    elif isinstance(data2, list) and len(data2) >= 8:
-                                        bands2 = [float(x or 0) for x in data2[:8]]
+                                bands2, origin2 = mechanical_unit_spectrum_for_path(
+                                    mu2, path_pt, src_pref
+                                )
                                 if bands2:
                                     # Preserve the original CFM value when overwriting with mechanical unit data
                                     original_cfm = path_data['source_component'].get('flow_rate', None)
@@ -870,8 +843,10 @@ class HVACPathCalculator:
                                         'component_type': getattr(mu2, 'unit_type', None) or 'unit',
                                         'noise_level': getattr(mu2, 'base_noise_dba', None),
                                         'octave_band_levels': bands2,
-                                        'flow_rate': original_cfm  # FIXED: Preserve CFM value
+                                        'flow_rate': original_cfm,  # FIXED: Preserve CFM value
                                     }
+                                    if origin2:
+                                        path_data['source_component']['spectrum_origin'] = origin2
                                     if self.debug_export_enabled:
                                         print(f"DEBUG: Fallback MU match '{mu2.name}' provided bands: {bands2}")
                     except Exception as e:
@@ -897,38 +872,18 @@ class HVACPathCalculator:
                 unit = unit or matched_by_name
 
                 if unit is not None:
-                    # Parse outlet spectrum if available
-                    octave_bands = None
-                    try:
-                        import json
-                        origin = None
-                        ob = None
-                        if getattr(unit, 'outlet_levels_json', None):
-                            ob = getattr(unit, 'outlet_levels_json', None); origin = 'outlet'
-                        elif getattr(unit, 'inlet_levels_json', None):
-                            ob = getattr(unit, 'inlet_levels_json', None); origin = 'inlet'
-                        elif getattr(unit, 'radiated_levels_json', None):
-                            ob = getattr(unit, 'radiated_levels_json', None); origin = 'radiated'
-                        if self.debug_export_enabled:
-                            print(f"DEBUG: MU '{unit.name}' band origin:", origin, 'has_data=', bool(ob))
-                        if ob:
-                            data = json.loads(ob)
-                            if self.debug_export_enabled:
-                                try:
-                                    dtype = type(data).__name__
-                                    dkeys = list(data.keys()) if hasattr(data, 'keys') else None
-                                    print("DEBUG: MU bands JSON loaded:", {'type': dtype, 'keys': dkeys})
-                                except Exception:
-                                    pass
-                            order = ["63","125","250","500","1000","2000","4000","8000"]
-                            if hasattr(data, 'get'):
-                                octave_bands = [float(data.get(k, 0) or 0) for k in order]
-                            elif isinstance(data, list) and len(data) >= 8:
-                                octave_bands = [float(x or 0) for x in data[:8]]
-                            if self.debug_export_enabled:
-                                print("DEBUG: MU octave_bands parsed:", octave_bands)
-                    except Exception:
-                        octave_bands = None
+                    path_pt = getattr(hvac_path, 'path_type', None) or 'supply'
+                    psid = getattr(hvac_path, 'primary_source_id', None)
+                    if psid is not None and getattr(unit, 'id', None) == psid:
+                        mu_pref = 'auto'
+                    else:
+                        fc0 = segments[0].from_component if segments else None
+                        mu_pref = getattr(fc0, 'mechanical_noise_origin', None) or 'auto'
+                    octave_bands, origin = mechanical_unit_spectrum_for_path(
+                        unit, path_pt, mu_pref
+                    )
+                    if self.debug_export_enabled:
+                        print(f"DEBUG: MU '{unit.name}' band origin:", origin, 'has_bands=', bool(octave_bands))
                     
                     # Do not derive A-weighted level from spectrum here; the engine uses the spectrum directly
                     noise_level = getattr(unit, 'base_noise_dba', None)
@@ -938,6 +893,8 @@ class HVACPathCalculator:
                         'noise_level': noise_level,
                         'octave_band_levels': octave_bands,
                     }
+                    if origin:
+                        path_data['source_component']['spectrum_origin'] = origin
                     
                     if self.debug_export_enabled:
                         noise_str = f"{float(noise_level):.1f} dB(A)" if isinstance(noise_level, (int, float)) else "n/a"

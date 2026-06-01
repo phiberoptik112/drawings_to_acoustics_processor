@@ -222,7 +222,7 @@ class HVACNoiseEngine:
             else:
                 if source_element.octave_band_levels:
                     current_spectrum = source_element.octave_band_levels.copy()
-                    current_dba = source_element.source_noise_level or self._calculate_dba_from_spectrum(current_spectrum)
+                    current_dba = self._calculate_dba_from_spectrum(current_spectrum)
                     debug_logger.info('HVACEngine', 
                         "Seeded source from spectrum", 
                         {'spectrum': current_spectrum, 'dba': current_dba})
@@ -551,15 +551,19 @@ class HVACNoiseEngine:
                             print(f"DEBUG_ENGINE:       Attenuation spectrum: {[f'{x:.1f}' for x in attenuation_spectrum]}")
                         
                         spectrum_before_attenuation = current_spectrum.copy()
-                        # Apply attenuation (subtract)
+                        # Apply attenuation (subtract), skipping NaN values
                         for j in range(min(NUM_OCTAVE_BANDS, len(attenuation_spectrum))):
+                            att_val = attenuation_spectrum[j]
+                            if att_val is None or (isinstance(att_val, float) and math.isnan(att_val)):
+                                if debug_export_enabled:
+                                    print(f"DEBUG_ENGINE:       Band {j+1} ({self.FREQUENCY_BANDS[j]}Hz): skipping NaN attenuation")
+                                continue
                             old_level = current_spectrum[j]
-                            current_spectrum[j] -= attenuation_spectrum[j]
-                            current_spectrum[j] = max(0.0, current_spectrum[j])  # Prevent negative
+                            current_spectrum[j] -= att_val
+                            current_spectrum[j] = max(0.0, current_spectrum[j])
                             
-                            # Debug output for significant attenuation
                             if debug_export_enabled and abs(current_spectrum[j] - old_level) > 0.1:
-                                print(f"DEBUG_ENGINE:       Band {j+1} ({self.FREQUENCY_BANDS[j]}Hz): {old_level:.1f} - {attenuation_spectrum[j]:.1f} = {current_spectrum[j]:.1f}")
+                                print(f"DEBUG_ENGINE:       Band {j+1} ({self.FREQUENCY_BANDS[j]}Hz): {old_level:.1f} - {att_val:.1f} = {current_spectrum[j]:.1f}")
                         
                         if debug_export_enabled:
                             print(f"DEBUG_ENGINE:     After attenuation application:")
@@ -676,7 +680,9 @@ class HVACNoiseEngine:
             
             if debug_export_enabled:
                 print(f"\nDEBUG_ENGINE: Final calculation results:")
-                source_dba = (source_element.source_noise_level if source_element and source_element.source_noise_level is not None else 50.0)
+                source_dba = (self._calculate_dba_from_spectrum(source_element.octave_band_levels)
+                              if source_element and source_element.octave_band_levels
+                              else (source_element.source_noise_level if source_element else 0.0))
                 print(f"DEBUG_ENGINE:   Source dBA: {source_dba:.1f}")
                 print(f"DEBUG_ENGINE:   Terminal dBA: {current_dba:.1f}")
                 print(f"DEBUG_ENGINE:   Total attenuation: {total_attenuation_dba:.1f}")
@@ -687,7 +693,8 @@ class HVACNoiseEngine:
                 
                 # Enhanced summary with spectrum analysis
                 print(f"DEBUG_ENGINE:   Spectrum analysis:")
-                print(f"DEBUG_ENGINE:     Source spectrum: {[f'{x:.1f}' for x in (source_element.octave_band_levels if source_element and source_element.octave_band_levels else [50.0]*8)]}")
+                if source_element and source_element.octave_band_levels:
+                    print(f"DEBUG_ENGINE:     Source spectrum: {[f'{x:.1f}' for x in source_element.octave_band_levels]}")
                 print(f"DEBUG_ENGINE:     Terminal spectrum: {[f'{x:.1f}' for x in current_spectrum]}")
                 
                 # Calculate spectrum changes
@@ -704,14 +711,13 @@ class HVACNoiseEngine:
                 
                 print(f"===== [NOISE ENGINE] END   | origin={origin} | path_id={path_id} | nc={nc_rating} | terminal={current_dba:.1f} dB(A) =====\n")
             
-            # Calculate final source dBA for result
-            final_source_dba = 50.0  # Default
+            # Calculate final source dBA for result — spectrum takes priority when available
+            final_source_dba = 0.0
             if source_element:
-                if source_element.source_noise_level is not None:
-                    final_source_dba = source_element.source_noise_level
-                elif source_element.octave_band_levels:
-                    # Calculate from spectrum if available
+                if source_element.octave_band_levels:
                     final_source_dba = self._calculate_dba_from_spectrum(source_element.octave_band_levels)
+                elif source_element.source_noise_level:
+                    final_source_dba = source_element.source_noise_level
             
             return PathResult(
                 path_id=path_id,
@@ -785,7 +791,7 @@ class HVACNoiseEngine:
         try:
             if debug_export_enabled:
                 print(f"DEBUG_ENGINE:     Calculating {element.element_type} effect...")
-                print(f"DEBUG_ENGINE:     Element details: id={element.element_id}, length={element.length}, width={element.width}, height={element.height}")
+                print(f"DEBUG_ENGINE:     Element details: id={element.element_id}, length={element.length}, width={element.width}, height={element.height}, diameter={element.diameter}")
                 print(f"DEBUG_ENGINE:     Duct properties: shape={element.duct_shape}, type={element.duct_type}, lining={element.lining_thickness}")
                 
             if element.element_type == 'duct':
@@ -1350,6 +1356,7 @@ class HVACNoiseEngine:
     
     def _calculate_flex_duct_effect(self, element: PathElement) -> Dict[str, Any]:
         """Calculate flexible duct insertion loss effect"""
+        debug_export_enabled = os.environ.get('HVAC_DEBUG_EXPORT')
         result: Dict[str, Any] = {
             'attenuation_spectrum': [0.0] * NUM_OCTAVE_BANDS,
             'generated_spectrum': None,
@@ -1358,17 +1365,29 @@ class HVACNoiseEngine:
         }
         
         try:
+            if debug_export_enabled:
+                print(f"DEBUG_FLEX: Calling get_insertion_loss(diameter={element.diameter}, length={element.length})")
+
             spectrum = self.flex_calc.get_insertion_loss(element.diameter, element.length)
             
             for i, freq in enumerate(self.FREQUENCY_BANDS):
                 if freq in spectrum:
-                    result['attenuation_spectrum'][i] = spectrum[freq]
+                    val = spectrum[freq]
+                    if val is not None and not math.isnan(val):
+                        result['attenuation_spectrum'][i] = val
+                    elif debug_export_enabled:
+                        print(f"DEBUG_FLEX: NaN insertion loss at {freq}Hz — using 0.0")
             
-            # Calculate A-weighted attenuation
             result['attenuation_dba'] = self._calculate_dba_from_spectrum(result['attenuation_spectrum'])
+
+            if debug_export_enabled:
+                print(f"DEBUG_FLEX: Final attenuation spectrum: "
+                      f"{[f'{x:.1f}' for x in result['attenuation_spectrum']]}")
             
         except Exception as e:
             result['error'] = f"Flex duct calculation error: {str(e)}"
+            if debug_export_enabled:
+                print(f"DEBUG_FLEX: Exception in flex duct calc: {e}")
             
         return result
     
@@ -1732,7 +1751,7 @@ class HVACNoiseEngine:
             source_element = PathElement(
                 element_type='source',
                 element_id='source_1',
-                source_noise_level=source_component.get('noise_level', 50.0),
+                source_noise_level=source_component.get('noise_level', 0.0),
                 octave_band_levels=source_component.get('octave_band_levels'),
                 flow_rate=source_flow_rate
             )
@@ -1838,6 +1857,7 @@ class HVACNoiseEngine:
                 print(f"DEBUG_HNE_LEGACY:     length: {element.length}")
                 print(f"DEBUG_HNE_LEGACY:     width: {element.width}")
                 print(f"DEBUG_HNE_LEGACY:     height: {element.height}")
+                print(f"DEBUG_HNE_LEGACY:     diameter: {element.diameter}")
                 print(f"DEBUG_HNE_LEGACY:     duct_shape: {element.duct_shape}")
                 print(f"DEBUG_HNE_LEGACY:     duct_type: {element.duct_type}")
                 print(f"DEBUG_HNE_LEGACY:     lining_thickness: {element.lining_thickness}")

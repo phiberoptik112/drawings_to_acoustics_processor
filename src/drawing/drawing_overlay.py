@@ -1,6 +1,6 @@
 from typing import Union, Optional
 from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, QPoint, Signal, QRect
+from PySide6.QtCore import Qt, QPoint, Signal, QRect, QTimer
 from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QFont
 from drawing.drawing_tools import DrawingToolManager, ToolType
 from drawing.scale_manager import ScaleManager
@@ -18,6 +18,11 @@ class DrawingOverlay(QWidget):
     element_hovered = Signal(object, str)     # Emitted when hovering over an element (id, type)
     element_unhovered = Signal()              # Emitted when leaving an element
     placement_blocked = Signal(dict)          # Emitted when placement is blocked (duplicate near visible path)
+
+    # Silencer placement mode signals
+    silencer_position_changed = Signal(dict)  # Emitted during drag (debounced) with position data
+    silencer_placement_finished = Signal(dict)  # Emitted on release with final position
+    silencer_placement_cancelled = Signal()   # Emitted on Esc or mode exit without save
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,7 +83,18 @@ class DrawingOverlay(QWidget):
         self._select_modifiers = Qt.NoModifier
         # Snapping threshold in pixels
         self._snap_threshold_px: int = 20
-        
+
+        # Silencer placement mode state
+        self._silencer_placement_mode = False
+        self._silencer_placement_data: Optional[dict] = None  # Silencer component dict
+        self._silencer_locked_path_id: Optional[int] = None   # Path ID being edited
+        self._silencer_drag_position = 0.0                     # Current position (0.0-1.0)
+        self._silencer_snapped_elbow_id: Optional[int] = None  # Snapped elbow component ID
+        self._silencer_original_position: Optional[float] = None  # For revert on cancel
+        self._silencer_original_elbow_id: Optional[int] = None    # For elbow revert
+        self._silencer_recalc_timer = None                     # QTimer for 150ms debounce
+        self._silencer_is_elbow_type = False                   # True if elbow silencer
+
         # Element ID counter for unique identification
         self._element_id_counter: int = 0
         
@@ -433,8 +449,15 @@ class DrawingOverlay(QWidget):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             point = QPoint(event.x(), event.y())
+
+            # Intercept for silencer placement mode
+            if self._silencer_placement_mode:
+                self._handle_silencer_press(point)
+                self.update()
+                return
+
             self.coordinates_clicked.emit(event.x(), event.y())
-            
+
             # Check for space click first when in SELECT mode
             if self.tool_manager.current_tool_type == ToolType.SELECT:
                 space_hit = self._hit_test_space(point)
@@ -462,11 +485,18 @@ class DrawingOverlay(QWidget):
             
     def mouseMoveEvent(self, event):
         point = QPoint(event.x(), event.y())
-        
+
+        # Intercept for silencer placement mode
+        if self._silencer_placement_mode:
+            if event.buttons() & Qt.LeftButton:
+                self._handle_silencer_drag(point)
+            self.update()
+            return
+
         # Handle hover detection for analysis panel integration
         if not (event.buttons() & Qt.LeftButton):
             self._handle_hover_detection(point)
-        
+
         if event.buttons() & Qt.LeftButton:
             if self.tool_manager.current_tool_type == ToolType.SELECT:
                 self._handle_select_move(point)
@@ -500,6 +530,13 @@ class DrawingOverlay(QWidget):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
             point = QPoint(event.x(), event.y())
+
+            # Intercept for silencer placement mode
+            if self._silencer_placement_mode:
+                self._handle_silencer_release(point)
+                self.update()
+                return
+
             if self.tool_manager.current_tool_type == ToolType.SELECT:
                 self._handle_select_release(point)
                 self._select_modifiers = Qt.NoModifier
@@ -538,6 +575,12 @@ class DrawingOverlay(QWidget):
             
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
+            # Intercept for silencer placement mode
+            if self._silencer_placement_mode:
+                self.exit_silencer_placement_mode(save=False)
+                self.update()
+                return
+
             self.tool_manager.cancel_tool()
             if self.tool_manager.current_tool_type == ToolType.SELECT:
                 self._clear_selection()
@@ -708,6 +751,10 @@ class DrawingOverlay(QWidget):
                 self.draw_measurements(painter)
             if self.show_grid:
                 self.draw_grid(painter)
+            # Draw silencer placement mode elements
+            if self._silencer_placement_mode:
+                self._draw_silencer_placement(painter)
+                self._draw_silencer_status(painter)
             current_tool = self.tool_manager.get_current_tool()
             if current_tool and current_tool.active:
                 current_tool.draw_preview(painter)
@@ -2883,3 +2930,522 @@ class DrawingOverlay(QWidget):
         self._base_measurements.clear()
         self._base_dirty = True
         self.update()
+
+    # ---------------------- Silencer Placement Mode ----------------------
+
+    def enter_silencer_placement_mode(self, path_id: int, silencer_data: dict):
+        """
+        Enter silencer placement mode for dragging a silencer along a path.
+
+        Args:
+            path_id: The HVAC path ID to place the silencer on
+            silencer_data: Dict containing:
+                - component_id: HVACComponent ID of the silencer
+                - product_id: SilencerProduct ID (optional)
+                - product_length: Physical length in inches (for rendering)
+                - is_elbow: True for elbow silencer, False for straight
+                - position_on_path: Current position (0.0-1.0) for straight
+                - elbow_component_id: Current elbow ID for elbow silencers
+                - insertion_loss_500: For display label
+                - model_number: For display label
+        """
+        self._silencer_placement_mode = True
+        self._silencer_placement_data = silencer_data
+        self._silencer_locked_path_id = path_id
+        self._silencer_is_elbow_type = silencer_data.get('is_elbow', False)
+
+        # Store original position for revert
+        if self._silencer_is_elbow_type:
+            self._silencer_original_elbow_id = silencer_data.get('elbow_component_id')
+            self._silencer_snapped_elbow_id = self._silencer_original_elbow_id
+            self._silencer_original_position = None
+        else:
+            self._silencer_original_position = silencer_data.get('position_on_path', 0.5)
+            self._silencer_drag_position = self._silencer_original_position
+            self._silencer_original_elbow_id = None
+
+        # Initialize debounce timer
+        self._silencer_recalc_timer = QTimer()
+        self._silencer_recalc_timer.setSingleShot(True)
+        self._silencer_recalc_timer.setInterval(150)  # 150ms debounce
+        self._silencer_recalc_timer.timeout.connect(self._emit_silencer_recalculate)
+
+        self.update()
+
+    def exit_silencer_placement_mode(self, save: bool = True):
+        """
+        Exit silencer placement mode.
+
+        Args:
+            save: If True, emit placement_finished with final position.
+                  If False, emit placement_cancelled (revert to original).
+        """
+        if not self._silencer_placement_mode:
+            return
+
+        # Stop and clean up timer
+        if self._silencer_recalc_timer:
+            self._silencer_recalc_timer.stop()
+            self._silencer_recalc_timer = None
+
+        if save:
+            # Emit final position for database persistence
+            position_data = {
+                'component_id': self._silencer_placement_data.get('component_id'),
+                'path_id': self._silencer_locked_path_id,
+            }
+            if self._silencer_is_elbow_type:
+                position_data['elbow_component_id'] = self._silencer_snapped_elbow_id
+                position_data['position_on_path'] = None
+            else:
+                position_data['position_on_path'] = self._silencer_drag_position
+                position_data['elbow_component_id'] = None
+
+            self.silencer_placement_finished.emit(position_data)
+        else:
+            self.silencer_placement_cancelled.emit()
+
+        # Reset state
+        self._silencer_placement_mode = False
+        self._silencer_placement_data = None
+        self._silencer_locked_path_id = None
+        self._silencer_drag_position = 0.0
+        self._silencer_snapped_elbow_id = None
+        self._silencer_original_position = None
+        self._silencer_original_elbow_id = None
+        self._silencer_is_elbow_type = False
+
+        self.update()
+
+    def is_silencer_placement_mode(self) -> bool:
+        """Check if silencer placement mode is active"""
+        return self._silencer_placement_mode
+
+    def _emit_silencer_recalculate(self):
+        """Emit signal for recalculation (called by debounce timer)"""
+        if not self._silencer_placement_mode:
+            return
+
+        position_data = {
+            'component_id': self._silencer_placement_data.get('component_id'),
+            'path_id': self._silencer_locked_path_id,
+        }
+        if self._silencer_is_elbow_type:
+            position_data['elbow_component_id'] = self._silencer_snapped_elbow_id
+            position_data['position_on_path'] = None
+        else:
+            position_data['position_on_path'] = self._silencer_drag_position
+            position_data['elbow_component_id'] = None
+
+        self.silencer_position_changed.emit(position_data)
+
+    def _handle_silencer_press(self, point: QPoint):
+        """Handle mouse press during silencer placement mode"""
+        # Start drag tracking
+        self._drag_active = True
+        self._drag_last_point = point
+
+    def _handle_silencer_drag(self, point: QPoint):
+        """Handle mouse drag during silencer placement mode"""
+        if not self._drag_active:
+            return
+
+        if self._silencer_is_elbow_type:
+            # Elbow silencer: snap to nearby elbows
+            self._silencer_snapped_elbow_id = self._find_snap_elbow(point)
+        else:
+            # Straight silencer: calculate position along path
+            self._silencer_drag_position = self._calculate_position_on_path(point)
+
+        # Start debounce timer for recalculation
+        if self._silencer_recalc_timer:
+            self._silencer_recalc_timer.start()
+
+        self.update()
+
+    def _handle_silencer_release(self, point: QPoint):
+        """Handle mouse release during silencer placement mode"""
+        self._drag_active = False
+        self._drag_last_point = None
+
+        # Validate elbow placement
+        if self._silencer_is_elbow_type and self._silencer_snapped_elbow_id is None:
+            # Invalid placement - emit blocked signal
+            self.placement_blocked.emit({
+                'reason': 'Elbow silencer must be placed on an elbow component',
+                'type': 'elbow_silencer_invalid'
+            })
+            return
+
+        # Valid placement - exit mode with save
+        self.exit_silencer_placement_mode(save=True)
+
+    def _calculate_position_on_path(self, point: QPoint) -> float:
+        """
+        Calculate normalized position (0.0-1.0) along path for a given screen point.
+
+        Projects the mouse position onto the path segments and returns the
+        cumulative position as a fraction of total path length.
+        """
+        if self._silencer_locked_path_id is None:
+            return 0.5
+
+        mapping = self.path_element_mapping.get(self._silencer_locked_path_id, {})
+        segments = mapping.get('segments', [])
+
+        if not segments:
+            return 0.5
+
+        # Calculate total path length and find closest point
+        total_length = 0.0
+        segment_lengths = []
+
+        for seg in segments:
+            start_x = seg.get('start_x', 0)
+            start_y = seg.get('start_y', 0)
+            end_x = seg.get('end_x', 0)
+            end_y = seg.get('end_y', 0)
+
+            length = ((end_x - start_x) ** 2 + (end_y - start_y) ** 2) ** 0.5
+            segment_lengths.append(length)
+            total_length += length
+
+        if total_length == 0:
+            return 0.5
+
+        # Find closest point on any segment
+        best_position = 0.5
+        min_distance = float('inf')
+        cumulative_length = 0.0
+
+        for i, seg in enumerate(segments):
+            start_x = seg.get('start_x', 0)
+            start_y = seg.get('start_y', 0)
+            end_x = seg.get('end_x', 0)
+            end_y = seg.get('end_y', 0)
+
+            # Project point onto segment
+            seg_len = segment_lengths[i]
+            if seg_len == 0:
+                continue
+
+            # Vector from start to end
+            dx = end_x - start_x
+            dy = end_y - start_y
+
+            # Vector from start to point
+            px = point.x() - start_x
+            py = point.y() - start_y
+
+            # Project point onto line (0.0 to 1.0 along segment)
+            t = max(0.0, min(1.0, (px * dx + py * dy) / (seg_len * seg_len)))
+
+            # Closest point on segment
+            closest_x = start_x + t * dx
+            closest_y = start_y + t * dy
+
+            # Distance to closest point
+            dist = ((point.x() - closest_x) ** 2 + (point.y() - closest_y) ** 2) ** 0.5
+
+            if dist < min_distance:
+                min_distance = dist
+                # Calculate cumulative position
+                position_on_segment = t * seg_len
+                best_position = (cumulative_length + position_on_segment) / total_length
+
+            cumulative_length += seg_len
+
+        return max(0.0, min(1.0, best_position))
+
+    def _find_snap_elbow(self, point: QPoint) -> Optional[int]:
+        """
+        Find elbow component within snap radius of point.
+
+        Args:
+            point: Screen coordinates to check
+
+        Returns:
+            Component ID of snapped elbow, or None if no elbow within range
+        """
+        if self._silencer_locked_path_id is None:
+            return None
+
+        mapping = self.path_element_mapping.get(self._silencer_locked_path_id, {})
+        path_components = mapping.get('components', [])
+
+        # 30px screen-space snap radius
+        snap_radius = 30
+
+        for comp in path_components:
+            # Only snap to elbow components
+            comp_type = comp.get('component_type', '')
+            if 'elbow' not in comp_type.lower():
+                continue
+
+            comp_x = comp.get('x', 0)
+            comp_y = comp.get('y', 0)
+
+            distance = ((point.x() - comp_x) ** 2 + (point.y() - comp_y) ** 2) ** 0.5
+
+            if distance <= snap_radius:
+                # Return the component's database ID
+                return comp.get('db_component_id') or comp.get('hvac_component_id') or comp.get('id')
+
+        return None
+
+    def _get_silencer_position_on_segments(self) -> Optional[dict]:
+        """
+        Get the screen coordinates and rotation for rendering the silencer.
+
+        Returns dict with:
+            - x, y: Center position
+            - angle: Rotation angle in degrees
+            - spans_boundary: True if silencer spans segment boundary
+            - segments: List of segment data if spanning boundary
+        """
+        if not self._silencer_placement_mode or self._silencer_locked_path_id is None:
+            return None
+
+        if self._silencer_is_elbow_type:
+            # For elbow silencers, return the elbow component position
+            if self._silencer_snapped_elbow_id is None:
+                return None
+
+            mapping = self.path_element_mapping.get(self._silencer_locked_path_id, {})
+            for comp in mapping.get('components', []):
+                comp_id = comp.get('db_component_id') or comp.get('hvac_component_id') or comp.get('id')
+                if comp_id == self._silencer_snapped_elbow_id:
+                    return {
+                        'x': comp.get('x', 0),
+                        'y': comp.get('y', 0),
+                        'is_elbow': True,
+                        'elbow_component': comp
+                    }
+            return None
+
+        # For straight silencers, calculate position along path
+        mapping = self.path_element_mapping.get(self._silencer_locked_path_id, {})
+        segments = mapping.get('segments', [])
+
+        if not segments:
+            return None
+
+        # Calculate total path length
+        total_length = 0.0
+        segment_data = []
+
+        for seg in segments:
+            start_x = seg.get('start_x', 0)
+            start_y = seg.get('start_y', 0)
+            end_x = seg.get('end_x', 0)
+            end_y = seg.get('end_y', 0)
+
+            length = ((end_x - start_x) ** 2 + (end_y - start_y) ** 2) ** 0.5
+            segment_data.append({
+                'start_x': start_x, 'start_y': start_y,
+                'end_x': end_x, 'end_y': end_y,
+                'length': length,
+                'cumulative_start': total_length
+            })
+            total_length += length
+
+        if total_length == 0:
+            return None
+
+        # Find position along path
+        target_distance = self._silencer_drag_position * total_length
+
+        for i, seg in enumerate(segment_data):
+            seg_end = seg['cumulative_start'] + seg['length']
+
+            if target_distance <= seg_end or i == len(segment_data) - 1:
+                # Position is on this segment
+                distance_into_seg = target_distance - seg['cumulative_start']
+                t = distance_into_seg / seg['length'] if seg['length'] > 0 else 0
+
+                x = seg['start_x'] + t * (seg['end_x'] - seg['start_x'])
+                y = seg['start_y'] + t * (seg['end_y'] - seg['start_y'])
+
+                # Calculate angle
+                import math
+                angle = math.degrees(math.atan2(
+                    seg['end_y'] - seg['start_y'],
+                    seg['end_x'] - seg['start_x']
+                ))
+
+                return {
+                    'x': x,
+                    'y': y,
+                    'angle': angle,
+                    'is_elbow': False,
+                    'segment_index': i,
+                    'spans_boundary': False,  # TODO: implement boundary spanning
+                }
+
+        return None
+
+    def _draw_silencer_placement(self, painter: QPainter):
+        """Draw the silencer being placed on the path"""
+        import math
+
+        pos_data = self._get_silencer_position_on_segments()
+        if pos_data is None:
+            # If elbow type with no snap, still draw invalid indicator
+            if self._silencer_is_elbow_type:
+                return
+            return
+
+        # Get silencer dimensions from placement data
+        product_length = self._silencer_placement_data.get('product_length', 36)  # inches
+        product_width = self._silencer_placement_data.get('product_width', 12)  # inches
+
+        # Convert to pixels using scale manager
+        try:
+            length_pixels = self.scale_manager.real_to_pixels(product_length / 12.0)  # convert to feet
+            width_pixels = self.scale_manager.real_to_pixels(product_width / 12.0)
+        except Exception:
+            length_pixels = 60
+            width_pixels = 20
+
+        # Minimum size for visibility
+        length_pixels = max(40, length_pixels)
+        width_pixels = max(15, width_pixels)
+
+        if pos_data.get('is_elbow'):
+            self._draw_elbow_silencer(painter, pos_data, length_pixels, width_pixels)
+        else:
+            self._draw_straight_silencer(painter, pos_data, length_pixels, width_pixels)
+
+    def _draw_straight_silencer(self, painter: QPainter, pos_data: dict,
+                                 length_pixels: float, width_pixels: float):
+        """Draw a straight silencer as a rotated red rectangle"""
+        from PySide6.QtCore import QRectF
+
+        x = pos_data['x']
+        y = pos_data['y']
+        angle = pos_data.get('angle', 0)
+
+        # Save painter state
+        painter.save()
+
+        # Translate to center and rotate
+        painter.translate(x, y)
+        painter.rotate(angle)
+
+        # Draw filled red rectangle centered at origin
+        half_length = length_pixels / 2
+        half_width = width_pixels / 2
+
+        # Set silencer colors (red theme)
+        pen = QPen(QColor(139, 0, 0), 2)  # Dark red outline
+        brush = QBrush(QColor(220, 60, 60, 180))  # Semi-transparent red fill
+        painter.setPen(pen)
+        painter.setBrush(brush)
+
+        # Draw rectangle
+        rect = QRectF(-half_length, -half_width, length_pixels, width_pixels)
+        painter.drawRect(rect)
+
+        # Draw label
+        painter.rotate(-angle)  # Rotate back for text
+        model_number = self._silencer_placement_data.get('model_number', 'Silencer')
+        insertion_loss = self._silencer_placement_data.get('insertion_loss_500', 0)
+        label = f"{model_number}"
+        if insertion_loss:
+            label += f" ({insertion_loss:.0f}dB)"
+
+        painter.setPen(QPen(Qt.black))
+        painter.setFont(QFont("Arial", 8))
+        painter.drawText(-30, int(half_width) + 15, label)
+
+        # Restore painter state
+        painter.restore()
+
+    def _draw_elbow_silencer(self, painter: QPainter, pos_data: dict,
+                              length_pixels: float, width_pixels: float):
+        """Draw an elbow silencer as an L-shaped polygon"""
+        from PySide6.QtGui import QPolygonF
+        from PySide6.QtCore import QPointF
+
+        x = pos_data['x']
+        y = pos_data['y']
+
+        # If no valid snap, draw invalid indicator
+        if self._silencer_snapped_elbow_id is None:
+            # Draw dashed circle indicating invalid position
+            pen = QPen(QColor(220, 20, 60), 2, Qt.DashLine)
+            painter.setPen(pen)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(int(x) - 25, int(y) - 25, 50, 50)
+
+            # Draw X indicator
+            painter.setPen(QPen(QColor(220, 20, 60), 3))
+            painter.drawLine(int(x) - 15, int(y) - 15, int(x) + 15, int(y) + 15)
+            painter.drawLine(int(x) - 15, int(y) + 15, int(x) + 15, int(y) - 15)
+            return
+
+        # Save painter state
+        painter.save()
+
+        # Translate to elbow position
+        painter.translate(x, y)
+
+        # Draw L-shaped polygon
+        arm_length = length_pixels * 0.6
+        arm_width = width_pixels
+
+        # Set silencer colors (red theme)
+        pen = QPen(QColor(139, 0, 0), 2)  # Dark red outline
+        brush = QBrush(QColor(220, 60, 60, 180))  # Semi-transparent red fill
+        painter.setPen(pen)
+        painter.setBrush(brush)
+
+        # Create L-shape polygon
+        polygon = QPolygonF([
+            QPointF(-arm_width/2, -arm_length),          # Top-left of vertical arm
+            QPointF(arm_width/2, -arm_length),           # Top-right of vertical arm
+            QPointF(arm_width/2, -arm_width/2),          # Inner corner right
+            QPointF(arm_length, -arm_width/2),           # Right end top
+            QPointF(arm_length, arm_width/2),            # Right end bottom
+            QPointF(-arm_width/2, arm_width/2),          # Bottom-left corner
+        ])
+
+        painter.drawPolygon(polygon)
+
+        # Draw label
+        model_number = self._silencer_placement_data.get('model_number', 'Elbow Silencer')
+        insertion_loss = self._silencer_placement_data.get('insertion_loss_500', 0)
+        label = f"{model_number} (elbow)"
+        if insertion_loss:
+            label = f"{model_number} ({insertion_loss:.0f}dB)"
+
+        painter.setPen(QPen(Qt.black))
+        painter.setFont(QFont("Arial", 8))
+        painter.drawText(-30, int(arm_length) + 15, label)
+
+        # Restore painter state
+        painter.restore()
+
+    def _draw_silencer_status(self, painter: QPainter):
+        """Draw status indicator bar for silencer placement mode"""
+        # Get widget dimensions
+        width = self.width()
+
+        # Draw semi-transparent status bar at top
+        bar_height = 30
+        painter.fillRect(0, 0, width, bar_height, QColor(50, 50, 50, 200))
+
+        # Draw status text
+        painter.setPen(QPen(Qt.white))
+        painter.setFont(QFont("Arial", 10))
+
+        if self._silencer_is_elbow_type:
+            if self._silencer_snapped_elbow_id:
+                status_text = "Elbow Silencer Placement - Snapped to elbow. Release to place, Esc to cancel"
+            else:
+                status_text = "Elbow Silencer Placement - Drag to an elbow (30px snap), Esc to cancel"
+        else:
+            pos_percent = int(self._silencer_drag_position * 100)
+            status_text = f"Silencer Placement Mode - Position: {pos_percent}% along path. Release to place, Esc to cancel"
+
+        painter.drawText(10, 20, status_text)
