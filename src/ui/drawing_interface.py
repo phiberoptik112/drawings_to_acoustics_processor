@@ -26,6 +26,7 @@ from calculations import RT60Calculator, NoiseCalculator, HVACPathCalculator
 from help import HelpMixin
 from utils.settings_manager import get_settings_manager
 from ui.widgets.path_analysis_panel import PathAnalysisPanel
+from ui.widgets.drawing_spaces_panel import DrawingSpacesPanel
 
 
 class DrawingInterface(HelpMixin, QMainWindow):
@@ -134,6 +135,10 @@ class DrawingInterface(HelpMixin, QMainWindow):
         # Analysis panel - path calculation view (collapsible)
         self.analysis_panel = PathAnalysisPanel(project_id=self.project_id)
         self.main_splitter.addWidget(self.analysis_panel)
+
+        # Drawing spaces panel - spaces on current drawing by page (collapsible)
+        self.spaces_panel = DrawingSpacesPanel(drawing_id=self.drawing_id)
+        self.main_splitter.addWidget(self.spaces_panel)
         
         # Help panel - collapsible right side
         self.help_panel = self.setup_help_panel("drawing_interface")
@@ -143,8 +148,11 @@ class DrawingInterface(HelpMixin, QMainWindow):
         if get_settings_manager().get_help_panel_auto_hide():
             self.help_panel.collapse()
         
-        # Set splitter proportions: tools, drawing, analysis, help
-        self.main_splitter.setSizes([280, 750, 400, 320])
+        # Set splitter proportions: tools, drawing, analysis, spaces, help
+        self.main_splitter.setSizes([280, 600, 320, 260, 280])
+
+        if hasattr(self, 'spaces_panel') and self.spaces_panel:
+            self.spaces_panel.set_current_page(self.current_page_number)
         
         main_layout.addWidget(self.main_splitter)
         central_widget.setLayout(main_layout)
@@ -185,6 +193,7 @@ class DrawingInterface(HelpMixin, QMainWindow):
         view_menu.addAction('Toggle Measurements', self.toggle_measurements)
         view_menu.addSeparator()
         view_menu.addAction('📊 Toggle Analysis Panel', self.toggle_analysis_panel)
+        view_menu.addAction('📍 Toggle Spaces Panel', self.toggle_spaces_panel)
         
         # Tools menu
         tools_menu = menubar.addMenu('Tools')
@@ -522,6 +531,14 @@ class DrawingInterface(HelpMixin, QMainWindow):
             self.analysis_panel.edit_element_requested.connect(self.edit_element_from_analysis)
             # When silencer placement is requested from analysis panel
             self.analysis_panel.silencer_placement_requested.connect(self._on_silencer_placement_from_panel)
+
+        if hasattr(self, 'spaces_panel') and self.spaces_panel:
+            self.spaces_panel.page_navigate_requested.connect(
+                lambda page: self._jump_to_page_and_center(page)
+            )
+            self.spaces_panel.space_navigate_requested.connect(
+                lambda page, x, y: self._jump_to_page_and_center(page, x, y)
+            )
     
     def _connect_segment_validation_error(self):
         """Connect the SegmentTool's validation_error signal to show error popup."""
@@ -798,6 +815,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
         
         # Update status bar
         self.status_bar.showMessage(f"Page {self.current_page_number} - Loaded page-specific elements", 3000)
+
+        if hasattr(self, 'spaces_panel') and self.spaces_panel:
+            self.spaces_panel.set_current_page(self.current_page_number)
         
     def element_created(self, element_data):
         """Handle new drawing element creation"""
@@ -2458,6 +2478,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
             # Refresh the saved spaces list to show the new space
             self.load_saved_spaces()
+            if hasattr(self, 'spaces_panel') and self.spaces_panel:
+                self.spaces_panel.refresh()
         
         except Exception as e:
             if session is not None:
@@ -3814,6 +3836,8 @@ class DrawingInterface(HelpMixin, QMainWindow):
         """Handle space update signal from SpaceEditDialog"""
         # Refresh the spaces list to show updated data
         self.load_saved_spaces()
+        if hasattr(self, 'spaces_panel') and self.spaces_panel:
+            self.spaces_panel.refresh()
     
     def on_space_clicked(self, space_data):
         """Handle space clicked on drawing - open edit dialog for the space"""
@@ -5191,6 +5215,14 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 self.analysis_panel.collapse()
             else:
                 self.analysis_panel.expand()
+
+    def toggle_spaces_panel(self):
+        """Toggle the drawing spaces panel visibility"""
+        if hasattr(self, 'spaces_panel') and self.spaces_panel:
+            if self.spaces_panel.content_widget.isVisible():
+                self.spaces_panel.collapse()
+            else:
+                self.spaces_panel.expand()
     
     def show_path_in_analysis_panel(self, path_id: int):
         """Show a specific path in the analysis panel"""
