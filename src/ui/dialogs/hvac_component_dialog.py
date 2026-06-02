@@ -233,12 +233,98 @@ class HVACComponentDialog(QDialog):
 
         # Junction Preferences (only shown for relevant component types)
         self.junction_group = QGroupBox("Junction Preferences")
-        self.junction_layout = QFormLayout()
+        junction_outer = QVBoxLayout()
+
+        # Path selection row — which arm this HVAC path follows
+        path_row = QHBoxLayout()
+        path_row.addWidget(QLabel("This path follows:"))
         self.branch_takeoff_choice_combo = QComboBox()
         self.branch_takeoff_choice_combo.addItems(["auto", "main_duct", "branch_duct"])
-        self.junction_layout.addRow("BRANCH_TAKEOFF_90 spectrum:", self.branch_takeoff_choice_combo)
-        self.junction_group.setLayout(self.junction_layout)
+        self.branch_takeoff_choice_combo.setToolTip(
+            "Select which arm of the branch takeoff this path travels through.\n"
+            "'auto' lets the engine decide based on flow rates."
+        )
+        path_row.addWidget(self.branch_takeoff_choice_combo)
+        junction_outer.addLayout(path_row)
+
+        # --- Main Continuation Duct dimensions ---
+        self.main_duct_dims_group = QGroupBox("Main Continuation Duct")
+        main_dims_layout = QFormLayout()
+
+        self.main_duct_shape_combo = QComboBox()
+        self.main_duct_shape_combo.addItems(["rectangular", "circular"])
+        self.main_duct_shape_combo.currentTextChanged.connect(self._update_main_duct_shape_visibility)
+        main_dims_layout.addRow("Shape:", self.main_duct_shape_combo)
+
+        self.main_duct_width_spin = QDoubleSpinBox()
+        self.main_duct_width_spin.setRange(0.0, 120.0)
+        self.main_duct_width_spin.setSuffix(" in")
+        self.main_duct_width_spin.setDecimals(1)
+        main_dims_layout.addRow("Width:", self.main_duct_width_spin)
+
+        self.main_duct_height_spin = QDoubleSpinBox()
+        self.main_duct_height_spin.setRange(0.0, 120.0)
+        self.main_duct_height_spin.setSuffix(" in")
+        self.main_duct_height_spin.setDecimals(1)
+        main_dims_layout.addRow("Height:", self.main_duct_height_spin)
+
+        self.main_duct_diameter_spin = QDoubleSpinBox()
+        self.main_duct_diameter_spin.setRange(0.0, 120.0)
+        self.main_duct_diameter_spin.setSuffix(" in")
+        self.main_duct_diameter_spin.setDecimals(1)
+        main_dims_layout.addRow("Diameter:", self.main_duct_diameter_spin)
+
+        self.main_cfm_spin = QDoubleSpinBox()
+        self.main_cfm_spin.setRange(0.0, 50000.0)
+        self.main_cfm_spin.setSuffix(" CFM")
+        self.main_cfm_spin.setDecimals(0)
+        main_dims_layout.addRow("CFM:", self.main_cfm_spin)
+
+        self.main_duct_dims_group.setLayout(main_dims_layout)
+        junction_outer.addWidget(self.main_duct_dims_group)
+
+        # --- Branch (90°) Duct dimensions ---
+        self.branch_duct_dims_group = QGroupBox("Branch (90°) Duct")
+        branch_dims_layout = QFormLayout()
+
+        self.branch_duct_shape_combo = QComboBox()
+        self.branch_duct_shape_combo.addItems(["rectangular", "circular"])
+        self.branch_duct_shape_combo.currentTextChanged.connect(self._update_branch_duct_shape_visibility)
+        branch_dims_layout.addRow("Shape:", self.branch_duct_shape_combo)
+
+        self.branch_duct_width_spin = QDoubleSpinBox()
+        self.branch_duct_width_spin.setRange(0.0, 120.0)
+        self.branch_duct_width_spin.setSuffix(" in")
+        self.branch_duct_width_spin.setDecimals(1)
+        branch_dims_layout.addRow("Width:", self.branch_duct_width_spin)
+
+        self.branch_duct_height_spin = QDoubleSpinBox()
+        self.branch_duct_height_spin.setRange(0.0, 120.0)
+        self.branch_duct_height_spin.setSuffix(" in")
+        self.branch_duct_height_spin.setDecimals(1)
+        branch_dims_layout.addRow("Height:", self.branch_duct_height_spin)
+
+        self.branch_duct_diameter_spin = QDoubleSpinBox()
+        self.branch_duct_diameter_spin.setRange(0.0, 120.0)
+        self.branch_duct_diameter_spin.setSuffix(" in")
+        self.branch_duct_diameter_spin.setDecimals(1)
+        branch_dims_layout.addRow("Diameter:", self.branch_duct_diameter_spin)
+
+        self.branch_cfm_spin = QDoubleSpinBox()
+        self.branch_cfm_spin.setRange(0.0, 50000.0)
+        self.branch_cfm_spin.setSuffix(" CFM")
+        self.branch_cfm_spin.setDecimals(0)
+        branch_dims_layout.addRow("CFM:", self.branch_cfm_spin)
+
+        self.branch_duct_dims_group.setLayout(branch_dims_layout)
+        junction_outer.addWidget(self.branch_duct_dims_group)
+
+        self.junction_group.setLayout(junction_outer)
         layout.addWidget(self.junction_group)
+
+        # Initial shape visibility
+        self._update_main_duct_shape_visibility(self.main_duct_shape_combo.currentText())
+        self._update_branch_duct_shape_visibility(self.branch_duct_shape_combo.currentText())
         
         # Component Details
         details_group = QGroupBox("Component Details")
@@ -517,6 +603,11 @@ class HVACComponentDialog(QDialog):
         show_junction = ('branch' in ctype) or ('junction' in ctype) or ('tee' in ctype)
         self.junction_group.setVisible(show_junction)
 
+        # Show the detailed dimension sub-sections only for 90° branch takeoff
+        show_takeoff_dims = (ctype == 'branch_takeoff_90')
+        self.main_duct_dims_group.setVisible(show_takeoff_dims)
+        self.branch_duct_dims_group.setVisible(show_takeoff_dims)
+
         # Show silencer properties only for silencer components
         show_silencer = ('silencer' in ctype)
         self.silencer_group.setVisible(show_silencer)
@@ -525,6 +616,20 @@ class HVACComponentDialog(QDialog):
         show_custom = (ctype == 'custom')
         self.custom_label_row_widget.setVisible(show_custom)
     
+    def _update_main_duct_shape_visibility(self, shape: str):
+        """Show width/height for rectangular, diameter for circular (main duct)."""
+        is_rect = (shape == 'rectangular')
+        self.main_duct_width_spin.setVisible(is_rect)
+        self.main_duct_height_spin.setVisible(is_rect)
+        self.main_duct_diameter_spin.setVisible(not is_rect)
+
+    def _update_branch_duct_shape_visibility(self, shape: str):
+        """Show width/height for rectangular, diameter for circular (branch duct)."""
+        is_rect = (shape == 'rectangular')
+        self.branch_duct_width_spin.setVisible(is_rect)
+        self.branch_duct_height_spin.setVisible(is_rect)
+        self.branch_duct_diameter_spin.setVisible(not is_rect)
+
     def on_use_standard_toggled(self, checked):
         """Handle use standard checkbox toggle"""
         if checked:
@@ -802,13 +907,32 @@ class HVACComponentDialog(QDialog):
                 pass
             print("DEBUG[HVACComponentDialog]: Failed to restore Mechanical Unit preview:", e)
 
-        # Restore BRANCH_TAKEOFF_90 choice if present
+        # Restore BRANCH_TAKEOFF_90 choice and explicit duct dimensions if present
         try:
             value = getattr(self.component, 'branch_takeoff_choice', None)
             if value:
                 idx = self.branch_takeoff_choice_combo.findText(str(value))
                 if idx >= 0:
                     self.branch_takeoff_choice_combo.setCurrentIndex(idx)
+        except Exception:
+            pass
+        try:
+            main_shape = getattr(self.component, 'main_duct_shape', None) or 'rectangular'
+            idx = self.main_duct_shape_combo.findText(main_shape)
+            if idx >= 0:
+                self.main_duct_shape_combo.setCurrentIndex(idx)
+            self.main_duct_width_spin.setValue(getattr(self.component, 'main_duct_width', None) or 0.0)
+            self.main_duct_height_spin.setValue(getattr(self.component, 'main_duct_height', None) or 0.0)
+            self.main_duct_diameter_spin.setValue(getattr(self.component, 'main_duct_diameter', None) or 0.0)
+            self.main_cfm_spin.setValue(getattr(self.component, 'main_cfm', None) or 0.0)
+            branch_shape = getattr(self.component, 'branch_duct_shape', None) or 'rectangular'
+            idx = self.branch_duct_shape_combo.findText(branch_shape)
+            if idx >= 0:
+                self.branch_duct_shape_combo.setCurrentIndex(idx)
+            self.branch_duct_width_spin.setValue(getattr(self.component, 'branch_duct_width', None) or 0.0)
+            self.branch_duct_height_spin.setValue(getattr(self.component, 'branch_duct_height', None) or 0.0)
+            self.branch_duct_diameter_spin.setValue(getattr(self.component, 'branch_duct_diameter', None) or 0.0)
+            self.branch_cfm_spin.setValue(getattr(self.component, 'branch_cfm', None) or 0.0)
         except Exception:
             pass
 
@@ -955,9 +1079,22 @@ class HVACComponentDialog(QDialog):
         component.x_position = self.x_spin.value()
         component.y_position = self.y_spin.value()
         component.noise_level = self.noise_spin.value()
-        # Persist BRANCH_TAKEOFF_90 preference
+        # Persist BRANCH_TAKEOFF_90 preference and explicit duct dimensions
         try:
             component.branch_takeoff_choice = self.branch_takeoff_choice_combo.currentText()
+        except Exception:
+            pass
+        try:
+            component.main_duct_shape = self.main_duct_shape_combo.currentText()
+            component.main_duct_width = self.main_duct_width_spin.value() or None
+            component.main_duct_height = self.main_duct_height_spin.value() or None
+            component.main_duct_diameter = self.main_duct_diameter_spin.value() or None
+            component.main_cfm = self.main_cfm_spin.value() or None
+            component.branch_duct_shape = self.branch_duct_shape_combo.currentText()
+            component.branch_duct_width = self.branch_duct_width_spin.value() or None
+            component.branch_duct_height = self.branch_duct_height_spin.value() or None
+            component.branch_duct_diameter = self.branch_duct_diameter_spin.value() or None
+            component.branch_cfm = self.branch_cfm_spin.value() or None
         except Exception:
             pass
         try:
@@ -1039,6 +1176,16 @@ class HVACComponentDialog(QDialog):
             noise_level=self.noise_spin.value(),
             cfm=cfm_value,
             branch_takeoff_choice=self.branch_takeoff_choice_combo.currentText(),
+            main_duct_shape=self.main_duct_shape_combo.currentText(),
+            main_duct_width=self.main_duct_width_spin.value() or None,
+            main_duct_height=self.main_duct_height_spin.value() or None,
+            main_duct_diameter=self.main_duct_diameter_spin.value() or None,
+            main_cfm=self.main_cfm_spin.value() or None,
+            branch_duct_shape=self.branch_duct_shape_combo.currentText(),
+            branch_duct_width=self.branch_duct_width_spin.value() or None,
+            branch_duct_height=self.branch_duct_height_spin.value() or None,
+            branch_duct_diameter=self.branch_duct_diameter_spin.value() or None,
+            branch_cfm=self.branch_cfm_spin.value() or None,
             mechanical_noise_origin=self.mechanical_noise_origin_combo.currentData() or 'auto',
             has_turning_vanes=has_vanes,
             vane_chord_length=vane_chord,
