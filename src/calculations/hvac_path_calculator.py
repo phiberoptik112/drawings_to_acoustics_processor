@@ -1418,6 +1418,37 @@ class HVACPathCalculator:
         except Exception:
             pass
 
+        # Propagate explicit branch/main duct dimensions from an adjacent branch_takeoff_90 component.
+        # These are stored on HVACComponent and forwarded here so the noise engine can use them
+        # instead of inferring geometry from neighboring segments.
+        try:
+            from_comp = getattr(segment, 'from_component', None)
+            to_comp = getattr(segment, 'to_component', None)
+            fct = (getattr(from_comp, 'component_type', '') or '').lower() if from_comp else ''
+            tct = (getattr(to_comp, 'component_type', '') or '').lower() if to_comp else ''
+            takeoff_comp = None
+            if 'branch_takeoff_90' in fct:
+                takeoff_comp = from_comp
+            elif 'branch_takeoff_90' in tct:
+                takeoff_comp = to_comp
+            if takeoff_comp is not None:
+                segment_data['junction_main_width'] = getattr(takeoff_comp, 'main_duct_width', None)
+                segment_data['junction_main_height'] = getattr(takeoff_comp, 'main_duct_height', None)
+                segment_data['junction_main_diameter'] = getattr(takeoff_comp, 'main_duct_diameter', None)
+                segment_data['junction_main_shape'] = getattr(takeoff_comp, 'main_duct_shape', None) or 'rectangular'
+                segment_data['junction_main_cfm'] = getattr(takeoff_comp, 'main_cfm', None)
+                segment_data['junction_branch_width'] = getattr(takeoff_comp, 'branch_duct_width', None)
+                segment_data['junction_branch_height'] = getattr(takeoff_comp, 'branch_duct_height', None)
+                segment_data['junction_branch_diameter'] = getattr(takeoff_comp, 'branch_duct_diameter', None)
+                segment_data['junction_branch_shape'] = getattr(takeoff_comp, 'branch_duct_shape', None) or 'rectangular'
+                segment_data['junction_branch_cfm'] = getattr(takeoff_comp, 'branch_cfm', None)
+                if self.debug_export_enabled:
+                    print(f"DEBUG_BUILD_SEG: Explicit branch takeoff dims from component id={getattr(takeoff_comp, 'id', '?')}: "
+                          f"main={segment_data.get('junction_main_width')}x{segment_data.get('junction_main_height')} "
+                          f"branch={segment_data.get('junction_branch_width')}x{segment_data.get('junction_branch_height')}")
+        except Exception:
+            pass
+
         return segment_data
 
     def find_matching_mechanical_unit(self, component: 'HVACComponent', project_id: int) -> Optional['MechanicalUnit']:

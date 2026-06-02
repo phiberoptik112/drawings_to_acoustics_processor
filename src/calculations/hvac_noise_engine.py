@@ -69,6 +69,18 @@ class PathElement:
     fitting_type: Optional[str] = None
     # Optional override for BRANCH_TAKEOFF_90 spectrum choice: 'auto' | 'main_duct' | 'branch_duct'
     branch_takeoff_choice: Optional[str] = None
+    # Explicit duct dimensions for 90° branch takeoff junction elements.
+    # When populated, these override the neighbour-inference logic in the noise engine.
+    junction_main_width: Optional[float] = None      # inches
+    junction_main_height: Optional[float] = None     # inches
+    junction_main_diameter: Optional[float] = None   # inches (circular)
+    junction_main_shape: Optional[str] = None        # 'rectangular' | 'circular'
+    junction_main_cfm: Optional[float] = None
+    junction_branch_width: Optional[float] = None    # inches
+    junction_branch_height: Optional[float] = None   # inches
+    junction_branch_diameter: Optional[float] = None # inches (circular)
+    junction_branch_shape: Optional[str] = None      # 'rectangular' | 'circular'
+    junction_branch_cfm: Optional[float] = None
     # Terminal end condition for End Reflection Loss: 'flush' (grille/diffuser) or 'free' (open to space)
     termination_type: Optional[str] = None
     # Silencer-specific properties
@@ -368,7 +380,9 @@ class HVACNoiseEngine:
                             print(f"DEBUG_ENGINE:       Calculated branch flow: {branch_flow:.1f} CFM")
                             print(f"DEBUG_ENGINE:       Flow ratio (main/branch): {main_flow/branch_flow:.2f}" if branch_flow > 0 else "DEBUG_ENGINE:       Flow ratio: N/A")
 
-                        # Compute cross-sectional areas using available geometry
+                        # Compute cross-sectional areas using available geometry.
+                        # Prefer explicit branch/main dimensions stored directly on the junction
+                        # element (populated when the user enters them in the component dialog).
                         def _area_for(elem: Optional[PathElement]) -> float:
                             try:
                                 if elem is None:
@@ -377,12 +391,49 @@ class HVACNoiseEngine:
                             except Exception:
                                 return 0.0
 
-                        branch_area = _area_for(next_elem) or _area_for(element)
-                        main_area = _area_for(last_element_with_geometry) or _area_for(element)
-                        if main_area <= 0.0:
-                            main_area = branch_area or _area_for(element)
-                        if branch_area <= 0.0:
-                            branch_area = main_area or _area_for(element)
+                        def _explicit_area(elem: PathElement, side: str) -> float:
+                            """Compute ft² from explicit junction duct dimensions on *elem*."""
+                            try:
+                                shape = getattr(elem, f'junction_{side}_shape', None) or 'rectangular'
+                                if shape == 'circular':
+                                    diam_in = getattr(elem, f'junction_{side}_diameter', None) or 0.0
+                                    if diam_in > 0:
+                                        import math
+                                        return math.pi / 4 * (diam_in / 12.0) ** 2
+                                else:
+                                    w_in = getattr(elem, f'junction_{side}_width', None) or 0.0
+                                    h_in = getattr(elem, f'junction_{side}_height', None) or 0.0
+                                    if w_in > 0 and h_in > 0:
+                                        return (w_in / 12.0) * (h_in / 12.0)
+                            except Exception:
+                                pass
+                            return 0.0
+
+                        # Use explicit areas when the user supplied them; fall back to neighbours
+                        explicit_branch_area = _explicit_area(element, 'branch')
+                        explicit_main_area = _explicit_area(element, 'main')
+
+                        if explicit_branch_area > 0 and explicit_main_area > 0:
+                            branch_area = explicit_branch_area
+                            main_area = explicit_main_area
+                            # Also override CFM if the user supplied per-arm values
+                            explicit_branch_cfm = getattr(element, 'junction_branch_cfm', None)
+                            explicit_main_cfm = getattr(element, 'junction_main_cfm', None)
+                            if explicit_branch_cfm and explicit_branch_cfm > 0:
+                                branch_flow = float(explicit_branch_cfm)
+                            if explicit_main_cfm and explicit_main_cfm > 0:
+                                main_flow = float(explicit_main_cfm)
+                            if debug_export_enabled:
+                                print(f"DEBUG_ENGINE:     Using EXPLICIT junction dimensions: "
+                                      f"main_area={main_area:.4f} ft², branch_area={branch_area:.4f} ft², "
+                                      f"main_cfm={main_flow:.1f}, branch_cfm={branch_flow:.1f}")
+                        else:
+                            branch_area = _area_for(next_elem) or _area_for(element)
+                            main_area = _area_for(last_element_with_geometry) or _area_for(element)
+                            if main_area <= 0.0:
+                                main_area = branch_area or _area_for(element)
+                            if branch_area <= 0.0:
+                                branch_area = main_area or _area_for(element)
 
                         # Map fitting hint to junction type
                         fit = (element.fitting_type or '').lower() if hasattr(element, 'fitting_type') else ''
@@ -1863,7 +1914,36 @@ class HVACNoiseEngine:
                 print(f"DEBUG_HNE_LEGACY:     lining_thickness: {element.lining_thickness}")
                 print(f"DEBUG_HNE_LEGACY:     flow_rate: {element.flow_rate}")
                 print(f"DEBUG_HNE_LEGACY:     fitting_type: {element.fitting_type}")
-            
+
+            # Inject a zero-dimension junction PathElement before the duct when this segment
+            # is connected to a branch_takeoff_90 component that has explicit dimensions defined.
+            # This ensures the junction noise is calculated at the correct point in the path
+            # using the user-supplied geometry rather than inferred neighbour dimensions.
+            if (segment.get('fitting_type') == 'branch_takeoff_90' and
+                    segment.get('junction_branch_width') is not None):
+                junction_element = PathElement(
+                    element_type='junction',
+                    element_id=f'takeoff_junction_{i+1}',
+                    fitting_type='branch_takeoff_90',
+                    branch_takeoff_choice=segment.get('branch_takeoff_choice'),
+                    flow_rate=segment_flow_rate,
+                    junction_main_width=segment.get('junction_main_width'),
+                    junction_main_height=segment.get('junction_main_height'),
+                    junction_main_diameter=segment.get('junction_main_diameter'),
+                    junction_main_shape=segment.get('junction_main_shape') or 'rectangular',
+                    junction_main_cfm=segment.get('junction_main_cfm'),
+                    junction_branch_width=segment.get('junction_branch_width'),
+                    junction_branch_height=segment.get('junction_branch_height'),
+                    junction_branch_diameter=segment.get('junction_branch_diameter'),
+                    junction_branch_shape=segment.get('junction_branch_shape') or 'rectangular',
+                    junction_branch_cfm=segment.get('junction_branch_cfm'),
+                )
+                elements.append(junction_element)
+                if debug_export_enabled:
+                    print(f"DEBUG_HNE_LEGACY:   Injected junction PathElement takeoff_junction_{i+1} "
+                          f"(main={segment.get('junction_main_width')}x{segment.get('junction_main_height')} "
+                          f"branch={segment.get('junction_branch_width')}x{segment.get('junction_branch_height')})")
+
             elements.append(element)
         
         # Add terminal element

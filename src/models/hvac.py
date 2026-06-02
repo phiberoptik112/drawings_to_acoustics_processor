@@ -33,19 +33,20 @@ class HVACComponent(Base):
     cfm = Column(Float)  # Air flow rate in CFM
     # Junction behavior preferences (component-level)
     # For components acting as 90° branch takeoffs, allow user override of which
-    # junction spectrum to use in path calculations: 'auto' | 'main' | 'branch'
+    # junction spectrum to use in path calculations: 'auto' | 'main_duct' | 'branch_duct'
     branch_takeoff_choice = Column(String(20))
-    # Junction duct geometry (inches / CFM) for branch takeoff noise calculations
-    branch_duct_width = Column(Float)
-    branch_duct_height = Column(Float)
-    branch_duct_diameter = Column(Float)
+    # Explicit duct dimensions for 90° branch takeoff components.
+    # Branch duct = the 90° takeoff arm; Main duct = the continuation of the main run.
+    branch_duct_width = Column(Float)       # inches
+    branch_duct_height = Column(Float)      # inches
+    branch_duct_diameter = Column(Float)    # inches (circular ducts)
     branch_duct_shape = Column(String(20))  # 'rectangular' | 'circular'
-    main_duct_width = Column(Float)
-    main_duct_height = Column(Float)
-    main_duct_diameter = Column(Float)
-    main_duct_shape = Column(String(20))  # 'rectangular' | 'circular'
-    branch_cfm = Column(Float)
-    main_cfm = Column(Float)
+    main_duct_width = Column(Float)         # inches
+    main_duct_height = Column(Float)        # inches
+    main_duct_diameter = Column(Float)      # inches (circular ducts)
+    main_duct_shape = Column(String(20))    # 'rectangular' | 'circular'
+    branch_cfm = Column(Float)              # CFM entering the branch arm
+    main_cfm = Column(Float)               # CFM continuing in the main duct
     # Mechanical schedule spectrum for path noise: 'auto' | 'inlet' | 'outlet' | 'radiated'
     mechanical_noise_origin = Column(String(20), default='auto')
     
