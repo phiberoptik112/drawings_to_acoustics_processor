@@ -252,7 +252,7 @@ class DrawingElementManager:
 			elements_saved = 0
 			
 			for element_type, elements_list in overlay_data.items():
-				if element_type in ['rectangles', 'polygons', 'components', 'segments', 'measurements']:
+				if element_type in ['rectangles', 'polygons', 'components', 'segments', 'measurements', 'noise_source_markers']:
 					for element_data in elements_list:
 						# Skip measurements if they're temporary
 						if element_type == 'measurements' and not element_data.get('persistent', True):
@@ -306,7 +306,8 @@ class DrawingElementManager:
 				'polygons': [],
 				'components': [],
 				'segments': [],
-				'measurements': []
+				'measurements': [],
+				'noise_source_markers': [],
 			}
 			
 			for element in elements:
@@ -329,6 +330,8 @@ class DrawingElementManager:
 					overlay_data['segments'].append(element_dict)
 				elif element.element_type == 'measurement':
 					overlay_data['measurements'].append(element_dict)
+				elif element.element_type == 'noise_source_marker':
+					overlay_data['noise_source_markers'].append(element_dict)
 					
 			session.close()
 			return overlay_data

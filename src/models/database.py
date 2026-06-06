@@ -226,6 +226,13 @@ def initialize_database(db_path=None):
 	except ImportError:
 		pass
 
+	# Adjacency detection schema (drawing_pages table, PDF-native coords, thresholds)
+	try:
+		from .migrate_adjacency_schema import ensure_adjacency_schema
+		run_migration("Adjacency detection schema", ensure_adjacency_schema)
+	except ImportError:
+		pass
+
 	# Log summary of migration issues
 	if migration_errors:
 		logger.error(f"Database migrations completed with {len(migration_errors)} errors:")

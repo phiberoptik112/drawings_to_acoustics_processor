@@ -543,11 +543,24 @@ class RoomBoundary(Base):
     drawing_id = Column(Integer, ForeignKey('drawings.id'), nullable=False)
     page_number = Column(Integer, default=1)  # PDF page number where boundary exists
     
-    # Rectangle coordinates in drawing pixels
+    # Rectangle coordinates in drawing pixels (legacy, base-zoom)
     x_position = Column(Float, nullable=False)  # Top-left X
     y_position = Column(Float, nullable=False)  # Top-left Y
     width = Column(Float, nullable=False)       # Width in pixels
     height = Column(Float, nullable=False)      # Height in pixels
+    
+    # PDF-native coordinates (zoom-independent, 1pt = 1/72 inch)
+    pdf_x = Column(Float)
+    pdf_y = Column(Float)
+    pdf_width = Column(Float)
+    pdf_height = Column(Float)
+    pdf_polygon_pts = Column(Text)  # JSON [{x,y},...] in PDF points
+    pdf_page_width = Column(Float)
+    pdf_page_height = Column(Float)
+    floor_label = Column(String(100))
+    
+    # Link to noise source (for boundary-type sources)
+    noise_source_id = Column(Integer, ForeignKey('noise_sources.id'), nullable=True)
     
     # Calculated real-world dimensions
     calculated_area = Column(Float)  # Square feet based on scale

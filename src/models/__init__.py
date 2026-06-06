@@ -7,7 +7,7 @@ from .database import Base, initialize_database, get_session, close_database
 init_database = initialize_database
 
 from .project import Project
-from .drawing import Drawing
+from .drawing import Drawing, DrawingPage
 from .space import Space, SpaceNoiseSource, RoomBoundary, SpaceSurfaceMaterial, SurfaceType
 from .hvac import (HVACComponent, HVACPath, HVACSegment, SegmentFitting,
                    SilencerProduct, SilencerPlacementAnalysis, HVACReceiverResult)
@@ -29,6 +29,7 @@ __all__ = [
 	'close_database',
 	'Project',
 	'Drawing',
+	'DrawingPage',
 	'Space',
 	'SpaceNoiseSource',
 	'SpaceSurfaceMaterial',

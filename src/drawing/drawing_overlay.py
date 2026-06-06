@@ -50,6 +50,7 @@ class DrawingOverlay(QWidget):
         self.components: list[dict] = []
         self.segments: list[dict] = []
         self.measurements: list[dict] = []
+        self.noise_source_markers: list[dict] = []
         self.visible_paths: dict[int, bool] = {}
         self.hidden_paths: set[int] = set()  # Paths explicitly hidden by user
         self.path_element_mapping: dict[int, dict] = {}
@@ -747,6 +748,7 @@ class DrawingOverlay(QWidget):
             self.draw_polygons(painter)
             self.draw_components(painter)
             self.draw_segments(painter)
+            self._draw_noise_source_markers(painter)
             if self.show_measurements:
                 self.draw_measurements(painter)
             if self.show_grid:
@@ -856,12 +858,15 @@ class DrawingOverlay(QWidget):
         for lst in (self.rectangles, self.polygons, self.components, self.segments, self.measurements):
             for item in lst:
                 item['saved_zoom'] = self._current_zoom_factor
+        for item in self.noise_source_markers:
+            item['saved_zoom'] = self._current_zoom_factor
         return {
             'rectangles': self.rectangles.copy(),
             'polygons': self.polygons.copy(),
             'components': self.components.copy(),
             'segments': self.segments.copy(),
             'measurements': self.measurements.copy(),
+            'noise_source_markers': [m.copy() for m in self.noise_source_markers],
         }
         
     def load_elements_data(self, data):
@@ -1241,6 +1246,9 @@ class DrawingOverlay(QWidget):
             print(f"DEBUG: Full traceback:")
             traceback.print_exc()
 
+        # Load noise source markers
+        self.noise_source_markers = data.get('noise_source_markers', [])
+
         try:
             print(f"\nDEBUG: Setting zoom factor to {self._current_zoom_factor}")
             self._base_dirty = False
@@ -1279,6 +1287,7 @@ class DrawingOverlay(QWidget):
         self.components.clear()
         self.segments.clear()
         self.measurements.clear()
+        self.noise_source_markers.clear()
         self._base_rectangles.clear()
         self._base_polygons.clear()
         self._base_components.clear()
@@ -1536,6 +1545,40 @@ class DrawingOverlay(QWidget):
             painter.setPen(QPen(Qt.black))
             painter.setFont(QFont("Arial", 8))
             painter.drawText(mid_x - 15, mid_y - 5, length_text)
+
+    def _draw_noise_source_markers(self, painter):
+        """Draw noise source marker icons on the overlay."""
+        z = self._current_zoom_factor or 1.0
+        for marker in self.noise_source_markers:
+            pdf_x = marker.get('pdf_x', 0)
+            pdf_y = marker.get('pdf_y', 0)
+            sx = int(pdf_x * z)
+            sy = int(pdf_y * z)
+
+            # Speaker icon (triangle + arc)
+            icon_size = max(10, int(14 * z))
+            pen = QPen(QColor(156, 39, 176), 2)
+            painter.setPen(pen)
+            brush = QBrush(QColor(243, 229, 245))
+            painter.setBrush(brush)
+            painter.drawEllipse(sx - icon_size, sy - icon_size, icon_size * 2, icon_size * 2)
+
+            # Inner speaker shape
+            painter.setPen(QPen(QColor(123, 31, 162), 2))
+            painter.setBrush(QBrush(QColor(123, 31, 162)))
+            half = icon_size // 2
+            painter.drawRect(sx - half // 2, sy - half // 3, half, half * 2 // 3)
+
+            # Name label
+            name = marker.get('name', '')
+            if name:
+                painter.setPen(QPen(QColor(74, 20, 140)))
+                painter.setFont(QFont("Arial", max(7, int(8 * min(z, 2.0)))))
+                painter.drawText(sx + icon_size + 3, sy + 4, name)
+
+            # Store screen coords back for hit testing
+            marker['x'] = sx
+            marker['y'] = sy
 
     def draw_measurements(self, painter):
         for meas in self.measurements:

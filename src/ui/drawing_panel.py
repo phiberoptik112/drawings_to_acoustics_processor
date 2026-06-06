@@ -48,6 +48,12 @@ class DrawingPanel(QWidget):
 		self.path_only_chk.setToolTip("Hide all drawing elements except those belonging to visible paths")
 		self.path_only_chk.stateChanged.connect(self._on_path_only_changed)
 		top_bar.addWidget(self.path_only_chk)
+
+		# Floor label display (read-only in panel)
+		self._floor_label = QLabel("Floor: --")
+		self._floor_label.setStyleSheet("color: #1565c0; font-size: 11px; padding: 0 8px;")
+		top_bar.addWidget(self._floor_label)
+
 		top_bar.addStretch()
 		layout.addLayout(top_bar)
 
@@ -92,6 +98,25 @@ class DrawingPanel(QWidget):
 		self.current_page_number = (page_index + 1)
 		self._update_overlay_geometry()
 		self._load_saved_elements()
+		self._update_floor_label()
+
+	def _update_floor_label(self):
+		"""Update the floor label display for the current page."""
+		if not self.drawing_id:
+			return
+		try:
+			from models.drawing import DrawingPage
+			session = get_session()
+			dp = session.query(DrawingPage).filter_by(
+				drawing_id=self.drawing_id, page_number=self.current_page_number
+			).first()
+			session.close()
+			if dp and dp.floor_label:
+				self._floor_label.setText(f"Floor: {dp.floor_label}")
+			else:
+				self._floor_label.setText("Floor: --")
+		except Exception:
+			pass
 
 	def _update_overlay_geometry(self):
 		if self.pdf_viewer and self.pdf_viewer.pixmap and self.drawing_overlay:

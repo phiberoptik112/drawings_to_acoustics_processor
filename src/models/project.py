@@ -2,7 +2,7 @@
 Project model - represents an acoustic analysis project
 """
 
-from sqlalchemy import Column, Integer, String, DateTime, Text
+from sqlalchemy import Column, Integer, String, DateTime, Text, Float
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
@@ -22,6 +22,10 @@ class Project(Base):
     # Default settings
     default_scale = Column(String(50), default="1:100")  # e.g., "1:100"
     default_units = Column(String(20), default="feet")   # "feet" or "meters"
+
+    # Adjacency detection thresholds
+    adjacency_near_min_in = Column(Float, default=6.0)   # Min distance (inches) to flag as 'near'
+    adjacency_near_max_ft = Column(Float, default=3.0)   # Max distance (feet) before 'remote'
     
     # Relationships
     drawings = relationship("Drawing", back_populates="project", cascade="all, delete-orphan")

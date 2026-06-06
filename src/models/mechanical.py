@@ -74,7 +74,7 @@ class MechanicalUnit(Base):
 class NoiseSource(Base):
     """Generic noise source attached to a project (e.g., generator, chiller room).
 
-    Minimal fields for starting dB(A); octave bands can be added later.
+    Supports drawing placement for automatic adjacency proximity detection.
     """
 
     __tablename__ = "noise_sources"
@@ -88,12 +88,43 @@ class NoiseSource(Base):
     notes = Column(Text)
     created_date = Column(DateTime, default=datetime.utcnow)
 
+    # Drawing placement fields
+    drawing_id = Column(Integer, ForeignKey("drawings.id"), nullable=True)
+    page_number = Column(Integer)
+    pdf_x = Column(Float)
+    pdf_y = Column(Float)
+    pdf_page_width = Column(Float)
+    pdf_page_height = Column(Float)
+    floor_label = Column(String(100))
+    placement_type = Column(String(20), default='unplaced')  # 'point' | 'boundary' | 'unplaced'
+
+    # Octave-band sound power levels (Lw) as JSON: {"63":72.0, "125":75.0, ...}
+    octave_bands_json = Column(Text)
+
     # Relationships
     project = relationship("Project", back_populates="noise_sources")
 
     def __repr__(self) -> str:  # pragma: no cover
-        return f"<NoiseSource(id={self.id}, name='{self.name}', dBA={self.base_noise_dba})>"
-    
+        return f"<NoiseSource(id={self.id}, name='{self.name}', dBA={self.base_noise_dba}, placement='{self.placement_type}')>"
+
+    def get_octave_bands(self):
+        """Parse octave_bands_json into a dict of {freq_hz: lw_db}."""
+        import json
+        if not self.octave_bands_json:
+            return None
+        try:
+            return {int(k): float(v) for k, v in json.loads(self.octave_bands_json).items()}
+        except (json.JSONDecodeError, ValueError):
+            return None
+
+    def set_octave_bands(self, bands_dict):
+        """Set octave_bands_json from a dict of {freq_hz: lw_db}."""
+        import json
+        if bands_dict is None:
+            self.octave_bands_json = None
+        else:
+            self.octave_bands_json = json.dumps({str(k): v for k, v in bands_dict.items()})
+
     def to_dict(self):
         """Convert noise source to dictionary for JSON serialization"""
         return {
@@ -104,6 +135,13 @@ class NoiseSource(Base):
             'base_noise_dba': self.base_noise_dba,
             'notes': self.notes,
             'created_date': self.created_date.isoformat() if self.created_date else None,
+            'drawing_id': self.drawing_id,
+            'page_number': self.page_number,
+            'pdf_x': self.pdf_x,
+            'pdf_y': self.pdf_y,
+            'floor_label': self.floor_label,
+            'placement_type': self.placement_type,
+            'octave_bands_json': self.octave_bands_json,
         }
 
 

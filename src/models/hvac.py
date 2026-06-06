@@ -69,6 +69,13 @@ class HVACComponent(Base):
     position_on_path = Column(Float)  # 0.0-1.0 normalized position for straight silencers
     elbow_component_id = Column(Integer, ForeignKey('hvac_components.id'))  # For elbow silencers
 
+    # PDF-native coordinates (zoom-independent, 1pt = 1/72 inch)
+    pdf_x = Column(Float)
+    pdf_y = Column(Float)
+    pdf_page_width = Column(Float)
+    pdf_page_height = Column(Float)
+    floor_label = Column(String(100))
+
     created_date = Column(DateTime, default=datetime.utcnow)
     
     # Relationships

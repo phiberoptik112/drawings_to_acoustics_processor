@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QFormLayout, QMessageBox, QTabWidget, QWidget,
                              QListWidget, QListWidgetItem, QGroupBox, QCheckBox,
                              QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-                             QSplitter)
+                             QSplitter, QDoubleSpinBox)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 
@@ -251,7 +251,30 @@ class ProjectSettingsDialog(HelpMixin, QDialog):
         
         stats_group.setLayout(stats_layout)
         layout.addWidget(stats_group)
-        
+
+        # Adjacency Detection settings
+        adj_group = QGroupBox("Adjacency Detection")
+        adj_layout = QFormLayout()
+
+        self.adj_near_min_spin = QDoubleSpinBox()
+        self.adj_near_min_spin.setRange(1.0, 24.0)
+        self.adj_near_min_spin.setDecimals(1)
+        self.adj_near_min_spin.setSuffix(" in")
+        self.adj_near_min_spin.setValue(getattr(self.project, 'adjacency_near_min_in', None) or 6.0)
+        self.adj_near_min_spin.setToolTip("Minimum gap (inches) to classify adjacency as 'near' vs 'shared'")
+        adj_layout.addRow("Shared threshold:", self.adj_near_min_spin)
+
+        self.adj_near_max_spin = QDoubleSpinBox()
+        self.adj_near_max_spin.setRange(1.0, 20.0)
+        self.adj_near_max_spin.setDecimals(1)
+        self.adj_near_max_spin.setSuffix(" ft")
+        self.adj_near_max_spin.setValue(getattr(self.project, 'adjacency_near_max_ft', None) or 3.0)
+        self.adj_near_max_spin.setToolTip("Maximum gap (feet) before adjacency is classified as 'remote'")
+        adj_layout.addRow("Near threshold:", self.adj_near_max_spin)
+
+        adj_group.setLayout(adj_layout)
+        layout.addWidget(adj_group)
+
         layout.addStretch()
         
         widget.setLayout(layout)
@@ -686,7 +709,11 @@ class ProjectSettingsDialog(HelpMixin, QDialog):
             project.description = self.description_edit.toPlainText().strip()
             project.default_scale = self.scale_combo.currentText()
             project.default_units = self.units_combo.currentText()
-            
+
+            # Adjacency detection thresholds
+            project.adjacency_near_min_in = self.adj_near_min_spin.value()
+            project.adjacency_near_max_ft = self.adj_near_max_spin.value()
+
             session.commit()
             session.close()
             

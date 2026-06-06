@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                              QListWidgetItem, QScrollArea, QSizePolicy, QSplitter,
                              QTableWidget, QTableWidgetItem, QHeaderView)
 from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtGui import QColor
 
 from models import get_session
 from models.database import get_hvac_session
@@ -999,7 +1000,90 @@ class SpaceEditDialog(HelpMixin, QDialog):
         
         # Connect selection change
         self.partitions_table.itemSelectionChanged.connect(self.on_partition_selection_changed)
-        
+
+        # --- Adjacency Detection Results ---
+        adj_group = QGroupBox("Adjacency Detection")
+        adj_layout = QVBoxLayout()
+
+        # Status bar
+        adj_status_row = QHBoxLayout()
+        self.adj_status_label = QLabel("Not computed")
+        self.adj_status_label.setStyleSheet("color: #757575; font-style: italic;")
+        adj_status_row.addWidget(self.adj_status_label)
+        adj_status_row.addStretch()
+        self.adj_recalculate_btn = QPushButton("Recalculate")
+        self.adj_recalculate_btn.setStyleSheet("""
+            QPushButton { background-color: #4caf50; color: white; border: none;
+                          padding: 4px 10px; border-radius: 3px; font-size: 11px; }
+            QPushButton:hover { background-color: #388e3c; }
+        """)
+        self.adj_recalculate_btn.clicked.connect(self._recalculate_adjacencies)
+        adj_status_row.addWidget(self.adj_recalculate_btn)
+        adj_layout.addLayout(adj_status_row)
+
+        # Warning banner (hidden by default)
+        self.adj_warning_label = QLabel("")
+        self.adj_warning_label.setWordWrap(True)
+        self.adj_warning_label.setStyleSheet("""
+            QLabel { background-color: #fff9c4; color: #f57f17; padding: 6px;
+                     border-radius: 3px; border: 1px solid #f9a825; }
+        """)
+        self.adj_warning_label.setVisible(False)
+        adj_layout.addWidget(self.adj_warning_label)
+
+        # Section 1: Same-Floor Space Adjacencies
+        self.adj_spaces_table = QTableWidget(0, 5)
+        self.adj_spaces_table.setHorizontalHeaderLabels([
+            "Adjacent Space", "Floor", "Gap Distance", "Shared Length", "Classification"
+        ])
+        self.adj_spaces_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.adj_spaces_table.setMaximumHeight(120)
+        self.adj_spaces_table.setSelectionBehavior(QTableWidget.SelectRows)
+        adj_layout.addWidget(QLabel("Same-Floor Space Adjacencies:"))
+        adj_layout.addWidget(self.adj_spaces_table)
+
+        # Section 2: Floor/Ceiling Space Adjacencies
+        self.adj_floor_ceiling_table = QTableWidget(0, 4)
+        self.adj_floor_ceiling_table.setHorizontalHeaderLabels([
+            "Adjacent Space", "Relationship", "Overlap Area (sq ft)", "Floor Label"
+        ])
+        self.adj_floor_ceiling_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.adj_floor_ceiling_table.setMaximumHeight(100)
+        self.adj_floor_ceiling_table.setSelectionBehavior(QTableWidget.SelectRows)
+        adj_layout.addWidget(QLabel("Floor/Ceiling Adjacencies:"))
+        adj_layout.addWidget(self.adj_floor_ceiling_table)
+
+        # Section 3: HVAC Path Proximity
+        self.adj_hvac_table = QTableWidget(0, 6)
+        self.adj_hvac_table.setHorizontalHeaderLabels([
+            "HVAC Path", "Type", "NC Rating", "Gap Distance", "Classification", "Risk"
+        ])
+        self.adj_hvac_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.adj_hvac_table.setMaximumHeight(120)
+        self.adj_hvac_table.setSelectionBehavior(QTableWidget.SelectRows)
+        adj_layout.addWidget(QLabel("HVAC Path Proximity:"))
+        adj_layout.addWidget(self.adj_hvac_table)
+
+        # Section 4: Point Source Proximity
+        self.adj_source_table = QTableWidget(0, 6)
+        self.adj_source_table.setHorizontalHeaderLabels([
+            "Source Name", "Type", "Gap Distance", "Lp at Gap", "NC Rating", "Risk"
+        ])
+        self.adj_source_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.adj_source_table.setMaximumHeight(120)
+        self.adj_source_table.setSelectionBehavior(QTableWidget.SelectRows)
+        adj_layout.addWidget(QLabel("Point Source Proximity:"))
+        adj_layout.addWidget(self.adj_source_table)
+
+        # Empty state
+        self.adj_empty_label = QLabel("No adjacency data. Click 'Recalculate' to analyze.")
+        self.adj_empty_label.setStyleSheet("color: #9e9e9e; font-style: italic; padding: 10px;")
+        self.adj_empty_label.setAlignment(Qt.AlignCenter)
+        adj_layout.addWidget(self.adj_empty_label)
+
+        adj_group.setLayout(adj_layout)
+        layout.addWidget(adj_group)
+
         widget.setLayout(layout)
         return widget
     
@@ -1473,6 +1557,123 @@ class SpaceEditDialog(HelpMixin, QDialog):
             }}
         """)
     
+    def _recalculate_adjacencies(self):
+        """Trigger the adjacency engine and populate tables for this space."""
+        if not self.space:
+            return
+        try:
+            from calculations.adjacency_engine import AdjacencyEngine
+            from models import get_session
+            from models.space import RoomBoundary
+
+            session = get_session()
+            boundary = session.query(RoomBoundary).filter_by(space_id=self.space.id).first()
+            if not boundary:
+                self.adj_status_label.setText("No room boundary found for this space.")
+                session.close()
+                return
+
+            engine = AdjacencyEngine(self.space.project_id)
+            results = engine.run_for_page(boundary.drawing_id, boundary.page_number)
+            session.close()
+            self._populate_adjacency_tables(results)
+        except Exception as e:
+            self.adj_status_label.setText(f"Error: {str(e)[:80]}")
+
+    def _populate_adjacency_tables(self, results):
+        """Populate the adjacency result tables with engine output."""
+        from PySide6.QtWidgets import QTableWidgetItem
+
+        space_id = self.space.id
+        has_data = False
+
+        # Show warnings
+        if results.warnings:
+            self.adj_warning_label.setText("\n".join(results.warnings))
+            self.adj_warning_label.setVisible(True)
+        else:
+            self.adj_warning_label.setVisible(False)
+
+        # Section 1: Same-floor space adjacencies
+        same_floor = [a for a in results.space_adjacencies
+                      if (a.space_a_id == space_id or a.space_b_id == space_id) and
+                      a.adjacency_direction == 'same_floor']
+        self.adj_spaces_table.setRowCount(len(same_floor))
+        for row, adj in enumerate(same_floor):
+            other_name = adj.space_b_name if adj.space_a_id == space_id else adj.space_a_name
+            self.adj_spaces_table.setItem(row, 0, QTableWidgetItem(other_name))
+            self.adj_spaces_table.setItem(row, 1, QTableWidgetItem(adj.floor_label or ""))
+            self.adj_spaces_table.setItem(row, 2, QTableWidgetItem(f"{adj.gap_distance_ft:.2f} ft"))
+            self.adj_spaces_table.setItem(row, 3, QTableWidgetItem(f"{adj.shared_length_ft:.1f} ft"))
+            self.adj_spaces_table.setItem(row, 4, QTableWidgetItem(adj.classification.upper()))
+            has_data = True
+
+        # Section 2: Floor/ceiling adjacencies
+        floor_ceil = [a for a in results.space_adjacencies
+                      if (a.space_a_id == space_id or a.space_b_id == space_id) and
+                      a.adjacency_direction == 'floor_ceiling']
+        self.adj_floor_ceiling_table.setRowCount(len(floor_ceil))
+        for row, adj in enumerate(floor_ceil):
+            other_name = adj.space_b_name if adj.space_a_id == space_id else adj.space_a_name
+            relationship = "Above" if adj.space_a_id == space_id else "Below"
+            self.adj_floor_ceiling_table.setItem(row, 0, QTableWidgetItem(other_name))
+            self.adj_floor_ceiling_table.setItem(row, 1, QTableWidgetItem(relationship))
+            self.adj_floor_ceiling_table.setItem(row, 2, QTableWidgetItem(f"{adj.shared_length_ft:.1f}"))
+            other_floor = adj.closest_edge_b.floor_label if adj.space_a_id == space_id else adj.closest_edge_a.floor_label
+            self.adj_floor_ceiling_table.setItem(row, 3, QTableWidgetItem(other_floor or ""))
+            has_data = True
+
+        # Section 3: HVAC proximity
+        hvac_prox = [h for h in results.hvac_proximities if h.space_id == space_id]
+        self.adj_hvac_table.setRowCount(len(hvac_prox))
+        for row, hp in enumerate(hvac_prox):
+            self.adj_hvac_table.setItem(row, 0, QTableWidgetItem(hp.path_name))
+            self.adj_hvac_table.setItem(row, 1, QTableWidgetItem(hp.path_type))
+            nc_str = f"NC-{hp.calculated_nc:.0f}" if hp.calculated_nc else "N/A"
+            self.adj_hvac_table.setItem(row, 2, QTableWidgetItem(nc_str))
+            self.adj_hvac_table.setItem(row, 3, QTableWidgetItem(f"{hp.gap_distance_ft:.2f} ft"))
+            self.adj_hvac_table.setItem(row, 4, QTableWidgetItem(hp.classification.upper()))
+            risk_str = "RISK" if hp.risk_flag else "OK"
+            item = QTableWidgetItem(risk_str)
+            if hp.risk_flag:
+                item.setForeground(QColor(211, 47, 47))
+            self.adj_hvac_table.setItem(row, 5, item)
+            has_data = True
+
+        # Section 4: Point source proximity
+        src_prox = [p for p in results.point_source_proximities if p.space_id == space_id]
+        self.adj_source_table.setRowCount(len(src_prox))
+        for row, sp in enumerate(src_prox):
+            self.adj_source_table.setItem(row, 0, QTableWidgetItem(sp.source_name))
+            self.adj_source_table.setItem(row, 1, QTableWidgetItem(sp.placement_type))
+            self.adj_source_table.setItem(row, 2, QTableWidgetItem(f"{sp.gap_distance_ft:.2f} ft"))
+            # Compute overall Lp from spectrum
+            lp_str = "N/A"
+            if sp.calculated_lp_spectrum:
+                import math
+                total = sum(10 ** (v / 10.0) for v in sp.calculated_lp_spectrum.values())
+                if total > 0:
+                    lp_str = f"{10 * math.log10(total):.1f} dB"
+            self.adj_source_table.setItem(row, 3, QTableWidgetItem(lp_str))
+            nc_str = f"NC-{sp.calculated_nc:.0f}" if sp.calculated_nc else "N/A"
+            self.adj_source_table.setItem(row, 4, QTableWidgetItem(nc_str))
+            risk_str = "RISK" if sp.risk_flag else "OK"
+            item = QTableWidgetItem(risk_str)
+            if sp.risk_flag:
+                item.setForeground(QColor(211, 47, 47))
+            self.adj_source_table.setItem(row, 5, item)
+            has_data = True
+
+        # Update status and empty state
+        self.adj_status_label.setText(f"Last computed: {results.computed_at[:19]}")
+        self.adj_empty_label.setVisible(not has_data)
+
+        # Hide tables with no data
+        self.adj_spaces_table.setVisible(len(same_floor) > 0)
+        self.adj_floor_ceiling_table.setVisible(len(floor_ceil) > 0)
+        self.adj_hvac_table.setVisible(len(hvac_prox) > 0)
+        self.adj_source_table.setVisible(len(src_prox) > 0)
+
     def open_partition_library(self):
         """Open the partition types library dialog"""
         if not self.space or not self.space.project_id:

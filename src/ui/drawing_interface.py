@@ -3,7 +3,10 @@ Drawing Interface - PDF viewer with drawing overlay tools
 """
 
 import os
+import logging
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QToolBar, QButtonGroup, QPushButton, 
                              QLabel, QComboBox, QLineEdit, QGroupBox, 
@@ -76,6 +79,12 @@ class DrawingInterface(HelpMixin, QMainWindow):
         
         # Initialize base scale ratio for zoom adjustments
         self._base_scale_ratio = 1.0
+        
+        # Noise source marker placement mode
+        self._noise_source_marker_mode = False
+        
+        # Adjacency engine (lazy-init on first use)
+        self._adjacency_engine = None
         
         self.load_drawing_data()
         self.init_ui()
@@ -262,6 +271,14 @@ class DrawingInterface(HelpMixin, QMainWindow):
         toolbar.addAction(measure_action)
         self.tool_group.addButton(toolbar.widgetForAction(measure_action))
         
+        # Noise Source Marker tool
+        ns_action = QAction('🔊 Noise Src', self)
+        ns_action.setCheckable(True)
+        ns_action.triggered.connect(lambda: self.set_noise_source_marker_mode(True))
+        toolbar.addAction(ns_action)
+        self.tool_group.addButton(toolbar.widgetForAction(ns_action))
+        self._noise_source_action = ns_action
+
         toolbar.addSeparator()
         
         # Quick actions
@@ -460,30 +477,51 @@ class DrawingInterface(HelpMixin, QMainWindow):
         """Create the center panel with PDF viewer and overlay"""
         panel = QWidget()
         layout = QVBoxLayout()
-        
+
+        # Floor label banner at the top of the drawing canvas
+        self.floor_label_banner = QWidget()
+        banner_layout = QHBoxLayout()
+        banner_layout.setContentsMargins(8, 4, 8, 4)
+        self.floor_label_icon = QLabel("Floor:")
+        self.floor_label_icon.setStyleSheet("font-weight: bold; color: #1565c0;")
+        banner_layout.addWidget(self.floor_label_icon)
+        self.floor_label_display = QPushButton("No floor assigned")
+        self.floor_label_display.setFlat(True)
+        self.floor_label_display.setStyleSheet("""
+            QPushButton { color: #1565c0; text-decoration: underline; border: none; padding: 2px 4px; }
+            QPushButton:hover { background-color: #e3f2fd; border-radius: 3px; }
+        """)
+        self.floor_label_display.setToolTip("Click to assign floor level for this page")
+        self.floor_label_display.clicked.connect(self.assign_floor_label)
+        banner_layout.addWidget(self.floor_label_display)
+        banner_layout.addStretch()
+        self.floor_label_banner.setLayout(banner_layout)
+        self.floor_label_banner.setStyleSheet("background-color: #fff9c4; border-bottom: 1px solid #f9a825;")
+        layout.addWidget(self.floor_label_banner)
+
         # PDF viewer
         self.pdf_viewer = PDFViewer()
-        
+
         # Drawing overlay
         self.drawing_overlay = DrawingOverlay()
         self.drawing_overlay.set_scale_manager(self.scale_manager)
         self.drawing_overlay.current_page = self.current_page_number  # Initialize page
-        
+
         # Stack overlay on top of PDF viewer
         # Create a container widget
         viewer_container = QWidget()
         viewer_layout = QVBoxLayout()
         viewer_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         viewer_layout.addWidget(self.pdf_viewer)
         viewer_container.setLayout(viewer_layout)
-        
+
         # Position overlay on top
         self.drawing_overlay.setParent(self.pdf_viewer.pdf_label)
-        
+
         layout.addWidget(viewer_container)
         panel.setLayout(layout)
-        
+
         return panel
         
     def setup_connections(self):
@@ -731,6 +769,82 @@ class DrawingInterface(HelpMixin, QMainWindow):
                 self.create_room_btn.setVisible(False)
                 self.create_path_btn.setVisible(True)
             
+    def set_noise_source_marker_mode(self, active):
+        """Activate noise source marker placement mode."""
+        self._noise_source_marker_mode = active
+        if active:
+            self.mode_label.setText("Current Tool: Noise Source Marker")
+            if self.drawing_overlay:
+                self.drawing_overlay.set_tool(ToolType.SELECT)
+            self.status_bar.showMessage("Click on the drawing to place a noise source marker", 5000)
+
+    def _handle_noise_source_click(self, x, y):
+        """Handle a click in noise source marker placement mode."""
+        if not getattr(self, '_noise_source_marker_mode', False):
+            return False
+
+        from ui.dialogs.noise_source_placement_dialog import NoiseSourcePlacementDialog
+        from models.mechanical import NoiseSource
+        from models.drawing import DrawingPage
+
+        dialog = NoiseSourcePlacementDialog(self, project_id=self.project_id)
+        if dialog.exec() != QDialog.Accepted:
+            return True
+
+        source_id = dialog.get_selected_source_id()
+        if not source_id:
+            return True
+
+        # Compute PDF-native coords
+        zoom = getattr(self.pdf_viewer, 'zoom_factor', 1.0) or 1.0
+        pdf_x = x / zoom
+        pdf_y = y / zoom
+        page_dims = self._get_current_pdf_page_dims()
+
+        session = get_session()
+        try:
+            dp = self._get_or_create_drawing_page(session)
+            floor_label = dp.floor_label if dp else None
+
+            source = session.query(NoiseSource).get(source_id)
+            if source:
+                source.drawing_id = self.drawing.id
+                source.page_number = self.current_page_number
+                source.pdf_x = pdf_x
+                source.pdf_y = pdf_y
+                source.pdf_page_width = page_dims[0] if page_dims else None
+                source.pdf_page_height = page_dims[1] if page_dims else None
+                source.floor_label = floor_label
+                source.placement_type = 'point'
+                session.commit()
+
+            # Add marker to overlay
+            if self.drawing_overlay:
+                marker = {
+                    'noise_source_id': source_id,
+                    'name': source.name if source else '',
+                    'placement_type': 'point',
+                    'x': x,
+                    'y': y,
+                    'pdf_x': pdf_x,
+                    'pdf_y': pdf_y,
+                }
+                if not hasattr(self.drawing_overlay, 'noise_source_markers'):
+                    self.drawing_overlay.noise_source_markers = []
+                self.drawing_overlay.noise_source_markers.append(marker)
+                self.drawing_overlay.update()
+
+            self.status_bar.showMessage(f"Placed noise source: {source.name}", 3000)
+            QTimer.singleShot(200, self._trigger_adjacency_engine)
+        except Exception as e:
+            session.rollback()
+            QMessageBox.warning(self, "Error", f"Failed to place noise source: {e}")
+        finally:
+            session.close()
+
+        self._noise_source_marker_mode = False
+        return True
+
     def component_index_changed(self, index):
         """Handle component combo box index change"""
         if index >= 0:
@@ -750,6 +864,10 @@ class DrawingInterface(HelpMixin, QMainWindow):
         
     def screen_coordinates_clicked(self, x, y):
         """Handle screen pixel coordinates clicked"""
+        # Check noise source marker placement mode first
+        if self._handle_noise_source_click(x, y):
+            return
+
         # Update status bar with coordinates using screen pixels for scale calculation
         real_x = self.scale_manager.pixels_to_real(x)
         real_y = self.scale_manager.pixels_to_real(y)
@@ -818,7 +936,133 @@ class DrawingInterface(HelpMixin, QMainWindow):
 
         if hasattr(self, 'spaces_panel') and self.spaces_panel:
             self.spaces_panel.set_current_page(self.current_page_number)
-        
+
+        self.update_floor_label_display()
+
+    def update_floor_label_display(self):
+        """Update the floor label banner to reflect the current page's DrawingPage record."""
+        if not self.drawing:
+            return
+        try:
+            from models.drawing import DrawingPage
+            session = get_session()
+            dp = session.query(DrawingPage).filter_by(
+                drawing_id=self.drawing.id,
+                page_number=self.current_page_number
+            ).first()
+            session.close()
+            if dp and dp.floor_label:
+                self.floor_label_display.setText(dp.floor_label)
+                self.floor_label_banner.setStyleSheet("background-color: #e8f5e9; border-bottom: 1px solid #66bb6a;")
+            else:
+                self.floor_label_display.setText("No floor assigned")
+                self.floor_label_banner.setStyleSheet("background-color: #fff9c4; border-bottom: 1px solid #f9a825;")
+        except Exception:
+            pass
+
+    def assign_floor_label(self):
+        """Open a dialog to assign or edit the floor label for the current page."""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QFormLayout, QLineEdit, QCheckBox, QDialogButtonBox
+        from models.drawing import DrawingPage
+
+        session = get_session()
+        dp = session.query(DrawingPage).filter_by(
+            drawing_id=self.drawing.id,
+            page_number=self.current_page_number
+        ).first()
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Assign Floor Label")
+        dlg.setMinimumWidth(350)
+        lay = QVBoxLayout()
+        form = QFormLayout()
+
+        label_edit = QLineEdit(dp.floor_label if dp else "")
+        label_edit.setPlaceholderText("e.g. Level 1, Basement, Roof")
+        form.addRow("Floor Label:", label_edit)
+
+        typical_cb = QCheckBox("This page represents a typical floor")
+        typical_cb.setChecked(dp.is_typical if dp else False)
+        form.addRow(typical_cb)
+
+        typical_floors_edit = QLineEdit(dp.typical_for_floors if dp else "")
+        typical_floors_edit.setPlaceholderText("e.g. 3,4,5,6,7,8")
+        typical_floors_edit.setEnabled(typical_cb.isChecked())
+        typical_cb.toggled.connect(typical_floors_edit.setEnabled)
+        form.addRow("Floors represented:", typical_floors_edit)
+
+        lay.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        dlg.setLayout(lay)
+
+        if dlg.exec() == QDialog.Accepted:
+            floor_label = label_edit.text().strip() or None
+            is_typical = typical_cb.isChecked()
+            typical_for = typical_floors_edit.text().strip() or None
+
+            if not dp:
+                page_dims = self._get_current_pdf_page_dims()
+                dp = DrawingPage(
+                    drawing_id=self.drawing.id,
+                    page_number=self.current_page_number,
+                    pdf_page_width=page_dims[0] if page_dims else None,
+                    pdf_page_height=page_dims[1] if page_dims else None,
+                )
+                session.add(dp)
+
+            dp.floor_label = floor_label
+            dp.is_typical = is_typical
+            dp.typical_for_floors = typical_for
+            session.commit()
+            session.close()
+            self.update_floor_label_display()
+        else:
+            session.close()
+
+    def _get_current_pdf_page_dims(self):
+        """Get the PDF page dimensions in points for the current page."""
+        try:
+            if self.pdf_viewer and self.pdf_viewer.pdf_document:
+                page = self.pdf_viewer.pdf_document[self.current_page_number - 1]
+                return (page.rect.width, page.rect.height)
+        except Exception:
+            pass
+        return None
+
+    def _trigger_adjacency_engine(self):
+        """Run the adjacency engine for the current page (non-blocking)."""
+        if not self.drawing:
+            return
+        try:
+            if self._adjacency_engine is None:
+                from calculations.adjacency_engine import AdjacencyEngine
+                self._adjacency_engine = AdjacencyEngine(self.project_id)
+            self._adjacency_engine.run_for_page(self.drawing.id, self.current_page_number)
+        except Exception as e:
+            logger.debug(f"Adjacency engine trigger failed: {e}")
+
+    def _get_or_create_drawing_page(self, session):
+        """Get or create a DrawingPage record for the current page."""
+        from models.drawing import DrawingPage
+        dp = session.query(DrawingPage).filter_by(
+            drawing_id=self.drawing.id,
+            page_number=self.current_page_number
+        ).first()
+        if not dp:
+            page_dims = self._get_current_pdf_page_dims()
+            dp = DrawingPage(
+                drawing_id=self.drawing.id,
+                page_number=self.current_page_number,
+                pdf_page_width=page_dims[0] if page_dims else None,
+                pdf_page_height=page_dims[1] if page_dims else None,
+            )
+            session.add(dp)
+            session.flush()
+        return dp
+
     def element_created(self, element_data):
         """Handle new drawing element creation"""
         self.update_elements_display()
@@ -2225,6 +2469,9 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         self.drawing_overlay.update()
                         
                         self.drawing_overlay.enable_clearing()
+
+                    # Trigger adjacency engine after path save
+                    QTimer.singleShot(200, self._trigger_adjacency_engine)
                 except Exception as e:
                     print(f"ERROR: Failed to register saved path with overlay: {e}")
                     if hasattr(self, 'drawing_overlay') and self.drawing_overlay:
@@ -2376,10 +2623,13 @@ class DrawingInterface(HelpMixin, QMainWindow):
             # Create room boundary record (rectangle or polygon)
             shape_data = space_data.get('rectangle_data', {})
             if shape_data and self.drawing:
+                # Get PDF page dims and floor label for adjacency detection
+                page_dims = self._get_current_pdf_page_dims()
+                dp = self._get_or_create_drawing_page(session)
+                current_floor_label = dp.floor_label if dp else None
+
                 if shape_data.get('type') == 'polygon':
                     import json
-                    # Persist RoomBoundary geometry in "base" PDF pixels (100% zoom)
-                    # so it can be reprojected correctly at any zoom.
                     try:
                         z = float(shape_data.get('saved_zoom') or getattr(getattr(self, 'pdf_viewer', None), 'zoom_factor', None) or 1.0)
                     except Exception:
@@ -2407,25 +2657,44 @@ class DrawingInterface(HelpMixin, QMainWindow):
                         y_position=y,
                         width=w,
                         height=h,
+                        pdf_x=float(x),
+                        pdf_y=float(y),
+                        pdf_width=float(w),
+                        pdf_height=float(h),
+                        pdf_polygon_pts=json.dumps(pts),
+                        pdf_page_width=page_dims[0] if page_dims else None,
+                        pdf_page_height=page_dims[1] if page_dims else None,
+                        floor_label=current_floor_label,
                         calculated_area=shape_data.get('area_real', 0),
                         polygon_points=json.dumps(pts)
                     )
                 else:
-                    # Rectangle boundary: also persist in base PDF pixels
+                    # Rectangle boundary: persist in base PDF pixels (= PDF points at zoom=1)
                     try:
                         z = float(shape_data.get('saved_zoom') or getattr(getattr(self, 'pdf_viewer', None), 'zoom_factor', None) or 1.0)
                     except Exception:
                         z = 1.0
                     if z <= 0:
                         z = 1.0
+                    bx = float(shape_data.get('x', 0) or 0) / z
+                    by = float(shape_data.get('y', 0) or 0) / z
+                    bw = float(shape_data.get('width', 0) or 0) / z
+                    bh = float(shape_data.get('height', 0) or 0) / z
                     boundary = RoomBoundary(
                         space_id=space.id,
                         drawing_id=self.drawing.id,
                         page_number=self.current_page_number,
-                        x_position=float(shape_data.get('x', 0) or 0) / z,
-                        y_position=float(shape_data.get('y', 0) or 0) / z,
-                        width=float(shape_data.get('width', 0) or 0) / z,
-                        height=float(shape_data.get('height', 0) or 0) / z,
+                        x_position=bx,
+                        y_position=by,
+                        width=bw,
+                        height=bh,
+                        pdf_x=bx,
+                        pdf_y=by,
+                        pdf_width=bw,
+                        pdf_height=bh,
+                        pdf_page_width=page_dims[0] if page_dims else None,
+                        pdf_page_height=page_dims[1] if page_dims else None,
+                        floor_label=current_floor_label,
                         calculated_area=shape_data.get('area_real', 0)
                     )
                 
@@ -2433,7 +2702,10 @@ class DrawingInterface(HelpMixin, QMainWindow):
             
             session.commit()
             session.close()
-            
+
+            # Trigger adjacency engine after space creation
+            QTimer.singleShot(200, self._trigger_adjacency_engine)
+
             # Update UI with enhanced feedback
             rt60_display = f"{calculated_rt60:.2f} seconds" if calculated_rt60 else "Not calculated"
             

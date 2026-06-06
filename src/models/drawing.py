@@ -4,7 +4,7 @@ Drawing model - represents PDF drawings in a project
 
 import logging
 import os
-from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Float
+from sqlalchemy import Column, Integer, String, DateTime, Text, ForeignKey, Float, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from .database import Base
@@ -52,6 +52,7 @@ class Drawing(Base):
     room_boundaries = relationship("RoomBoundary", back_populates="drawing", cascade="all, delete-orphan")
     hvac_components = relationship("HVACComponent", back_populates="drawing", cascade="all, delete-orphan")
     drawing_set = relationship("DrawingSet", back_populates="drawings")
+    pages = relationship("DrawingPage", back_populates="drawing", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Drawing(id={self.id}, name='{self.name}', project_id={self.project_id})>"
@@ -278,3 +279,40 @@ class Drawing(Base):
             pass
         
         return abs_path
+
+
+class DrawingPage(Base):
+    """Per-page metadata for multi-page PDF drawings.
+    
+    Tracks floor/level assignment and PDF-native dimensions for each page.
+    Records are created lazily when a floor label is assigned or when a
+    space/component is first placed on a page.
+    """
+    __tablename__ = 'drawing_pages'
+
+    id = Column(Integer, primary_key=True)
+    drawing_id = Column(Integer, ForeignKey('drawings.id'), nullable=False)
+    page_number = Column(Integer, nullable=False)
+    floor_label = Column(String(100))
+    is_typical = Column(Boolean, default=False)
+    typical_for_floors = Column(Text)
+
+    pdf_page_width = Column(Float)
+    pdf_page_height = Column(Float)
+
+    drawing = relationship("Drawing", back_populates="pages")
+
+    def __repr__(self):
+        return f"<DrawingPage(id={self.id}, drawing_id={self.drawing_id}, page={self.page_number}, floor='{self.floor_label}')>"
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'drawing_id': self.drawing_id,
+            'page_number': self.page_number,
+            'floor_label': self.floor_label,
+            'is_typical': self.is_typical,
+            'typical_for_floors': self.typical_for_floors,
+            'pdf_page_width': self.pdf_page_width,
+            'pdf_page_height': self.pdf_page_height,
+        }

@@ -1164,15 +1164,21 @@ class HVACComponentDialog(QDialog):
         # Get silencer product ID if selected
         silencer_product_id = getattr(self, '_selected_silencer_product_id', None)
 
+        # x_position/y_position are already in base-zoom pixels (= PDF points)
+        x_pos = self.x_spin.value()
+        y_pos = self.y_spin.value()
+
         return HVACComponent(
             project_id=self.project_id,
             drawing_id=self.drawing_id,
-            page_number=self.page_number,  # Store page for multi-page PDFs
+            page_number=self.page_number,
             name=name,
             component_type=comp_type,
             custom_type_label=custom_label or None,
-            x_position=self.x_spin.value(),
-            y_position=self.y_spin.value(),
+            x_position=x_pos,
+            y_position=y_pos,
+            pdf_x=x_pos,
+            pdf_y=y_pos,
             noise_level=self.noise_spin.value(),
             cfm=cfm_value,
             branch_takeoff_choice=self.branch_takeoff_choice_combo.currentText(),
